@@ -131,4 +131,6 @@ All sliders support Snap-to-0 around the center, so you can easily return to neu
 <li>Gamma: +0.6</li>
 <li>Gain: +1.2</li>
 <li>Hue-Correction: -0.3</li>
-<ul>
+</ul>
+<hr>
+https://greasyfork.org/de/scripts/561189-global-video-filter-overlay
