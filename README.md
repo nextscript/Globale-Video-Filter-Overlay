@@ -133,4 +133,10 @@ All sliders support Snap-to-0 around the center, so you can easily return to neu
 <li>Hue-Correction: -0.3</li>
 </ul>
 <hr>
+<h1>Screenshot</h1><br>
+<b>OFF:</b><br>
+<img src="https://i.ibb.co/S7ZH5qKn/script-OFF.png"><br>
+<b>OFF:</b><br>
+<img src="https://i.ibb.co/0jNLF7rg/script-ON.png">
+<hr>
 https://greasyfork.org/de/scripts/561189-global-video-filter-overlay
