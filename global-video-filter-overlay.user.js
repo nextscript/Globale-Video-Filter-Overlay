@@ -3,7 +3,7 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.1.6
+// @version      1.1.7
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
@@ -13,8 +13,8 @@
 // @grant        GM_addValueChangeListener
 // @grant        GM_info
 // @iconURL      https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/logomes.png
-// @downloadURL https://update.greasyfork.org/scripts/561189/Global%20Video%20Filter%20Overlay.user.js
-// @updateURL https://update.greasyfork.org/scripts/561189/Global%20Video%20Filter%20Overlay.meta.js
+// @downloadURL  https://update.greasyfork.org/scripts/561189/Global%20Video%20Filter%20Overlay.user.js
+// @updateURL    https://update.greasyfork.org/scripts/561189/Global%20Video%20Filter%20Overlay.meta.js
 // ==/UserScript==
 
 (function () {
@@ -38,10 +38,20 @@
   const AUTO_KEY        = 'a'; // Strg+Alt+A (Auto Scene Match "AI")
 
   // -------------------------
-  // LOG SWITCH (NEW)
+  // LOG SWITCH
   // -------------------------
-  // Set to false to silence ALL console logs from this script.
   const logs = true;
+
+  // -------------------------
+  // CSS.escape Polyfill + safer selectors
+  // -------------------------
+  const cssEscape = (s) => {
+    try {
+      if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(String(s));
+    } catch (_) {}
+    // minimal safe escape for querySelector
+    return String(s).replace(/[^a-zA-Z0-9_-]/g, (m) => '\\' + m);
+  };
 
   // GM keys
   const K = {
@@ -89,27 +99,158 @@
   const clamp   = (n, a, b) => Math.min(b, Math.max(a, n));
   const roundTo = (n, step) => Math.round(n / step) * step;
   const snap0   = (n, eps)  => (Math.abs(n) <= eps ? 0 : n);
-
-  // stable JSON numbers (kills 0.30000000000000004 etc.)
   const nFix = (n, digits = 1) => Number((Number(n) || 0).toFixed(digits));
 
   const gmGet = (key, fallback) => { try { return GM_getValue(key, fallback); } catch (_) { return fallback; } };
   const gmSet = (key, val) => { try { GM_setValue(key, val); } catch (_) {} };
 
-  // IMPORTANT FIX: only write if changed (prevents ping-pong via valueChangeListener)
-  const gmSetIfChanged = (key, val) => {
+  const nowMs = () => (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+
+  // -------------------------
+  // Screenshot / Recording helpers
+  // -------------------------
+  function dlBlob(blob, filename) {
     try {
-      const cur = GM_getValue(key, Symbol('gvf_undef'));
-      if (cur === val) return false;
-      GM_setValue(key, val);
-      return true;
-    } catch (_) {
-      try { GM_setValue(key, val); } catch (__) {}
-      return true;
-    }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1500);
+    } catch (_) {}
+  }
+
+  function tsName(prefix, ext) {
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${prefix}_${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}_${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}.${ext}`;
+  }
+
+  function getActiveVideoForCapture() {
+    try {
+      const v = (typeof choosePrimaryVideo === 'function') ? choosePrimaryVideo() : null;
+      if (v) return v;
+    } catch (_) {}
+    return document.querySelector('video');
+  }
+
+  const REC = {
+    active: false,
+    mr: null,
+    chunks: [],
+    v: null,
+    mime: '',
+    ext: 'webm'
   };
 
-  const nowMs = () => (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+  function pickRecorderMime() {
+    const cand = [
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm;codecs=vp9',
+      'video/webm;codecs=vp8',
+      'video/webm',
+      'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+      'video/mp4'
+    ];
+    for (const m of cand) {
+      try {
+        if (window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) return m;
+      } catch (_) {}
+    }
+    return '';
+  }
+
+  async function takeVideoScreenshot(statusEl) {
+    const v = getActiveVideoForCapture();
+    if (!v) { if (statusEl) statusEl.textContent = 'No video found.'; return; }
+
+    const w = Math.max(2, v.videoWidth || 0);
+    const h = Math.max(2, v.videoHeight || 0);
+    if (!w || !h) { if (statusEl) statusEl.textContent = 'Video not ready.'; return; }
+
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    const ctx = c.getContext('2d');
+
+    try {
+      ctx.drawImage(v, 0, 0, w, h);
+    } catch (_) {
+      if (statusEl) statusEl.textContent = 'Screenshot blocked (cross-origin/DRM).';
+      return;
+    }
+
+    c.toBlob((blob) => {
+      if (!blob) { if (statusEl) statusEl.textContent = 'Screenshot failed.'; return; }
+      const name = tsName('gvf_screenshot', 'png');
+      dlBlob(blob, name);
+      if (statusEl) statusEl.textContent = `Screenshot saved: ${name}`;
+    }, 'image/png');
+  }
+
+  async function toggleVideoRecord(statusEl, btnEl) {
+    if (REC.active) {
+      try { REC.mr && REC.mr.stop(); } catch (_) {}
+      return;
+    }
+
+    const v = getActiveVideoForCapture();
+    if (!v) { if (statusEl) statusEl.textContent = 'No video found.'; return; }
+
+    const cap = (v.captureStream && v.captureStream()) || (v.mozCaptureStream && v.mozCaptureStream());
+    if (!cap) { if (statusEl) statusEl.textContent = 'Recording not supported (captureStream missing).'; return; }
+
+    const mime = pickRecorderMime();
+    if (!mime) { if (statusEl) statusEl.textContent = 'MediaRecorder not supported.'; return; }
+
+    const ext = mime.startsWith('video/mp4') ? 'mp4' : 'webm';
+
+    REC.active = true;
+    REC.v = v;
+    REC.mime = mime;
+    REC.ext = ext;
+    REC.chunks = [];
+
+    if (btnEl) btnEl.textContent = 'Stop Record';
+    if (statusEl) statusEl.textContent = `Recording... (${ext.toUpperCase()}${ext === 'mp4' ? '' : ' (mp4 not supported → webm)'})`;
+
+    let mr;
+    try {
+      mr = new MediaRecorder(cap, mime ? { mimeType: mime } : undefined);
+    } catch (_) {
+      REC.active = false;
+      if (btnEl) btnEl.textContent = 'Record MP4';
+      if (statusEl) statusEl.textContent = 'Recorder init failed.';
+      return;
+    }
+
+    REC.mr = mr;
+
+    mr.ondataavailable = (ev) => {
+      if (ev && ev.data && ev.data.size > 0) REC.chunks.push(ev.data);
+    };
+
+    mr.onerror = () => { try { mr.stop(); } catch (_) {} };
+
+    mr.onstop = () => {
+      const blob = new Blob(REC.chunks, { type: REC.mime || 'video/webm' });
+      const name = tsName('gvf_record', REC.ext);
+      dlBlob(blob, name);
+
+      REC.active = false;
+      REC.mr = null;
+      REC.chunks = [];
+      REC.v = null;
+
+      if (btnEl) btnEl.textContent = 'Record MP4';
+      if (statusEl) statusEl.textContent = `Saved: ${name}`;
+    };
+
+    try { mr.start(1000); } catch (_) { try { mr.start(); } catch (__) {} }
+  }
 
   // -------------------------
   // DEBUG / LOGGING
@@ -125,22 +266,11 @@
     toneEveryMs: 800
   };
 
-  function log(...a) {
-    if (!LOG.on) return;
-    try { console.log(LOG.tag, ...a); } catch (_) {}
-  }
-  function logW(...a) {
-    if (!LOG.on) return;
-    try { console.warn(LOG.tag, ...a); } catch (_) {}
-  }
-  function logE(...a) {
-    if (!LOG.on) return;
-    try { console.error(LOG.tag, ...a); } catch (_) {}
-  }
+  function log(...a)  { if (!LOG.on) return; try { console.log(LOG.tag, ...a); } catch (_) {} }
+  function logW(...a) { if (!LOG.on) return; try { console.warn(LOG.tag, ...a); } catch (_) {} }
+  function logE(...a) { if (!LOG.on) return; try { console.error(LOG.tag, ...a); } catch (_) {} }
 
-  function logToggle(name, state, extra) {
-    log(`${name}:`, state ? 'ON' : 'OFF', extra || '');
-  }
+  function logToggle(name, state, extra) { log(`${name}:`, state ? 'ON' : 'OFF', extra || ''); }
 
   // -------------------------
   // Global state
@@ -195,7 +325,7 @@
   function getRadius() { return Math.max(0.1, Math.abs(normSR())); }
 
   function blackToOffset(v) { return clamp(v, -2, 2) * 0.04; }
-  function whiteToHiAdj(v) { return clamp(v, -2, 2) * 0.06; }
+  function whiteToHiAdj(v)  { return clamp(v, -2, 2) * 0.06; }
 
   function dnToDenoiseMix(v)   { return clamp(v, 0, 1.5) * 0.5; }
   function dnToDenoiseSigma(v) { return clamp(v, 0, 1.5) * 0.8; }
@@ -236,7 +366,6 @@
     tgt: { br: 1.0, ct: 1.0, sat: 1.0, hue: 0.0 }
   };
 
-  // -------- FIX (Firefox): robust "playable + visible" detection --------
   function isActuallyVisible(v) {
     try {
       const cs = window.getComputedStyle(v);
@@ -297,7 +426,6 @@
     }
     return best;
   }
-  // -------- END FIX --------
 
   function computeFrameStats(imgData) {
     const d = imgData.data;
@@ -456,7 +584,14 @@
     const c = document.createElement('canvas');
     c.width = AUTO.canvasW;
     c.height = AUTO.canvasH;
-    const ctx = c.getContext('2d', { willReadFrequently: true });
+    let ctx = null;
+    try { ctx = c.getContext('2d', { willReadFrequently: true }); }
+    catch (_) { try { ctx = c.getContext('2d'); } catch (__) {} }
+
+    const scheduleNext = (fps) => {
+      const ms = Math.max(50, Math.round(1000 / Math.max(1, fps)));
+      setTimeout(loop, ms);
+    };
 
     const loop = () => {
       if (!AUTO.running) return;
@@ -502,8 +637,7 @@
             log(
               `CUT detected → boost ${AUTO.boostFps}fps for ${AUTO.boostMs}ms`,
               `score=${(sig.__cutScore || 0).toFixed(3)}`,
-              `Y=${sig.mY.toFixed(3)} sd=${sig.sdY.toFixed(3)} Ch=${sig.mCh.toFixed(3)}`,
-              `tgt br=${AUTO.tgt.br.toFixed(3)} ct=${AUTO.tgt.ct.toFixed(3)} sat=${AUTO.tgt.sat.toFixed(3)} hue=${AUTO.tgt.hue.toFixed(2)}`
+              `Y=${sig.mY.toFixed(3)} sd=${sig.sdY.toFixed(3)} Ch=${sig.mCh.toFixed(3)}`
             );
           }
           if ((t - LOG.lastTickMs) >= LOG.tickEveryMs) {
@@ -525,32 +659,26 @@
       }
     };
 
-    const scheduleNext = (fps) => {
-      const ms = Math.max(50, Math.round(1000 / Math.max(1, fps)));
-      setTimeout(loop, ms);
-    };
-
     log(`Auto analyzer loop created. baseFps=${AUTO.baseFps}, boostFps=${AUTO.boostFps}, canvas=${AUTO.canvasW}x${AUTO.canvasH}`);
     scheduleNext(AUTO.baseFps);
   }
 
-  // FIX: avoid thrash / ping-pong (only act on real change)
-  function setAutoOn(on, meta = {}) {
+  // -------------------------
+  // FIX: stop Ctrl+Alt+A flicker (sync-loop guard)
+  // -------------------------
+  let _inSync = false;
+
+  function setAutoOn(on) {
     const next = !!on;
-    if (next === autoOn && !meta.force) {
-      // still update overlays; but do NOT write storage again
+    if (next === autoOn && AUTO.running) {
       scheduleOverlayUpdate();
       return;
     }
 
     autoOn = next;
+    if (!_inSync) gmSet(K.AUTO_ON, autoOn);
 
-    // only write if changed (prevents listener ping-pong)
-    gmSetIfChanged(K.AUTO_ON, autoOn);
-
-    if (!meta.silent) {
-      logToggle('Auto Scene Match (Ctrl+Alt+A)', autoOn, `(strength=${autoStrength.toFixed(2)}, lockWB=${autoLockWB ? 'yes' : 'no'})`);
-    }
+    logToggle('Auto Scene Match (Ctrl+Alt+A)', autoOn, `(strength=${autoStrength.toFixed(2)}, lockWB=${autoLockWB ? 'yes' : 'no'})`);
 
     if (!autoOn) {
       AUTO.lastSig = null;
@@ -650,7 +778,7 @@
     top.appendChild(profBadge);
     overlay.appendChild(top);
 
-    const mkSliderRow = (labelText, min, max, step, getVal, setVal, gmKey, snapZero, fmt = v => Number(v).toFixed(1)) => {
+    const mkSliderRow = (name, labelText, min, max, step, getVal, setVal, gmKey, snapZero, fmt = v => Number(v).toFixed(1)) => {
       const wrap = document.createElement('div');
       wrap.style.cssText = `
         display:flex;align-items:center;gap:8px;padding: 6px 8px;border-radius: 10px;
@@ -667,11 +795,11 @@
       rng.max = String(max);
       rng.step = String(step);
       rng.value = String(getVal());
-      rng.className = `gvf-${labelText}-range`;
+      rng.dataset.gvfRange = name;
       rng.style.cssText = `width: 210px; height: 18px; accent-color: #fff;`;
 
       const val = document.createElement('div');
-      val.className = `gvf-${labelText}-val`;
+      val.dataset.gvfVal = name;
       val.textContent = fmt(getVal());
       val.style.cssText = `width: 52px;text-align:right;font-size: 11px;font-weight: 900;color:#e6e6e6;`;
 
@@ -686,8 +814,8 @@
         rng.value = String(getVal());
         val.textContent = fmt(getVal());
 
-        gmSetIfChanged(gmKey, getVal());
-        if (gmKey === K.HDR && getVal() !== 0) gmSetIfChanged(K.HDR_LAST, getVal());
+        gmSet(gmKey, getVal());
+        if (gmKey === K.HDR && getVal() !== 0) gmSet(K.HDR_LAST, getVal());
 
         applyFilter();
       });
@@ -698,12 +826,12 @@
       return wrap;
     };
 
-    overlay.appendChild(mkSliderRow('SL',  -2,   2,   0.1, () => normSL(),  (v)=>{ sl=v;  }, K.SL,  true));
-    overlay.appendChild(mkSliderRow('SR',  -2,   2,   0.1, () => normSR(),  (v)=>{ sr=v;  }, K.SR,  true));
-    overlay.appendChild(mkSliderRow('BL',  -2,   2,   0.1, () => normBL(),  (v)=>{ bl=v;  }, K.BL,  true));
-    overlay.appendChild(mkSliderRow('WL',  -2,   2,   0.1, () => normWL(),  (v)=>{ wl=v;  }, K.WL,  true));
-    overlay.appendChild(mkSliderRow('DN', -1.5, 1.5, 0.1, () => normDN(),  (v)=>{ dn=v;  }, K.DN,  true));
-    overlay.appendChild(mkSliderRow('HDR', -1.0, 2.0, 0.1, () => normHDR(), (v)=>{ hdr=v; }, K.HDR, true));
+    overlay.appendChild(mkSliderRow('SL','SL',  -2,   2,   0.1, () => normSL(),  (v)=>{ sl=v;  }, K.SL,  true));
+    overlay.appendChild(mkSliderRow('SR','SR',  -2,   2,   0.1, () => normSR(),  (v)=>{ sr=v;  }, K.SR,  true));
+    overlay.appendChild(mkSliderRow('BL','BL',  -2,   2,   0.1, () => normBL(),  (v)=>{ bl=v;  }, K.BL,  true));
+    overlay.appendChild(mkSliderRow('WL','WL',  -2,   2,   0.1, () => normWL(),  (v)=>{ wl=v;  }, K.WL,  true));
+    overlay.appendChild(mkSliderRow('DN','DN', -1.5, 1.5, 0.1, () => normDN(),  (v)=>{ dn=v;  }, K.DN,  true));
+    overlay.appendChild(mkSliderRow('HDR','HDR', -1.0, 2.0, 0.1, () => normHDR(), (v)=>{ hdr=v; }, K.HDR, true));
 
     (document.body || document.documentElement).appendChild(overlay);
     return overlay;
@@ -735,7 +863,7 @@
     head.appendChild(title);
     overlay.appendChild(head);
 
-    const mkRow = (labelText, keyGet, keySet, gmKey) => {
+    const mkRow = (name, labelText, keyGet, keySet, gmKey) => {
       const wrap = document.createElement('div');
       wrap.style.cssText = `
         display:flex;align-items:center;gap:8px;padding: 6px 8px;border-radius: 10px;
@@ -755,11 +883,11 @@
       rng.max = '10';
       rng.step = '0.1';
       rng.value = String(keyGet());
-      rng.className = `gvf-${labelText}-range`;
+      rng.dataset.gvfRange = name;
       rng.style.cssText = `width: 120px; height: 18px; accent-color: #fff;`;
 
       const val = document.createElement('div');
-      val.className = `gvf-${labelText}-val`;
+      val.dataset.gvfVal = name;
       val.textContent = Number(keyGet()).toFixed(1);
       val.style.cssText = `width: 54px;text-align:right;font-size: 11px;font-weight: 900;color:#e6e6e6;`;
 
@@ -770,7 +898,7 @@
         keySet(v);
         rng.value = String(keyGet());
         val.textContent = Number(keyGet()).toFixed(1);
-        gmSetIfChanged(gmKey, keyGet());
+        gmSet(gmKey, keyGet());
         applyFilter();
         scheduleOverlayUpdate();
       });
@@ -781,17 +909,17 @@
       return wrap;
     };
 
-    overlay.appendChild(mkRow('Contrast',        () => normU(u_contrast),   (v)=>{ u_contrast=v; },   K.U_CONTRAST));
-    overlay.appendChild(mkRow('Black Level',     () => normU(u_black),      (v)=>{ u_black=v; },      K.U_BLACK));
-    overlay.appendChild(mkRow('White Level',     () => normU(u_white),      (v)=>{ u_white=v; },      K.U_WHITE));
-    overlay.appendChild(mkRow('Highlights',      () => normU(u_highlights), (v)=>{ u_highlights=v; }, K.U_HIGHLIGHTS));
-    overlay.appendChild(mkRow('Shadows',         () => normU(u_shadows),    (v)=>{ u_shadows=v; },    K.U_SHADOWS));
-    overlay.appendChild(mkRow('Saturation',      () => normU(u_sat),        (v)=>{ u_sat=v; },        K.U_SAT));
-    overlay.appendChild(mkRow('Vibrance',        () => normU(u_vib),        (v)=>{ u_vib=v; },        K.U_VIB));
-    overlay.appendChild(mkRow('Sharpen',         () => normU(u_sharp),      (v)=>{ u_sharp=v; },      K.U_SHARP));
-    overlay.appendChild(mkRow('Gamma',           () => normU(u_gamma),      (v)=>{ u_gamma=v; },      K.U_GAMMA));
-    overlay.appendChild(mkRow('Grain (Banding)', () => normU(u_grain),      (v)=>{ u_grain=v; },      K.U_GRAIN));
-    overlay.appendChild(mkRow('Hue-Correction',  () => normU(u_hue),        (v)=>{ u_hue=v; },        K.U_HUE));
+    overlay.appendChild(mkRow('U_CONTRAST','Contrast',        () => normU(u_contrast),   (v)=>{ u_contrast=v; },   K.U_CONTRAST));
+    overlay.appendChild(mkRow('U_BLACK','Black Level',        () => normU(u_black),      (v)=>{ u_black=v; },      K.U_BLACK));
+    overlay.appendChild(mkRow('U_WHITE','White Level',        () => normU(u_white),      (v)=>{ u_white=v; },      K.U_WHITE));
+    overlay.appendChild(mkRow('U_HIGHLIGHTS','Highlights',    () => normU(u_highlights), (v)=>{ u_highlights=v; }, K.U_HIGHLIGHTS));
+    overlay.appendChild(mkRow('U_SHADOWS','Shadows',          () => normU(u_shadows),    (v)=>{ u_shadows=v; },    K.U_SHADOWS));
+    overlay.appendChild(mkRow('U_SAT','Saturation',           () => normU(u_sat),        (v)=>{ u_sat=v; },        K.U_SAT));
+    overlay.appendChild(mkRow('U_VIB','Vibrance',             () => normU(u_vib),        (v)=>{ u_vib=v; },        K.U_VIB));
+    overlay.appendChild(mkRow('U_SHARP','Sharpen',            () => normU(u_sharp),      (v)=>{ u_sharp=v; },      K.U_SHARP));
+    overlay.appendChild(mkRow('U_GAMMA','Gamma',              () => normU(u_gamma),      (v)=>{ u_gamma=v; },      K.U_GAMMA));
+    overlay.appendChild(mkRow('U_GRAIN','Grain (Banding)',    () => normU(u_grain),      (v)=>{ u_grain=v; },      K.U_GRAIN));
+    overlay.appendChild(mkRow('U_HUE','Hue-Correction',       () => normU(u_hue),        (v)=>{ u_hue=v; },        K.U_HUE));
 
     (document.body || document.documentElement).appendChild(overlay);
     return overlay;
@@ -883,6 +1011,8 @@
     const btnReset      = mkBtn('Reset to defaults');
     const btnExportFile = mkBtn('Export .json');
     const btnImportFile = mkBtn('Import .json');
+    const btnShot       = mkBtn('Screenshot');
+    const btnRec        = mkBtn('Record MP4');
 
     const fileInput = document.createElement('input');
     fileInput.type = 'file';
@@ -911,18 +1041,11 @@
     }
 
     btnExportFile.addEventListener('click', () => {
-      try {
-        downloadJsonToPC(exportSettings());
-        status.textContent = 'Exported to .json file.';
-      } catch (_) {
-        status.textContent = 'Export failed.';
-      }
+      try { downloadJsonToPC(exportSettings()); status.textContent = 'Exported to .json file.'; }
+      catch (_) { status.textContent = 'Export failed.'; }
     });
 
-    btnImportFile.addEventListener('click', () => {
-      fileInput.value = '';
-      fileInput.click();
-    });
+    btnImportFile.addEventListener('click', () => { fileInput.value = ''; fileInput.click(); });
 
     fileInput.addEventListener('change', () => {
       const f = fileInput.files && fileInput.files[0];
@@ -953,11 +1076,7 @@
       status.textContent = 'Exported current settings.';
     });
 
-    btnSelect.addEventListener('click', () => {
-      ta.focus();
-      ta.select();
-      status.textContent = 'Selected.';
-    });
+    btnSelect.addEventListener('click', () => { ta.focus(); ta.select(); status.textContent = 'Selected.'; });
 
     btnSave.addEventListener('click', () => {
       const raw = String(ta.value || '').trim();
@@ -992,11 +1111,16 @@
       status.textContent = 'Reset + applied.';
     });
 
+    btnShot.addEventListener('click', async () => { await takeVideoScreenshot(status); });
+    btnRec.addEventListener('click', async () => { await toggleVideoRecord(status, btnRec); });
+
     row.appendChild(btnRefresh);
     row.appendChild(btnSave);
     row.appendChild(btnSelect);
     row.appendChild(btnExportFile);
     row.appendChild(btnImportFile);
+    row.appendChild(btnShot);
+    row.appendChild(btnRec);
     row.appendChild(btnReset);
 
     box.appendChild(ta);
@@ -1005,7 +1129,6 @@
     box.appendChild(fileInput);
 
     overlay.appendChild(box);
-
     (document.body || document.documentElement).appendChild(overlay);
     return overlay;
   }
@@ -1096,48 +1219,48 @@
     if ('grain'      in u) u_grain      = normU(u.grain);
     if ('hue'        in u) u_hue        = normU(u.hue);
 
-    gmSetIfChanged(K.enabled, enabled);
-    gmSetIfChanged(K.moody, darkMoody);
-    gmSetIfChanged(K.teal, tealOrange);
-    gmSetIfChanged(K.vib, vibrantSat);
-    gmSetIfChanged(K.icons, iconsShown);
+    gmSet(K.enabled, enabled);
+    gmSet(K.moody, darkMoody);
+    gmSet(K.teal, tealOrange);
+    gmSet(K.vib, vibrantSat);
+    gmSet(K.icons, iconsShown);
 
-    sl = normSL(); gmSetIfChanged(K.SL, sl);
-    sr = normSR(); gmSetIfChanged(K.SR, sr);
-    bl = normBL(); gmSetIfChanged(K.BL, bl);
-    wl = normWL(); gmSetIfChanged(K.WL, wl);
-    dn = normDN(); gmSetIfChanged(K.DN, dn);
+    sl = normSL(); gmSet(K.SL, sl);
+    sr = normSR(); gmSet(K.SR, sr);
+    bl = normBL(); gmSet(K.BL, bl);
+    wl = normWL(); gmSet(K.WL, wl);
+    dn = normDN(); gmSet(K.DN, dn);
 
-    hdr = normHDR(); gmSetIfChanged(K.HDR, hdr);
-    if (hdr !== 0) gmSetIfChanged(K.HDR_LAST, hdr);
+    hdr = normHDR(); gmSet(K.HDR, hdr);
+    if (hdr !== 0) gmSet(K.HDR_LAST, hdr);
 
-    gmSetIfChanged(K.PROF, profile);
-    gmSetIfChanged(K.G_HUD, gradingHudShown);
+    gmSet(K.PROF, profile);
+    gmSet(K.G_HUD, gradingHudShown);
 
-    gmSetIfChanged(K.U_CONTRAST, u_contrast);
-    gmSetIfChanged(K.U_BLACK, u_black);
-    gmSetIfChanged(K.U_WHITE, u_white);
-    gmSetIfChanged(K.U_HIGHLIGHTS, u_highlights);
-    gmSetIfChanged(K.U_SHADOWS, u_shadows);
-    gmSetIfChanged(K.U_SAT, u_sat);
-    gmSetIfChanged(K.U_VIB, u_vib);
-    gmSetIfChanged(K.U_SHARP, u_sharp);
-    gmSetIfChanged(K.U_GAMMA, u_gamma);
-    gmSetIfChanged(K.U_GRAIN, u_grain);
-    gmSetIfChanged(K.U_HUE, u_hue);
+    gmSet(K.U_CONTRAST, u_contrast);
+    gmSet(K.U_BLACK, u_black);
+    gmSet(K.U_WHITE, u_white);
+    gmSet(K.U_HIGHLIGHTS, u_highlights);
+    gmSet(K.U_SHADOWS, u_shadows);
+    gmSet(K.U_SAT, u_sat);
+    gmSet(K.U_VIB, u_vib);
+    gmSet(K.U_SHARP, u_sharp);
+    gmSet(K.U_GAMMA, u_gamma);
+    gmSet(K.U_GRAIN, u_grain);
+    gmSet(K.U_HUE, u_hue);
 
-    gmSetIfChanged(K.AUTO_ON, autoOn);
-    gmSetIfChanged(K.AUTO_STRENGTH, autoStrength);
-    gmSetIfChanged(K.AUTO_LOCK_WB, autoLockWB);
+    gmSet(K.AUTO_ON, autoOn);
+    gmSet(K.AUTO_STRENGTH, autoStrength);
+    gmSet(K.AUTO_LOCK_WB, autoLockWB);
 
-    setAutoOn(autoOn, { silent: true, force: true });
+    setAutoOn(autoOn);
     applyFilter();
     scheduleOverlayUpdate();
     return true;
   }
 
   // -------------------------
-  // Overlay state updates
+  // Overlay state updates (FIXED: data-attributes)
   // -------------------------
   function updateMainOverlayState(overlay) {
     if (!iconsShown) { overlay.style.display = 'none'; return; }
@@ -1177,8 +1300,8 @@
     }
 
     const setPair = (name, v) => {
-      const r = overlay.querySelector(`.gvf-${CSS.escape(name)}-range`);
-      const t = overlay.querySelector(`.gvf-${CSS.escape(name)}-val`);
+      const r = overlay.querySelector(`[data-gvf-range="${cssEscape(name)}"]`);
+      const t = overlay.querySelector(`[data-gvf-val="${cssEscape(name)}"]`);
       if (r) r.value = String(v);
       if (t) t.textContent = Number(v).toFixed(1);
     };
@@ -1196,23 +1319,23 @@
     overlay.style.display = 'flex';
 
     const setPair = (name, v) => {
-      const r = overlay.querySelector(`.gvf-${CSS.escape(name)}-range`);
-      const t = overlay.querySelector(`.gvf-${CSS.escape(name)}-val`);
+      const r = overlay.querySelector(`[data-gvf-range="${cssEscape(name)}"]`);
+      const t = overlay.querySelector(`[data-gvf-val="${cssEscape(name)}"]`);
       if (r) r.value = String(v);
       if (t) t.textContent = Number(v).toFixed(1);
     };
 
-    setPair('Contrast',        normU(u_contrast));
-    setPair('Black Level',     normU(u_black));
-    setPair('White Level',     normU(u_white));
-    setPair('Highlights',      normU(u_highlights));
-    setPair('Shadows',         normU(u_shadows));
-    setPair('Saturation',      normU(u_sat));
-    setPair('Vibrance',        normU(u_vib));
-    setPair('Sharpen',         normU(u_sharp));
-    setPair('Gamma',           normU(u_gamma));
-    setPair('Grain (Banding)', normU(u_grain));
-    setPair('Hue-Correction',  normU(u_hue));
+    setPair('U_CONTRAST',   normU(u_contrast));
+    setPair('U_BLACK',      normU(u_black));
+    setPair('U_WHITE',      normU(u_white));
+    setPair('U_HIGHLIGHTS', normU(u_highlights));
+    setPair('U_SHADOWS',    normU(u_shadows));
+    setPair('U_SAT',        normU(u_sat));
+    setPair('U_VIB',        normU(u_vib));
+    setPair('U_SHARP',      normU(u_sharp));
+    setPair('U_GAMMA',      normU(u_gamma));
+    setPair('U_GRAIN',      normU(u_grain));
+    setPair('U_HUE',        normU(u_hue));
   }
 
   function updateIOOverlayState(overlay) {
@@ -1361,12 +1484,10 @@
         updateMainOverlayState(oMain);
         if (iconsShown) positionOverlayAt(v, oMain, 10, 10);
       }
-
       if (oGr) {
         updateGradingOverlayState(oGr);
         if (gradingHudShown) positionOverlayAt(v, oGr, 10, 10 + 280);
       }
-
       if (oIO) {
         updateIOOverlayState(oIO);
         if (ioHudShown) positionOverlayAt(v, oIO, 10, 10 + 560);
@@ -1394,7 +1515,7 @@
   }
 
   // -------------------------
-  // SVG filter build
+  // SVG filter build (unchanged)
   // -------------------------
   function mkGamma(ch, amp, exp, off) {
     const f = document.createElementNS(svgNS, ch);
@@ -2022,65 +2143,50 @@
   // Global sync (tabs + sites)
   // -------------------------
   function listenGlobalSync() {
-    let syncScheduled = false;
-    let lastSyncMs = 0;
-
     const sync = () => {
-      const t = nowMs();
-      // debounce bursts (prevents rapid flip-flop loops)
-      if ((t - lastSyncMs) < 40) {
-        if (syncScheduled) return;
-        syncScheduled = true;
-        setTimeout(() => { syncScheduled = false; sync(); }, 60);
-        return;
+      _inSync = true;
+      try {
+        enabled    = !!gmGet(K.enabled, enabled);
+        darkMoody  = !!gmGet(K.moody, darkMoody);
+        tealOrange = !!gmGet(K.teal, tealOrange);
+        vibrantSat = !!gmGet(K.vib, vibrantSat);
+        iconsShown = !!gmGet(K.icons, iconsShown);
+
+        sl  = Number(gmGet(K.SL, sl));
+        sr  = Number(gmGet(K.SR, sr));
+        bl  = Number(gmGet(K.BL, bl));
+        wl  = Number(gmGet(K.WL, wl));
+        dn  = Number(gmGet(K.DN, dn));
+        hdr = Number(gmGet(K.HDR, hdr));
+
+        profile = String(gmGet(K.PROF, profile)).toLowerCase();
+        if (!['off','film','anime','gaming','user'].includes(profile)) profile = 'off';
+
+        gradingHudShown = !!gmGet(K.G_HUD, gradingHudShown);
+        ioHudShown      = !!gmGet(K.I_HUD, ioHudShown);
+
+        u_contrast   = Number(gmGet(K.U_CONTRAST, u_contrast));
+        u_black      = Number(gmGet(K.U_BLACK, u_black));
+        u_white      = Number(gmGet(K.U_WHITE, u_white));
+        u_highlights = Number(gmGet(K.U_HIGHLIGHTS, u_highlights));
+        u_shadows    = Number(gmGet(K.U_SHADOWS, u_shadows));
+        u_sat        = Number(gmGet(K.U_SAT, u_sat));
+        u_vib        = Number(gmGet(K.U_VIB, u_vib));
+        u_sharp      = Number(gmGet(K.U_SHARP, u_sharp));
+        u_gamma      = Number(gmGet(K.U_GAMMA, u_gamma));
+        u_grain      = Number(gmGet(K.U_GRAIN, u_grain));
+        u_hue        = Number(gmGet(K.U_HUE, u_hue));
+
+        autoOn       = !!gmGet(K.AUTO_ON, autoOn);
+        autoStrength = clamp(Number(gmGet(K.AUTO_STRENGTH, autoStrength)), 0, 1);
+        autoLockWB   = !!gmGet(K.AUTO_LOCK_WB, autoLockWB);
+
+        setAutoOn(autoOn);
+        applyFilter();
+        scheduleOverlayUpdate();
+      } finally {
+        _inSync = false;
       }
-      lastSyncMs = t;
-
-      const prevAuto = autoOn;
-
-      enabled    = !!gmGet(K.enabled, enabled);
-      darkMoody  = !!gmGet(K.moody, darkMoody);
-      tealOrange = !!gmGet(K.teal, tealOrange);
-      vibrantSat = !!gmGet(K.vib, vibrantSat);
-      iconsShown = !!gmGet(K.icons, iconsShown);
-
-      sl  = Number(gmGet(K.SL, sl));
-      sr  = Number(gmGet(K.SR, sr));
-      bl  = Number(gmGet(K.BL, bl));
-      wl  = Number(gmGet(K.WL, wl));
-      dn  = Number(gmGet(K.DN, dn));
-      hdr = Number(gmGet(K.HDR, hdr));
-
-      profile = String(gmGet(K.PROF, profile)).toLowerCase();
-      if (!['off','film','anime','gaming','user'].includes(profile)) profile = 'off';
-
-      gradingHudShown = !!gmGet(K.G_HUD, gradingHudShown);
-      ioHudShown      = !!gmGet(K.I_HUD, ioHudShown);
-
-      u_contrast   = Number(gmGet(K.U_CONTRAST, u_contrast));
-      u_black      = Number(gmGet(K.U_BLACK, u_black));
-      u_white      = Number(gmGet(K.U_WHITE, u_white));
-      u_highlights = Number(gmGet(K.U_HIGHLIGHTS, u_highlights));
-      u_shadows    = Number(gmGet(K.U_SHADOWS, u_shadows));
-      u_sat        = Number(gmGet(K.U_SAT, u_sat));
-      u_vib        = Number(gmGet(K.U_VIB, u_vib));
-      u_sharp      = Number(gmGet(K.U_SHARP, u_sharp));
-      u_gamma      = Number(gmGet(K.U_GAMMA, u_gamma));
-      u_grain      = Number(gmGet(K.U_GRAIN, u_grain));
-      u_hue        = Number(gmGet(K.U_HUE, u_hue));
-
-      autoStrength = clamp(Number(gmGet(K.AUTO_STRENGTH, autoStrength)), 0, 1);
-      autoLockWB   = !!gmGet(K.AUTO_LOCK_WB, autoLockWB);
-
-      const newAutoOn = !!gmGet(K.AUTO_ON, autoOn);
-
-      // only apply auto toggle if it ACTUALLY changed
-      if (newAutoOn !== prevAuto) {
-        setAutoOn(newAutoOn, { silent: true, force: true });
-      }
-
-      applyFilter();
-      scheduleOverlayUpdate();
     };
 
     Object.values(K).forEach(key => {
@@ -2092,7 +2198,7 @@
     const order = ['off', 'film', 'anime', 'gaming', 'user'];
     const cur = order.indexOf(profile);
     profile = order[(cur < 0 ? 0 : (cur + 1)) % order.length];
-    gmSetIfChanged(K.PROF, profile);
+    gmSet(K.PROF, profile);
     log('Profile cycled:', profile);
     applyFilter();
     scheduleOverlayUpdate();
@@ -2100,14 +2206,14 @@
 
   function toggleGradingHud() {
     gradingHudShown = !gradingHudShown;
-    gmSetIfChanged(K.G_HUD, gradingHudShown);
+    gmSet(K.G_HUD, gradingHudShown);
     logToggle('Grading HUD (Ctrl+Alt+G)', gradingHudShown);
     scheduleOverlayUpdate();
   }
 
   function toggleIOHud() {
     ioHudShown = !ioHudShown;
-    gmSetIfChanged(K.I_HUD, ioHudShown);
+    gmSet(K.I_HUD, ioHudShown);
     logToggle('IO HUD (Ctrl+Alt+I)', ioHudShown);
     scheduleOverlayUpdate();
   }
@@ -2116,34 +2222,35 @@
   // Init
   // -------------------------
   function init() {
-    sl  = normSL();  gmSetIfChanged(K.SL,  sl);
-    sr  = normSR();  gmSetIfChanged(K.SR,  sr);
-    bl  = normBL();  gmSetIfChanged(K.BL,  bl);
-    wl  = normWL();  gmSetIfChanged(K.WL,  wl);
-    dn  = normDN();  gmSetIfChanged(K.DN,  dn);
-    hdr = normHDR(); gmSetIfChanged(K.HDR, hdr);
-    if (hdr !== 0) gmSetIfChanged(K.HDR_LAST, hdr);
+    sl  = normSL();  gmSet(K.SL,  sl);
+    sr  = normSR();  gmSet(K.SR,  sr);
+    bl  = normBL();  gmSet(K.BL,  bl);
+    wl  = normWL();  gmSet(K.WL,  wl);
+    dn  = normDN();  gmSet(K.DN,  dn);
+    hdr = normHDR(); gmSet(K.HDR, hdr);
+    if (hdr !== 0) gmSet(K.HDR_LAST, hdr);
 
-    u_contrast   = normU(u_contrast);   gmSetIfChanged(K.U_CONTRAST, u_contrast);
-    u_black      = normU(u_black);      gmSetIfChanged(K.U_BLACK, u_black);
-    u_white      = normU(u_white);      gmSetIfChanged(K.U_WHITE, u_white);
-    u_highlights = normU(u_highlights); gmSetIfChanged(K.U_HIGHLIGHTS, u_highlights);
-    u_shadows    = normU(u_shadows);    gmSetIfChanged(K.U_SHADOWS, u_shadows);
-    u_sat        = normU(u_sat);        gmSetIfChanged(K.U_SAT, u_sat);
-    u_vib        = normU(u_vib);        gmSetIfChanged(K.U_VIB, u_vib);
-    u_sharp      = normU(u_sharp);      gmSetIfChanged(K.U_SHARP, u_sharp);
-    u_gamma      = normU(u_gamma);      gmSetIfChanged(K.U_GAMMA, u_gamma);
-    u_grain      = normU(u_grain);      gmSetIfChanged(K.U_GRAIN, u_grain);
-    u_hue        = normU(u_hue);        gmSetIfChanged(K.U_HUE, u_hue);
+    u_contrast   = normU(u_contrast);   gmSet(K.U_CONTRAST, u_contrast);
+    u_black      = normU(u_black);      gmSet(K.U_BLACK, u_black);
+    u_white      = normU(u_white);      gmSet(K.U_WHITE, u_white);
+    u_highlights = normU(u_highlights); gmSet(K.U_HIGHLIGHTS, u_highlights);
+    u_shadows    = normU(u_shadows);    gmSet(K.U_SHADOWS, u_shadows);
+    u_sat        = normU(u_sat);        gmSet(K.U_SAT, u_sat);
+    u_vib        = normU(u_vib);        gmSet(K.U_VIB, u_vib);
+    u_sharp      = normU(u_sharp);      gmSet(K.U_SHARP, u_sharp);
+    u_gamma      = normU(u_gamma);      gmSet(K.U_GAMMA, u_gamma);
+    u_grain      = normU(u_grain);      gmSet(K.U_GRAIN, u_grain);
+    u_hue        = normU(u_hue);        gmSet(K.U_HUE, u_hue);
 
-    gmSetIfChanged(K.G_HUD, gradingHudShown);
-    gmSetIfChanged(K.I_HUD, ioHudShown);
+    gmSet(K.G_HUD, gradingHudShown);
+    gmSet(K.I_HUD, ioHudShown);
 
     if (!['off','film','anime','gaming','user'].includes(profile)) profile = 'off';
-    gmSetIfChanged(K.PROF, profile);
+    gmSet(K.PROF, profile);
 
-    gmSetIfChanged(K.AUTO_STRENGTH, autoStrength);
-    gmSetIfChanged(K.AUTO_LOCK_WB, autoLockWB);
+    gmSet(K.AUTO_ON, autoOn);
+    gmSet(K.AUTO_STRENGTH, autoStrength);
+    gmSet(K.AUTO_LOCK_WB, autoLockWB);
 
     applyFilter();
     listenGlobalSync();
@@ -2152,7 +2259,7 @@
     primeAutoOnVideoActivity();
 
     ensureAutoLoop();
-    setAutoOn(autoOn, { silent: true, force: true });
+    setAutoOn(autoOn);
 
     log('Init complete.', {
       enabled, darkMoody, tealOrange, vibrantSat, iconsShown,
@@ -2192,11 +2299,11 @@
           hdr = clamp(last || 1.2, -1.0, 2.0);
           logToggle('HDR (Ctrl+Alt+P)', true, `value=${normHDR().toFixed(1)}`);
         } else {
-          gmSetIfChanged(K.HDR_LAST, cur);
+          gmSet(K.HDR_LAST, cur);
           hdr = 0;
           logToggle('HDR (Ctrl+Alt+P)', false);
         }
-        gmSetIfChanged(K.HDR, normHDR());
+        gmSet(K.HDR, normHDR());
         applyFilter();
         return;
       }
@@ -2209,11 +2316,11 @@
 
       if (!(e.ctrlKey && e.altKey) || e.shiftKey) return;
 
-      if (k === HK.base)  { enabled = !enabled;       gmSetIfChanged(K.enabled, enabled);   e.preventDefault(); logToggle('Base (Ctrl+Alt+B)', enabled); applyFilter(); return; }
-      if (k === HK.moody) { darkMoody = !darkMoody;   gmSetIfChanged(K.moody, darkMoody);   e.preventDefault(); logToggle('Dark&Moody (Ctrl+Alt+D)', darkMoody); applyFilter(); return; }
-      if (k === HK.teal)  { tealOrange = !tealOrange; gmSetIfChanged(K.teal, tealOrange);   e.preventDefault(); logToggle('Teal&Orange (Ctrl+Alt+O)', tealOrange); applyFilter(); return; }
-      if (k === HK.vib)   { vibrantSat = !vibrantSat; gmSetIfChanged(K.vib, vibrantSat);    e.preventDefault(); logToggle('Vibrant (Ctrl+Alt+V)', vibrantSat); applyFilter(); return; }
-      if (k === HK.icons) { iconsShown = !iconsShown; gmSetIfChanged(K.icons, iconsShown);  e.preventDefault(); logToggle('Overlay Icons (Ctrl+Alt+H)', iconsShown); scheduleOverlayUpdate(); return; }
+      if (k === HK.base)  { enabled = !enabled;       gmSet(K.enabled, enabled);   e.preventDefault(); logToggle('Base (Ctrl+Alt+B)', enabled); applyFilter(); return; }
+      if (k === HK.moody) { darkMoody = !darkMoody;   gmSet(K.moody, darkMoody);   e.preventDefault(); logToggle('Dark&Moody (Ctrl+Alt+D)', darkMoody); applyFilter(); return; }
+      if (k === HK.teal)  { tealOrange = !tealOrange; gmSet(K.teal, tealOrange);   e.preventDefault(); logToggle('Teal&Orange (Ctrl+Alt+O)', tealOrange); applyFilter(); return; }
+      if (k === HK.vib)   { vibrantSat = !vibrantSat; gmSet(K.vib, vibrantSat);    e.preventDefault(); logToggle('Vibrant (Ctrl+Alt+V)', vibrantSat); applyFilter(); return; }
+      if (k === HK.icons) { iconsShown = !iconsShown; gmSet(K.icons, iconsShown);  e.preventDefault(); logToggle('Overlay Icons (Ctrl+Alt+H)', iconsShown); scheduleOverlayUpdate(); return; }
     });
 
     window.addEventListener('scroll', scheduleOverlayUpdate, { passive: true });
