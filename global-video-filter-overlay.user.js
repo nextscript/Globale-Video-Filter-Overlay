@@ -3,7 +3,7 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.1.7
+// @version      1.1.8
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
@@ -13,8 +13,8 @@
 // @grant        GM_addValueChangeListener
 // @grant        GM_info
 // @iconURL      https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/logomes.png
-// @downloadURL  https://update.greasyfork.org/scripts/561189/Global%20Video%20Filter%20Overlay.user.js
-// @updateURL    https://update.greasyfork.org/scripts/561189/Global%20Video%20Filter%20Overlay.meta.js
+// @downloadURL https://update.greasyfork.org/scripts/561189/Global%20Video%20Filter%20Overlay.user.js
+// @updateURL https://update.greasyfork.org/scripts/561189/Global%20Video%20Filter%20Overlay.meta.js
 // ==/UserScript==
 
 (function () {
@@ -136,8 +136,161 @@
     return document.querySelector('video');
   }
 
+  // ---------- Filter capture helpers (bake *applied* filters into canvas) ----------
+  function getAppliedCssFilterString(video) {
+    // We can bake CSS filters like brightness/contrast/saturate/hue-rotate into canvas ctx.filter.
+    // BUT url("#svg") cannot be applied to canvas -> strip it and keep the rest.
+    try {
+      const cs = window.getComputedStyle(video);
+      let f = String(cs.filter || '').trim();
+      if (!f || f === 'none') return '';
+      // remove url(...) parts
+      f = f.replace(/url\([^)]+\)/g, '').replace(/\s+/g, ' ').trim();
+      if (!f || f === 'none') return '';
+      return f;
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function canBakeToCanvas(video) {
+    // Quick taint/DRM/cross-origin test: draw + getImageData. If it throws -> blocked.
+    try {
+      const w = Math.max(2, video.videoWidth || 0);
+      const h = Math.max(2, video.videoHeight || 0);
+      if (!w || !h) return { ok: false, reason: 'Video not ready.' };
+
+      const c = document.createElement('canvas');
+      c.width = 2; c.height = 2;
+      const ctx = c.getContext('2d');
+      ctx.drawImage(video, 0, 0, 2, 2);
+      ctx.getImageData(0, 0, 1, 1);
+      return { ok: true, reason: '' };
+    } catch (_) {
+      return { ok: false, reason: 'Blocked (DRM/cross-origin).' };
+    }
+  }
+
+  // ---------- Canvas pipeline for recording (stable + filtered) ----------
+  const REC_PIPE = {
+    active: false,
+    v: null,
+    canvas: null,
+    ctx: null,
+    raf: 0,
+    stream: null,
+    lastDraw: 0,
+    fps: 60,
+    audioTracks: [],
+    stopFn: null
+  };
+
+  function stopCanvasRecorderPipeline() {
+    try { if (REC_PIPE.raf) cancelAnimationFrame(REC_PIPE.raf); } catch (_) {}
+    REC_PIPE.raf = 0;
+
+    try { REC_PIPE.audioTracks.forEach(t => { try { t.stop(); } catch (_) {} }); } catch (_) {}
+    REC_PIPE.audioTracks = [];
+
+    try {
+      if (REC_PIPE.stream) {
+        REC_PIPE.stream.getTracks().forEach(t => { try { t.stop(); } catch (_) {} });
+      }
+    } catch (_) {}
+
+    REC_PIPE.active = false;
+    REC_PIPE.v = null;
+    REC_PIPE.stream = null;
+    REC_PIPE.canvas = null;
+    REC_PIPE.ctx = null;
+    REC_PIPE.lastDraw = 0;
+    REC_PIPE.stopFn = null;
+  }
+
+  function startCanvasRecorderPipeline(video, statusEl) {
+    const w = Math.max(2, video.videoWidth || 0);
+    const h = Math.max(2, video.videoHeight || 0);
+    if (!w || !h) return null;
+
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+
+    const ctx = c.getContext('2d', { alpha: false, desynchronized: true });
+    if (!ctx) return null;
+
+    ctx.imageSmoothingEnabled = true;
+    try { ctx.imageSmoothingQuality = 'high'; } catch (_) {}
+
+    const cssFilter = getAppliedCssFilterString(video);
+
+    const draw = (t) => {
+      if (!REC_PIPE.active) return;
+
+      // keep a stable frame pacing
+      const dt = t - (REC_PIPE.lastDraw || 0);
+      const minDt = 1000 / Math.max(10, REC_PIPE.fps);
+      if (dt < (minDt * 0.55)) {
+        REC_PIPE.raf = requestAnimationFrame(draw);
+        return;
+      }
+      REC_PIPE.lastDraw = t;
+
+      try {
+        ctx.save();
+        ctx.filter = cssFilter || 'none';
+        ctx.drawImage(video, 0, 0, w, h);
+        ctx.restore();
+      } catch (e) {
+        // if it becomes tainted mid-way, stop nicely
+        if (statusEl) statusEl.textContent = 'Recording stopped: blocked (DRM/cross-origin).';
+        try { REC.stopRequested = true; REC.mr && REC.mr.stop(); } catch (_) {}
+        return;
+      }
+
+      REC_PIPE.raf = requestAnimationFrame(draw);
+    };
+
+    // Capture stream from canvas (filtered)
+    let stream = null;
+    try {
+      stream = c.captureStream(REC_PIPE.fps);
+    } catch (_) {
+      return null;
+    }
+
+    // Try to attach audio from the original video (if allowed)
+    let audioTracks = [];
+    try {
+      const vs = (video.captureStream && video.captureStream()) || (video.mozCaptureStream && video.mozCaptureStream());
+      if (vs) audioTracks = vs.getAudioTracks ? vs.getAudioTracks() : [];
+    } catch (_) {}
+
+    try {
+      (audioTracks || []).forEach(at => {
+        try {
+          stream.addTrack(at);
+          REC_PIPE.audioTracks.push(at);
+        } catch (_) {}
+      });
+    } catch (_) {}
+
+    REC_PIPE.active = true;
+    REC_PIPE.v = video;
+    REC_PIPE.canvas = c;
+    REC_PIPE.ctx = ctx;
+    REC_PIPE.stream = stream;
+    REC_PIPE.lastDraw = 0;
+
+    REC_PIPE.raf = requestAnimationFrame(draw);
+
+    return stream;
+  }
+
+  // ---------- Robust recorder (FIX: file not opening) ----------
   const REC = {
     active: false,
+    stopRequested: false,
     mr: null,
     chunks: [],
     v: null,
@@ -145,22 +298,53 @@
     ext: 'webm'
   };
 
-  function pickRecorderMime() {
-    const cand = [
+  function pickRecorderMime(hasAudio) {
+    // Prefer MP4 if browser supports it (best compatibility on Windows).
+    const mp4Audio = [
+      'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+      'video/mp4;codecs=avc1.4D401E,mp4a.40.2',
+      'video/mp4'
+    ];
+    const webmAudio = [
       'video/webm;codecs=vp9,opus',
       'video/webm;codecs=vp8,opus',
       'video/webm;codecs=vp9',
       'video/webm;codecs=vp8',
-      'video/webm',
-      'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+      'video/webm'
+    ];
+    const mp4NoAudio = [
+      'video/mp4;codecs=avc1.42E01E',
+      'video/mp4;codecs=avc1.4D401E',
       'video/mp4'
     ];
-    for (const m of cand) {
+    const webmNoAudio = [
+      'video/webm;codecs=vp9',
+      'video/webm;codecs=vp8',
+      'video/webm'
+    ];
+
+    const cands = hasAudio ? [...mp4Audio, ...webmAudio] : [...mp4NoAudio, ...webmNoAudio];
+
+    for (const m of cands) {
       try {
         if (window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) return m;
       } catch (_) {}
     }
     return '';
+  }
+
+  function getExtFromMime(mime) {
+    const m = String(mime || '').toLowerCase();
+    if (m.includes('video/mp4')) return 'mp4';
+    return 'webm';
+  }
+
+  function safeBlobTypeFromRecorder(mr, fallback) {
+    try {
+      const mt = (mr && mr.mimeType) ? String(mr.mimeType) : '';
+      if (mt) return mt;
+    } catch (_) {}
+    return fallback || 'video/webm';
   }
 
   async function takeVideoScreenshot(statusEl) {
@@ -171,13 +355,27 @@
     const h = Math.max(2, v.videoHeight || 0);
     if (!w || !h) { if (statusEl) statusEl.textContent = 'Video not ready.'; return; }
 
+    // DRM / cross-origin check (and ensures we can bake filters)
+    const chk = canBakeToCanvas(v);
+    if (!chk.ok) { if (statusEl) statusEl.textContent = `Screenshot blocked: ${chk.reason}`; return; }
+
     const c = document.createElement('canvas');
     c.width = w;
     c.height = h;
-    const ctx = c.getContext('2d');
+    const ctx = c.getContext('2d', { alpha: false, desynchronized: true });
+    if (!ctx) { if (statusEl) statusEl.textContent = 'Canvas unavailable.'; return; }
 
+    ctx.imageSmoothingEnabled = true;
+    try { ctx.imageSmoothingQuality = 'high'; } catch (_) {}
+
+    const cssFilter = getAppliedCssFilterString(v);
     try {
+      ctx.save();
+      ctx.filter = cssFilter || 'none';
       ctx.drawImage(v, 0, 0, w, h);
+      ctx.restore();
+      // touch pixels so taint is caught now, not during toBlob
+      ctx.getImageData(0, 0, 1, 1);
     } catch (_) {
       if (statusEl) statusEl.textContent = 'Screenshot blocked (cross-origin/DRM).';
       return;
@@ -192,37 +390,100 @@
   }
 
   async function toggleVideoRecord(statusEl, btnEl) {
+    // STOP (FIX: flush last chunk before stopping)
     if (REC.active) {
-      try { REC.mr && REC.mr.stop(); } catch (_) {}
+      try {
+        REC.stopRequested = true;
+
+        if (btnEl) {
+          btnEl.textContent = 'Stopping...';
+          btnEl.disabled = true;
+          btnEl.style.opacity = '0.6';
+          btnEl.style.cursor = 'not-allowed';
+        }
+        if (statusEl) statusEl.textContent = 'Finalizing recording...';
+
+        if (REC.mr && REC.mr.state === 'recording') {
+          try { REC.mr.requestData(); } catch (_) {}
+          setTimeout(() => {
+            try { REC.mr.stop(); } catch (_) {}
+          }, 700);
+        } else {
+          try { REC.mr && REC.mr.stop(); } catch (_) {}
+        }
+      } catch (_) {}
       return;
     }
 
     const v = getActiveVideoForCapture();
     if (!v) { if (statusEl) statusEl.textContent = 'No video found.'; return; }
 
-    const cap = (v.captureStream && v.captureStream()) || (v.mozCaptureStream && v.mozCaptureStream());
-    if (!cap) { if (statusEl) statusEl.textContent = 'Recording not supported (captureStream missing).'; return; }
+    // DRM/cross-origin check: if we cannot draw, disable capture (requested behavior)
+    const chk = canBakeToCanvas(v);
+    if (!chk.ok) {
+      if (statusEl) statusEl.textContent = `Recording disabled: ${chk.reason}`;
+      if (btnEl) {
+        btnEl.disabled = true;
+        btnEl.textContent = 'DRM blocked';
+        btnEl.style.opacity = '0.55';
+        btnEl.style.cursor = 'not-allowed';
+      }
+      return;
+    }
 
-    const mime = pickRecorderMime();
-    if (!mime) { if (statusEl) statusEl.textContent = 'MediaRecorder not supported.'; return; }
+    if (!window.MediaRecorder) {
+      if (statusEl) statusEl.textContent = 'MediaRecorder not supported.';
+      return;
+    }
 
-    const ext = mime.startsWith('video/mp4') ? 'mp4' : 'webm';
+    // Build filtered canvas stream (better quality + applied filters)
+    const filteredStream = startCanvasRecorderPipeline(v, statusEl);
+    if (!filteredStream) {
+      if (statusEl) statusEl.textContent = 'Recording not supported (canvas capture failed).';
+      return;
+    }
+
+    const hasAudio = (() => {
+      try { return filteredStream.getAudioTracks && filteredStream.getAudioTracks().length > 0; } catch (_) {}
+      return false;
+    })();
+
+    const mime = pickRecorderMime(hasAudio);
+    if (!mime) {
+      stopCanvasRecorderPipeline();
+      if (statusEl) statusEl.textContent = 'No supported recording format (mp4/webm).';
+      return;
+    }
+
+    const ext = getExtFromMime(mime);
 
     REC.active = true;
+    REC.stopRequested = false;
     REC.v = v;
     REC.mime = mime;
     REC.ext = ext;
     REC.chunks = [];
 
-    if (btnEl) btnEl.textContent = 'Stop Record';
-    if (statusEl) statusEl.textContent = `Recording... (${ext.toUpperCase()}${ext === 'mp4' ? '' : ' (mp4 not supported → webm)'})`;
+    if (btnEl) {
+      btnEl.disabled = false;
+      btnEl.textContent = 'Stop Record';
+      btnEl.style.opacity = '1';
+      btnEl.style.cursor = 'pointer';
+    }
+    if (statusEl) statusEl.textContent = `Recording... (${ext.toUpperCase()}${hasAudio ? '' : ' (no audio)'})`;
 
     let mr;
     try {
-      mr = new MediaRecorder(cap, mime ? { mimeType: mime } : undefined);
+      const opts = {
+        mimeType: mime,
+        videoBitsPerSecond: 12_000_000,
+        audioBitsPerSecond: 160_000
+      };
+      mr = new MediaRecorder(filteredStream, opts);
     } catch (_) {
+      stopCanvasRecorderPipeline();
       REC.active = false;
-      if (btnEl) btnEl.textContent = 'Record MP4';
+      if (btnEl) btnEl.textContent = 'Record';
       if (statusEl) statusEl.textContent = 'Recorder init failed.';
       return;
     }
@@ -233,23 +494,61 @@
       if (ev && ev.data && ev.data.size > 0) REC.chunks.push(ev.data);
     };
 
-    mr.onerror = () => { try { mr.stop(); } catch (_) {} };
-
-    mr.onstop = () => {
-      const blob = new Blob(REC.chunks, { type: REC.mime || 'video/webm' });
-      const name = tsName('gvf_record', REC.ext);
-      dlBlob(blob, name);
-
-      REC.active = false;
-      REC.mr = null;
-      REC.chunks = [];
-      REC.v = null;
-
-      if (btnEl) btnEl.textContent = 'Record MP4';
-      if (statusEl) statusEl.textContent = `Saved: ${name}`;
+    mr.onerror = () => {
+      try { mr.stop(); } catch (_) {}
     };
 
-    try { mr.start(1000); } catch (_) { try { mr.start(); } catch (__) {} }
+    mr.onstop = () => {
+      // FIX: wait a tick so the final dataavailable can land in REC.chunks
+      setTimeout(() => {
+        try {
+          const type = safeBlobTypeFromRecorder(mr, (REC.ext === 'mp4' ? 'video/mp4' : 'video/webm'));
+          const blob = new Blob(REC.chunks, { type });
+
+          if (!blob || blob.size < 50_000) {
+            if (statusEl) statusEl.textContent = 'Save failed (empty/too small). DRM/cross-origin or tab slept.';
+          } else {
+            const name = tsName('gvf_record', REC.ext);
+            dlBlob(blob, name);
+
+            if (statusEl) {
+              const note = (REC.ext === 'webm')
+                ? 'Saved (WebM). If Windows player refuses: open with VLC.'
+                : 'Saved (MP4).';
+              statusEl.textContent = `Saved: ${name} — ${note}`;
+            }
+          }
+        } catch (e) {
+          if (statusEl) statusEl.textContent = 'Save failed.';
+        }
+
+        stopCanvasRecorderPipeline();
+
+        REC.active = false;
+        REC.mr = null;
+        REC.chunks = [];
+        REC.v = null;
+        REC.mime = '';
+        REC.ext = 'webm';
+        REC.stopRequested = false;
+
+        if (btnEl) {
+          btnEl.disabled = false;
+          btnEl.style.opacity = '1';
+          btnEl.style.cursor = 'pointer';
+          btnEl.textContent = 'Record';
+        }
+      }, 250);
+    };
+
+    // FIX: no timeslice → more compatible final file
+    try {
+      mr.start();
+    } catch (_) {
+      stopCanvasRecorderPipeline();
+      if (statusEl) statusEl.textContent = 'Recorder start failed.';
+      try { mr.stop(); } catch (__) {}
+    }
   }
 
   // -------------------------
@@ -1012,7 +1311,11 @@
     const btnExportFile = mkBtn('Export .json');
     const btnImportFile = mkBtn('Import .json');
     const btnShot       = mkBtn('Screenshot');
-    const btnRec        = mkBtn('Record MP4');
+    const btnRec        = mkBtn('Record');
+
+    // store refs for state updates
+    overlay.__btnRec = btnRec;
+    overlay.__status = status;
 
     const fileInput = document.createElement('input');
     fileInput.type = 'file';
@@ -1112,7 +1415,12 @@
     });
 
     btnShot.addEventListener('click', async () => { await takeVideoScreenshot(status); });
-    btnRec.addEventListener('click', async () => { await toggleVideoRecord(status, btnRec); });
+
+    btnRec.addEventListener('click', async () => {
+      // If disabled (DRM), do nothing
+      if (btnRec.disabled) return;
+      await toggleVideoRecord(status, btnRec);
+    });
 
     row.appendChild(btnRefresh);
     row.appendChild(btnSave);
@@ -1341,6 +1649,37 @@
   function updateIOOverlayState(overlay) {
     if (!ioHudShown) { overlay.style.display = 'none'; return; }
     overlay.style.display = 'flex';
+
+    // Update DRM/record state button
+    try {
+      const btnRec = overlay.__btnRec;
+      const status = overlay.__status;
+      if (btnRec && !REC.active) {
+        const v = getActiveVideoForCapture();
+        if (!v) {
+          btnRec.disabled = true;
+          btnRec.textContent = 'No video';
+          btnRec.style.opacity = '0.55';
+          btnRec.style.cursor = 'not-allowed';
+        } else {
+          const chk = canBakeToCanvas(v);
+          if (!chk.ok) {
+            btnRec.disabled = true;
+            btnRec.textContent = 'DRM blocked';
+            btnRec.style.opacity = '0.55';
+            btnRec.style.cursor = 'not-allowed';
+            if (status && status.textContent === 'Tip: paste JSON here → Save') {
+              status.textContent = `Recording disabled: ${chk.reason}`;
+            }
+          } else {
+            btnRec.disabled = false;
+            btnRec.textContent = 'Record';
+            btnRec.style.opacity = '1';
+            btnRec.style.cursor = 'pointer';
+          }
+        }
+      }
+    } catch (_) {}
 
     const ta = overlay.querySelector('.gvf-io-text');
     if (!ta) return;
