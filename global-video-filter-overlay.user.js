@@ -3,7 +3,7 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.1.5
+// @version      1.1.6
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
@@ -95,6 +95,19 @@
 
   const gmGet = (key, fallback) => { try { return GM_getValue(key, fallback); } catch (_) { return fallback; } };
   const gmSet = (key, val) => { try { GM_setValue(key, val); } catch (_) {} };
+
+  // IMPORTANT FIX: only write if changed (prevents ping-pong via valueChangeListener)
+  const gmSetIfChanged = (key, val) => {
+    try {
+      const cur = GM_getValue(key, Symbol('gvf_undef'));
+      if (cur === val) return false;
+      GM_setValue(key, val);
+      return true;
+    } catch (_) {
+      try { GM_setValue(key, val); } catch (__) {}
+      return true;
+    }
+  };
 
   const nowMs = () => (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
 
@@ -236,20 +249,17 @@
   }
 
   function getVideoRect(v) {
-    // Firefox sometimes returns 0x0 rect early; fallback to offset sizes.
     try {
       const r = v.getBoundingClientRect();
       if (r && r.width > 0 && r.height > 0) return r;
     } catch (_) {}
     const w = (v.offsetWidth  || 0);
     const h = (v.offsetHeight || 0);
-    // fabricate rect-ish
     return { top: 0, left: 0, right: w, bottom: h, width: w, height: h };
   }
 
   function isPlayableCandidate(v) {
     if (!v) return false;
-    // readyState is unreliable with MSE in some Firefox builds; trust videoWidth/Height more.
     const hasDecoded = (v.videoWidth > 0 && v.videoHeight > 0);
     const hasTime = (Number.isFinite(v.currentTime) && v.currentTime > 0) || (Number.isFinite(v.duration) && v.duration > 0);
     const hasData = hasDecoded || hasTime || (v.readyState >= 1);
@@ -276,9 +286,8 @@
         const area = r.width * r.height;
 
         const inView = !(r.bottom < 0 || r.right < 0 || r.top > (window.innerHeight||0) || r.left > (window.innerWidth||0));
-        const playing = (!v.paused && !v.seeking); // paused is allowed, just less preferred
+        const playing = (!v.paused && !v.seeking);
 
-        // prefer: big + in viewport + playing
         const score = area
           * (inView ? 1.25 : 0.90)
           * (playing ? 1.20 : 1.00);
@@ -421,7 +430,6 @@
     applyFilter({ skipSvgIfPossible: true });
   }
 
-  // -------- FIX (Firefox): wake analyzer when video starts --------
   function primeAutoOnVideoActivity() {
     try {
       document.addEventListener('play', () => {
@@ -440,7 +448,6 @@
       }, true);
     } catch (_) {}
   }
-  // -------- END FIX --------
 
   function ensureAutoLoop() {
     if (AUTO.running) return;
@@ -527,11 +534,23 @@
     scheduleNext(AUTO.baseFps);
   }
 
-  function setAutoOn(on) {
-    autoOn = !!on;
-    gmSet(K.AUTO_ON, autoOn);
+  // FIX: avoid thrash / ping-pong (only act on real change)
+  function setAutoOn(on, meta = {}) {
+    const next = !!on;
+    if (next === autoOn && !meta.force) {
+      // still update overlays; but do NOT write storage again
+      scheduleOverlayUpdate();
+      return;
+    }
 
-    logToggle('Auto Scene Match (Ctrl+Alt+A)', autoOn, `(strength=${autoStrength.toFixed(2)}, lockWB=${autoLockWB ? 'yes' : 'no'})`);
+    autoOn = next;
+
+    // only write if changed (prevents listener ping-pong)
+    gmSetIfChanged(K.AUTO_ON, autoOn);
+
+    if (!meta.silent) {
+      logToggle('Auto Scene Match (Ctrl+Alt+A)', autoOn, `(strength=${autoStrength.toFixed(2)}, lockWB=${autoLockWB ? 'yes' : 'no'})`);
+    }
 
     if (!autoOn) {
       AUTO.lastSig = null;
@@ -667,8 +686,8 @@
         rng.value = String(getVal());
         val.textContent = fmt(getVal());
 
-        gmSet(gmKey, getVal());
-        if (gmKey === K.HDR && getVal() !== 0) gmSet(K.HDR_LAST, getVal());
+        gmSetIfChanged(gmKey, getVal());
+        if (gmKey === K.HDR && getVal() !== 0) gmSetIfChanged(K.HDR_LAST, getVal());
 
         applyFilter();
       });
@@ -751,7 +770,7 @@
         keySet(v);
         rng.value = String(keyGet());
         val.textContent = Number(keyGet()).toFixed(1);
-        gmSet(gmKey, keyGet());
+        gmSetIfChanged(gmKey, keyGet());
         applyFilter();
         scheduleOverlayUpdate();
       });
@@ -1077,41 +1096,41 @@
     if ('grain'      in u) u_grain      = normU(u.grain);
     if ('hue'        in u) u_hue        = normU(u.hue);
 
-    gmSet(K.enabled, enabled);
-    gmSet(K.moody, darkMoody);
-    gmSet(K.teal, tealOrange);
-    gmSet(K.vib, vibrantSat);
-    gmSet(K.icons, iconsShown);
+    gmSetIfChanged(K.enabled, enabled);
+    gmSetIfChanged(K.moody, darkMoody);
+    gmSetIfChanged(K.teal, tealOrange);
+    gmSetIfChanged(K.vib, vibrantSat);
+    gmSetIfChanged(K.icons, iconsShown);
 
-    sl = normSL(); gmSet(K.SL, sl);
-    sr = normSR(); gmSet(K.SR, sr);
-    bl = normBL(); gmSet(K.BL, bl);
-    wl = normWL(); gmSet(K.WL, wl);
-    dn = normDN(); gmSet(K.DN, dn);
+    sl = normSL(); gmSetIfChanged(K.SL, sl);
+    sr = normSR(); gmSetIfChanged(K.SR, sr);
+    bl = normBL(); gmSetIfChanged(K.BL, bl);
+    wl = normWL(); gmSetIfChanged(K.WL, wl);
+    dn = normDN(); gmSetIfChanged(K.DN, dn);
 
-    hdr = normHDR(); gmSet(K.HDR, hdr);
-    if (hdr !== 0) gmSet(K.HDR_LAST, hdr);
+    hdr = normHDR(); gmSetIfChanged(K.HDR, hdr);
+    if (hdr !== 0) gmSetIfChanged(K.HDR_LAST, hdr);
 
-    gmSet(K.PROF, profile);
-    gmSet(K.G_HUD, gradingHudShown);
+    gmSetIfChanged(K.PROF, profile);
+    gmSetIfChanged(K.G_HUD, gradingHudShown);
 
-    gmSet(K.U_CONTRAST, u_contrast);
-    gmSet(K.U_BLACK, u_black);
-    gmSet(K.U_WHITE, u_white);
-    gmSet(K.U_HIGHLIGHTS, u_highlights);
-    gmSet(K.U_SHADOWS, u_shadows);
-    gmSet(K.U_SAT, u_sat);
-    gmSet(K.U_VIB, u_vib);
-    gmSet(K.U_SHARP, u_sharp);
-    gmSet(K.U_GAMMA, u_gamma);
-    gmSet(K.U_GRAIN, u_grain);
-    gmSet(K.U_HUE, u_hue);
+    gmSetIfChanged(K.U_CONTRAST, u_contrast);
+    gmSetIfChanged(K.U_BLACK, u_black);
+    gmSetIfChanged(K.U_WHITE, u_white);
+    gmSetIfChanged(K.U_HIGHLIGHTS, u_highlights);
+    gmSetIfChanged(K.U_SHADOWS, u_shadows);
+    gmSetIfChanged(K.U_SAT, u_sat);
+    gmSetIfChanged(K.U_VIB, u_vib);
+    gmSetIfChanged(K.U_SHARP, u_sharp);
+    gmSetIfChanged(K.U_GAMMA, u_gamma);
+    gmSetIfChanged(K.U_GRAIN, u_grain);
+    gmSetIfChanged(K.U_HUE, u_hue);
 
-    gmSet(K.AUTO_ON, autoOn);
-    gmSet(K.AUTO_STRENGTH, autoStrength);
-    gmSet(K.AUTO_LOCK_WB, autoLockWB);
+    gmSetIfChanged(K.AUTO_ON, autoOn);
+    gmSetIfChanged(K.AUTO_STRENGTH, autoStrength);
+    gmSetIfChanged(K.AUTO_LOCK_WB, autoLockWB);
 
-    setAutoOn(autoOn);
+    setAutoOn(autoOn, { silent: true, force: true });
     applyFilter();
     scheduleOverlayUpdate();
     return true;
@@ -2003,7 +2022,22 @@
   // Global sync (tabs + sites)
   // -------------------------
   function listenGlobalSync() {
+    let syncScheduled = false;
+    let lastSyncMs = 0;
+
     const sync = () => {
+      const t = nowMs();
+      // debounce bursts (prevents rapid flip-flop loops)
+      if ((t - lastSyncMs) < 40) {
+        if (syncScheduled) return;
+        syncScheduled = true;
+        setTimeout(() => { syncScheduled = false; sync(); }, 60);
+        return;
+      }
+      lastSyncMs = t;
+
+      const prevAuto = autoOn;
+
       enabled    = !!gmGet(K.enabled, enabled);
       darkMoody  = !!gmGet(K.moody, darkMoody);
       tealOrange = !!gmGet(K.teal, tealOrange);
@@ -2035,11 +2069,16 @@
       u_grain      = Number(gmGet(K.U_GRAIN, u_grain));
       u_hue        = Number(gmGet(K.U_HUE, u_hue));
 
-      autoOn       = !!gmGet(K.AUTO_ON, autoOn);
       autoStrength = clamp(Number(gmGet(K.AUTO_STRENGTH, autoStrength)), 0, 1);
       autoLockWB   = !!gmGet(K.AUTO_LOCK_WB, autoLockWB);
 
-      setAutoOn(autoOn);
+      const newAutoOn = !!gmGet(K.AUTO_ON, autoOn);
+
+      // only apply auto toggle if it ACTUALLY changed
+      if (newAutoOn !== prevAuto) {
+        setAutoOn(newAutoOn, { silent: true, force: true });
+      }
+
       applyFilter();
       scheduleOverlayUpdate();
     };
@@ -2053,7 +2092,7 @@
     const order = ['off', 'film', 'anime', 'gaming', 'user'];
     const cur = order.indexOf(profile);
     profile = order[(cur < 0 ? 0 : (cur + 1)) % order.length];
-    gmSet(K.PROF, profile);
+    gmSetIfChanged(K.PROF, profile);
     log('Profile cycled:', profile);
     applyFilter();
     scheduleOverlayUpdate();
@@ -2061,14 +2100,14 @@
 
   function toggleGradingHud() {
     gradingHudShown = !gradingHudShown;
-    gmSet(K.G_HUD, gradingHudShown);
+    gmSetIfChanged(K.G_HUD, gradingHudShown);
     logToggle('Grading HUD (Ctrl+Alt+G)', gradingHudShown);
     scheduleOverlayUpdate();
   }
 
   function toggleIOHud() {
     ioHudShown = !ioHudShown;
-    gmSet(K.I_HUD, ioHudShown);
+    gmSetIfChanged(K.I_HUD, ioHudShown);
     logToggle('IO HUD (Ctrl+Alt+I)', ioHudShown);
     scheduleOverlayUpdate();
   }
@@ -2077,45 +2116,43 @@
   // Init
   // -------------------------
   function init() {
-    sl  = normSL();  gmSet(K.SL,  sl);
-    sr  = normSR();  gmSet(K.SR,  sr);
-    bl  = normBL();  gmSet(K.BL,  bl);
-    wl  = normWL();  gmSet(K.WL,  wl);
-    dn  = normDN();  gmSet(K.DN,  dn);
-    hdr = normHDR(); gmSet(K.HDR, hdr);
-    if (hdr !== 0) gmSet(K.HDR_LAST, hdr);
+    sl  = normSL();  gmSetIfChanged(K.SL,  sl);
+    sr  = normSR();  gmSetIfChanged(K.SR,  sr);
+    bl  = normBL();  gmSetIfChanged(K.BL,  bl);
+    wl  = normWL();  gmSetIfChanged(K.WL,  wl);
+    dn  = normDN();  gmSetIfChanged(K.DN,  dn);
+    hdr = normHDR(); gmSetIfChanged(K.HDR, hdr);
+    if (hdr !== 0) gmSetIfChanged(K.HDR_LAST, hdr);
 
-    u_contrast   = normU(u_contrast);   gmSet(K.U_CONTRAST, u_contrast);
-    u_black      = normU(u_black);      gmSet(K.U_BLACK, u_black);
-    u_white      = normU(u_white);      gmSet(K.U_WHITE, u_white);
-    u_highlights = normU(u_highlights); gmSet(K.U_HIGHLIGHTS, u_highlights);
-    u_shadows    = normU(u_shadows);    gmSet(K.U_SHADOWS, u_shadows);
-    u_sat        = normU(u_sat);        gmSet(K.U_SAT, u_sat);
-    u_vib        = normU(u_vib);        gmSet(K.U_VIB, u_vib);
-    u_sharp      = normU(u_sharp);      gmSet(K.U_SHARP, u_sharp);
-    u_gamma      = normU(u_gamma);      gmSet(K.U_GAMMA, u_gamma);
-    u_grain      = normU(u_grain);      gmSet(K.U_GRAIN, u_grain);
-    u_hue        = normU(u_hue);        gmSet(K.U_HUE, u_hue);
+    u_contrast   = normU(u_contrast);   gmSetIfChanged(K.U_CONTRAST, u_contrast);
+    u_black      = normU(u_black);      gmSetIfChanged(K.U_BLACK, u_black);
+    u_white      = normU(u_white);      gmSetIfChanged(K.U_WHITE, u_white);
+    u_highlights = normU(u_highlights); gmSetIfChanged(K.U_HIGHLIGHTS, u_highlights);
+    u_shadows    = normU(u_shadows);    gmSetIfChanged(K.U_SHADOWS, u_shadows);
+    u_sat        = normU(u_sat);        gmSetIfChanged(K.U_SAT, u_sat);
+    u_vib        = normU(u_vib);        gmSetIfChanged(K.U_VIB, u_vib);
+    u_sharp      = normU(u_sharp);      gmSetIfChanged(K.U_SHARP, u_sharp);
+    u_gamma      = normU(u_gamma);      gmSetIfChanged(K.U_GAMMA, u_gamma);
+    u_grain      = normU(u_grain);      gmSetIfChanged(K.U_GRAIN, u_grain);
+    u_hue        = normU(u_hue);        gmSetIfChanged(K.U_HUE, u_hue);
 
-    gmSet(K.G_HUD, gradingHudShown);
-    gmSet(K.I_HUD, ioHudShown);
+    gmSetIfChanged(K.G_HUD, gradingHudShown);
+    gmSetIfChanged(K.I_HUD, ioHudShown);
 
     if (!['off','film','anime','gaming','user'].includes(profile)) profile = 'off';
-    gmSet(K.PROF, profile);
+    gmSetIfChanged(K.PROF, profile);
 
-    gmSet(K.AUTO_ON, autoOn);
-    gmSet(K.AUTO_STRENGTH, autoStrength);
-    gmSet(K.AUTO_LOCK_WB, autoLockWB);
+    gmSetIfChanged(K.AUTO_STRENGTH, autoStrength);
+    gmSetIfChanged(K.AUTO_LOCK_WB, autoLockWB);
 
     applyFilter();
     listenGlobalSync();
     watchIframes();
 
-    // FIX: wake analyzer on play events (Firefox)
     primeAutoOnVideoActivity();
 
     ensureAutoLoop();
-    setAutoOn(autoOn);
+    setAutoOn(autoOn, { silent: true, force: true });
 
     log('Init complete.', {
       enabled, darkMoody, tealOrange, vibrantSat, iconsShown,
@@ -2155,11 +2192,11 @@
           hdr = clamp(last || 1.2, -1.0, 2.0);
           logToggle('HDR (Ctrl+Alt+P)', true, `value=${normHDR().toFixed(1)}`);
         } else {
-          gmSet(K.HDR_LAST, cur);
+          gmSetIfChanged(K.HDR_LAST, cur);
           hdr = 0;
           logToggle('HDR (Ctrl+Alt+P)', false);
         }
-        gmSet(K.HDR, normHDR());
+        gmSetIfChanged(K.HDR, normHDR());
         applyFilter();
         return;
       }
@@ -2172,11 +2209,11 @@
 
       if (!(e.ctrlKey && e.altKey) || e.shiftKey) return;
 
-      if (k === HK.base)  { enabled = !enabled;       gmSet(K.enabled, enabled);   e.preventDefault(); logToggle('Base (Ctrl+Alt+B)', enabled); applyFilter(); return; }
-      if (k === HK.moody) { darkMoody = !darkMoody;   gmSet(K.moody, darkMoody);   e.preventDefault(); logToggle('Dark&Moody (Ctrl+Alt+D)', darkMoody); applyFilter(); return; }
-      if (k === HK.teal)  { tealOrange = !tealOrange; gmSet(K.teal, tealOrange);   e.preventDefault(); logToggle('Teal&Orange (Ctrl+Alt+O)', tealOrange); applyFilter(); return; }
-      if (k === HK.vib)   { vibrantSat = !vibrantSat; gmSet(K.vib, vibrantSat);    e.preventDefault(); logToggle('Vibrant (Ctrl+Alt+V)', vibrantSat); applyFilter(); return; }
-      if (k === HK.icons) { iconsShown = !iconsShown; gmSet(K.icons, iconsShown);  e.preventDefault(); logToggle('Overlay Icons (Ctrl+Alt+H)', iconsShown); scheduleOverlayUpdate(); return; }
+      if (k === HK.base)  { enabled = !enabled;       gmSetIfChanged(K.enabled, enabled);   e.preventDefault(); logToggle('Base (Ctrl+Alt+B)', enabled); applyFilter(); return; }
+      if (k === HK.moody) { darkMoody = !darkMoody;   gmSetIfChanged(K.moody, darkMoody);   e.preventDefault(); logToggle('Dark&Moody (Ctrl+Alt+D)', darkMoody); applyFilter(); return; }
+      if (k === HK.teal)  { tealOrange = !tealOrange; gmSetIfChanged(K.teal, tealOrange);   e.preventDefault(); logToggle('Teal&Orange (Ctrl+Alt+O)', tealOrange); applyFilter(); return; }
+      if (k === HK.vib)   { vibrantSat = !vibrantSat; gmSetIfChanged(K.vib, vibrantSat);    e.preventDefault(); logToggle('Vibrant (Ctrl+Alt+V)', vibrantSat); applyFilter(); return; }
+      if (k === HK.icons) { iconsShown = !iconsShown; gmSetIfChanged(K.icons, iconsShown);  e.preventDefault(); logToggle('Overlay Icons (Ctrl+Alt+H)', iconsShown); scheduleOverlayUpdate(); return; }
     });
 
     window.addEventListener('scroll', scheduleOverlayUpdate, { passive: true });
