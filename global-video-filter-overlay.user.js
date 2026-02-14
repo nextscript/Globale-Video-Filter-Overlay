@@ -3,7 +3,7 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.1.3
+// @version      1.1.5
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
@@ -12,7 +12,7 @@
 // @grant        GM_setValue
 // @grant        GM_addValueChangeListener
 // @grant        GM_info
-// @iconURL      https://i.ibb.co/206MW56L/logomes.png
+// @iconURL      https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/logomes.png
 // @downloadURL https://update.greasyfork.org/scripts/561189/Global%20Video%20Filter%20Overlay.user.js
 // @updateURL https://update.greasyfork.org/scripts/561189/Global%20Video%20Filter%20Overlay.meta.js
 // ==/UserScript==
@@ -36,6 +36,12 @@
   const GRADE_HUD_KEY   = 'g'; // Strg+Alt+G
   const IO_HUD_KEY      = 'i'; // Strg+Alt+I (Settings Export/Import)
   const AUTO_KEY        = 'a'; // Strg+Alt+A (Auto Scene Match "AI")
+
+  // -------------------------
+  // LOG SWITCH (NEW)
+  // -------------------------
+  // Set to false to silence ALL console logs from this script.
+  const logs = true;
 
   // GM keys
   const K = {
@@ -72,9 +78,9 @@
     U_HUE:        'gvf_u_hue',
 
     // Auto scene match
-    AUTO_ON:      'gvf_auto_on',
-    AUTO_STRENGTH:'gvf_auto_strength',
-    AUTO_LOCK_WB: 'gvf_auto_lock_wb'
+    AUTO_ON:       'gvf_auto_on',
+    AUTO_STRENGTH: 'gvf_auto_strength',
+    AUTO_LOCK_WB:  'gvf_auto_lock_wb'
   };
 
   // -------------------------
@@ -93,18 +99,17 @@
   const nowMs = () => (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
 
   // -------------------------
-  // DEBUG / LOGGING (NEW)
+  // DEBUG / LOGGING
   // -------------------------
   const LOG = {
-    on: true,              // set false = no logs
+    on: !!logs,
     tag: '[GVF]',
-    // throttle repeated logs
     lastTickMs: 0,
-    tickEveryMs: 1000,     // analyzer status once per second
+    tickEveryMs: 1000,
     lastCutMs: 0,
-    cutEveryMs: 250,       // cut logs at most 4/s
+    cutEveryMs: 250,
     lastToneMs: 0,
-    toneEveryMs: 800       // tone changes at most ~1.25/s
+    toneEveryMs: 800
   };
 
   function log(...a) {
@@ -120,7 +125,6 @@
     try { console.error(LOG.tag, ...a); } catch (_) {}
   }
 
-  // quick helper: show current hotkey state when toggled
   function logToggle(name, state, extra) {
     log(`${name}:`, state ? 'ON' : 'OFF', extra || '');
   }
@@ -160,7 +164,7 @@
   let u_grain      = Number(gmGet(K.U_GRAIN,      0.0));
   let u_hue        = Number(gmGet(K.U_HUE,        0.0));
 
-  // Hotkeys (extra toggles)
+  // Hotkeys
   const HK = { base: 'b', moody: 'd', teal: 'o', vib: 'v', icons: 'h' };
 
   function normSL()  { return snap0(roundTo(clamp(Number(sl)||0,  -2, 2),   0.1), 0.05); }
@@ -195,21 +199,19 @@
   const PROFILE_VIDEO_OUTLINE = false;
 
   // -------------------------
-  // Auto Scene Match ("AI") - lightweight, adaptive sampling
+  // Auto Scene Match ("AI")
   // -------------------------
   let autoOn       = !!gmGet(K.AUTO_ON, false);
   let autoStrength = Number(gmGet(K.AUTO_STRENGTH, 0.65)); // 0..1
   autoStrength = clamp(autoStrength, 0, 1);
   let autoLockWB   = !!gmGet(K.AUTO_LOCK_WB, false);
 
-  // output tone (applied to ALL videos as extra CSS)
   let autoTone = '';
   let _autoLastStyleStamp = 0;
 
-  // internal analyzer loop
   const AUTO = {
     baseFps: 2,
-    boostFps: 8,              // your choice: 8 (default)
+    boostFps: 8,
     boostMs: 1400,
     minArea: 64*64,
     canvasW: 96,
@@ -217,32 +219,76 @@
     running: false,
     tBoostUntil: 0,
     lastSig: null,
-    // smoothed params
     cur: { br: 1.0, ct: 1.0, sat: 1.0, hue: 0.0 },
     tgt: { br: 1.0, ct: 1.0, sat: 1.0, hue: 0.0 }
   };
 
+  // -------- FIX (Firefox): robust "playable + visible" detection --------
+  function isActuallyVisible(v) {
+    try {
+      const cs = window.getComputedStyle(v);
+      if (!cs) return true;
+      if (cs.display === 'none') return false;
+      if (cs.visibility === 'hidden') return false;
+      if (Number(cs.opacity || '1') <= 0) return false;
+      return true;
+    } catch (_) { return true; }
+  }
+
+  function getVideoRect(v) {
+    // Firefox sometimes returns 0x0 rect early; fallback to offset sizes.
+    try {
+      const r = v.getBoundingClientRect();
+      if (r && r.width > 0 && r.height > 0) return r;
+    } catch (_) {}
+    const w = (v.offsetWidth  || 0);
+    const h = (v.offsetHeight || 0);
+    // fabricate rect-ish
+    return { top: 0, left: 0, right: w, bottom: h, width: w, height: h };
+  }
+
+  function isPlayableCandidate(v) {
+    if (!v) return false;
+    // readyState is unreliable with MSE in some Firefox builds; trust videoWidth/Height more.
+    const hasDecoded = (v.videoWidth > 0 && v.videoHeight > 0);
+    const hasTime = (Number.isFinite(v.currentTime) && v.currentTime > 0) || (Number.isFinite(v.duration) && v.duration > 0);
+    const hasData = hasDecoded || hasTime || (v.readyState >= 1);
+    if (!hasData) return false;
+    if (v.ended) return false;
+    if (!isActuallyVisible(v)) return false;
+    const r = getVideoRect(v);
+    if (!r || r.width < 80 || r.height < 60) return false;
+    const area = r.width * r.height;
+    if (area < AUTO.minArea) return false;
+    return true;
+  }
+
   function choosePrimaryVideo() {
     let best = null;
     let bestScore = 0;
+
     const vids = Array.from(document.querySelectorAll('video'));
     for (const v of vids) {
       try {
-        if (!v || v.readyState < 2) continue;
-        if (v.paused || v.ended) continue;
-        const r = v.getBoundingClientRect();
-        if (!r || r.width < 80 || r.height < 60) continue;
-        const area = r.width * r.height;
-        if (area < AUTO.minArea) continue;
+        if (!isPlayableCandidate(v)) continue;
 
-        // prefer in-viewport
+        const r = getVideoRect(v);
+        const area = r.width * r.height;
+
         const inView = !(r.bottom < 0 || r.right < 0 || r.top > (window.innerHeight||0) || r.left > (window.innerWidth||0));
-        const score = area * (inView ? 1.25 : 0.85);
+        const playing = (!v.paused && !v.seeking); // paused is allowed, just less preferred
+
+        // prefer: big + in viewport + playing
+        const score = area
+          * (inView ? 1.25 : 0.90)
+          * (playing ? 1.20 : 1.00);
+
         if (score > bestScore) { best = v; bestScore = score; }
       } catch (_) {}
     }
     return best;
   }
+  // -------- END FIX --------
 
   function computeFrameStats(imgData) {
     const d = imgData.data;
@@ -251,8 +297,7 @@
     let sumY=0, sumY2=0;
     let sumCh=0;
 
-    // sample every k pixels to reduce cost
-    const stepPx = 2; // 1=all, 2=quarter, 3=1/9
+    const stepPx = 2;
     const w = imgData.width;
     const h = imgData.height;
     const stride = w * 4;
@@ -266,13 +311,11 @@
         const g = d[i+1] / 255;
         const b = d[i+2] / 255;
 
-        // luma (Rec.709)
         const Y = 0.2126*r + 0.7152*g + 0.0722*b;
 
         sumR += r; sumG += g; sumB += b;
         sumY += Y; sumY2 += Y*Y;
 
-        // simple chroma magnitude (distance from gray)
         const mx = Math.max(r,g,b);
         const mn = Math.min(r,g,b);
         sumCh += (mx - mn);
@@ -295,16 +338,14 @@
 
   function detectCut(sig, lastSig) {
     if (!lastSig) return false;
-    // weighted difference: luma + chroma + channel balance
     const dY  = Math.abs(sig.mY - lastSig.mY);
     const dCh = Math.abs(sig.mCh - lastSig.mCh);
     const dRB = Math.abs((sig.mR - sig.mB) - (lastSig.mR - lastSig.mB));
     const dGB = Math.abs((sig.mG - sig.mB) - (lastSig.mG - lastSig.mB));
 
     const score = (dY*1.1) + (dCh*0.9) + (dRB*0.7) + (dGB*0.7);
-    // (NEW) expose score for logging
     sig.__cutScore = score;
-    return score > 0.14; // conservative: avoids constant boosting
+    return score > 0.14;
   }
 
   function wrapHueDeg(deg) {
@@ -319,34 +360,26 @@
   }
 
   function updateAutoTargetsFromStats(sig) {
-    // Goals: neutral-ish mid exposure, sane contrast, sane saturation, mild WB correction.
-    // Keep it STABLE: heavy smoothing + strength scaling.
     const s = clamp(autoStrength, 0, 1);
 
-    // Exposure (brightness): aim mean luma ~0.50
     const targetY = 0.50;
     const errY = clamp(targetY - sig.mY, -0.22, 0.22);
-    // map error to brightness factor
     const br = clamp(1.0 + errY * 0.85, 0.78, 1.22);
 
-    // Contrast: aim sdY ~0.23
     const targetSd = 0.23;
     const errSd = clamp(targetSd - sig.sdY, -0.18, 0.18);
     const ct = clamp(1.0 + (-errSd) * 0.85, 0.82, 1.30);
 
-    // Saturation: aim chroma ~0.12
     const targetCh = 0.12;
     const errCh = clamp(targetCh - sig.mCh, -0.20, 0.20);
     const sat = clamp(1.0 + (-errCh) * 0.90, 0.80, 1.45);
 
-    // White balance / hue tendency (very mild):
     let hue = 0.0;
     if (!autoLockWB) {
       const rb = clamp(sig.mR - sig.mB, -0.18, 0.18);
       hue = clamp((-rb) * 28.0, -10.0, 10.0);
     }
 
-    // Apply strength
     AUTO.tgt.br  = clamp(1.0 + (br  - 1.0) * s, 0.78, 1.22);
     AUTO.tgt.ct  = clamp(1.0 + (ct  - 1.0) * s, 0.82, 1.30);
     AUTO.tgt.sat = clamp(1.0 + (sat - 1.0) * s, 0.80, 1.45);
@@ -354,7 +387,6 @@
   }
 
   function updateAutoSmoothing(isCut) {
-    // Fast on cuts, slow otherwise to avoid pumping.
     const a = isCut ? 0.32 : 0.09;
     AUTO.cur.br  = approach(AUTO.cur.br,  AUTO.tgt.br,  a);
     AUTO.cur.ct  = approach(AUTO.cur.ct,  AUTO.tgt.ct,  a);
@@ -381,7 +413,6 @@
     if ((t - _autoLastStyleStamp) < 35) return;
     _autoLastStyleStamp = t;
 
-    // (NEW) tone log (throttled)
     if (LOG.on && (t - LOG.lastToneMs) >= LOG.toneEveryMs) {
       LOG.lastToneMs = t;
       log('AutoTone updated:', autoTone.trim());
@@ -390,11 +421,31 @@
     applyFilter({ skipSvgIfPossible: true });
   }
 
+  // -------- FIX (Firefox): wake analyzer when video starts --------
+  function primeAutoOnVideoActivity() {
+    try {
+      document.addEventListener('play', () => {
+        if (!autoOn) return;
+        AUTO.lastSig = null;
+        AUTO.tBoostUntil = nowMs() + 400;
+      }, true);
+      document.addEventListener('playing', () => {
+        if (!autoOn) return;
+        AUTO.lastSig = null;
+        AUTO.tBoostUntil = nowMs() + 700;
+      }, true);
+      document.addEventListener('loadeddata', () => {
+        if (!autoOn) return;
+        AUTO.lastSig = null;
+      }, true);
+    } catch (_) {}
+  }
+  // -------- END FIX --------
+
   function ensureAutoLoop() {
     if (AUTO.running) return;
     AUTO.running = true;
 
-    // one shared offscreen canvas
     const c = document.createElement('canvas');
     c.width = AUTO.canvasW;
     c.height = AUTO.canvasH;
@@ -412,7 +463,6 @@
       const v = choosePrimaryVideo();
       if (!v || !ctx) {
         AUTO.lastSig = null;
-        // (NEW) idle log
         const t = nowMs();
         if (LOG.on && (t - LOG.lastTickMs) >= LOG.tickEveryMs) {
           LOG.lastTickMs = t;
@@ -439,7 +489,6 @@
         const t = nowMs();
         const fps = (t < AUTO.tBoostUntil) ? AUTO.boostFps : AUTO.baseFps;
 
-        // (NEW) cut + tick logs (throttled)
         if (LOG.on) {
           if (isCut && (t - LOG.lastCutMs) >= LOG.cutEveryMs) {
             LOG.lastCutMs = t;
@@ -462,13 +511,9 @@
 
         scheduleNext(fps);
       } catch (e) {
-        // Cross-origin video frames can throw if tainted.
         AUTO.lastSig = null;
         autoTone = '';
-
-        // (NEW) error log
         logW('Auto(A) frame read blocked (tainted/cross-origin). AutoTone disabled for now.', e && e.message ? e.message : e);
-
         scheduleNext(AUTO.baseFps);
       }
     };
@@ -478,9 +523,7 @@
       setTimeout(loop, ms);
     };
 
-    // (NEW) init log
     log(`Auto analyzer loop created. baseFps=${AUTO.baseFps}, boostFps=${AUTO.boostFps}, canvas=${AUTO.canvasW}x${AUTO.canvasH}`);
-
     scheduleNext(AUTO.baseFps);
   }
 
@@ -488,7 +531,6 @@
     autoOn = !!on;
     gmSet(K.AUTO_ON, autoOn);
 
-    // (NEW) toggle log
     logToggle('Auto Scene Match (Ctrl+Alt+A)', autoOn, `(strength=${autoStrength.toFixed(2)}, lockWB=${autoLockWB ? 'yes' : 'no'})`);
 
     if (!autoOn) {
@@ -584,7 +626,7 @@
     row.appendChild(mkBtn('teal', 'O'));
     row.appendChild(mkBtn('vib',  'V'));
     row.appendChild(mkBtn('hdr',  'P'));
-    row.appendChild(mkBtn('auto', 'A')); // NEW
+    row.appendChild(mkBtn('auto', 'A'));
     top.appendChild(row);
     top.appendChild(profBadge);
     overlay.appendChild(top);
@@ -738,7 +780,6 @@
 
   // -------------------------
   // Settings Import/Export overlay (Ctrl+Alt+I)
-  // FIX: No auto overwrite while textarea is dirty (even if it blurs when clicking buttons)
   // -------------------------
   function mkIOOverlay() {
     const overlay = document.createElement('div');
@@ -793,7 +834,6 @@
 
     const setDirty = (on) => { if (on) ta.dataset.dirty = '1'; else delete ta.dataset.dirty; };
     ta.addEventListener('input', () => setDirty(true));
-    ta.addEventListener('focus', () => {});
 
     const row = document.createElement('div');
     row.style.cssText = `display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;`;
@@ -2071,10 +2111,12 @@
     listenGlobalSync();
     watchIframes();
 
+    // FIX: wake analyzer on play events (Firefox)
+    primeAutoOnVideoActivity();
+
     ensureAutoLoop();
     setAutoOn(autoOn);
 
-    // (NEW) init summary log
     log('Init complete.', {
       enabled, darkMoody, tealOrange, vibrantSat, iconsShown,
       hdr: normHDR(), profile,
@@ -2122,7 +2164,6 @@
         return;
       }
 
-      // Auto Scene Match toggle (Ctrl+Alt+A)
       if (e.ctrlKey && e.altKey && !e.shiftKey && k === AUTO_KEY) {
         e.preventDefault();
         setAutoOn(!autoOn);
