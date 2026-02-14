@@ -3,7 +3,7 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.1.1
+// @version      1.1.3
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
@@ -13,8 +13,8 @@
 // @grant        GM_addValueChangeListener
 // @grant        GM_info
 // @iconURL      https://i.ibb.co/206MW56L/logomes.png
-// @downloadURL  https://update.greasyfork.org/scripts/561189/Global%20Video%20Filter%20Overlay.user.js
-// @updateURL    https://update.greasyfork.org/scripts/561189/Global%20Video%20Filter%20Overlay.meta.js
+// @downloadURL https://update.greasyfork.org/scripts/561189/Global%20Video%20Filter%20Overlay.user.js
+// @updateURL https://update.greasyfork.org/scripts/561189/Global%20Video%20Filter%20Overlay.meta.js
 // ==/UserScript==
 
 (function () {
@@ -35,6 +35,7 @@
   const PROF_TOGGLE_KEY = 'c'; // Strg+Alt+C
   const GRADE_HUD_KEY   = 'g'; // Strg+Alt+G
   const IO_HUD_KEY      = 'i'; // Strg+Alt+I (Settings Export/Import)
+  const AUTO_KEY        = 'a'; // Strg+Alt+A (Auto Scene Match "AI")
 
   // GM keys
   const K = {
@@ -68,7 +69,12 @@
     U_SHARP:      'gvf_u_sharpen',
     U_GAMMA:      'gvf_u_gamma',
     U_GRAIN:      'gvf_u_grain',
-    U_HUE:        'gvf_u_hue'
+    U_HUE:        'gvf_u_hue',
+
+    // Auto scene match
+    AUTO_ON:      'gvf_auto_on',
+    AUTO_STRENGTH:'gvf_auto_strength',
+    AUTO_LOCK_WB: 'gvf_auto_lock_wb'
   };
 
   // -------------------------
@@ -83,6 +89,41 @@
 
   const gmGet = (key, fallback) => { try { return GM_getValue(key, fallback); } catch (_) { return fallback; } };
   const gmSet = (key, val) => { try { GM_setValue(key, val); } catch (_) {} };
+
+  const nowMs = () => (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+
+  // -------------------------
+  // DEBUG / LOGGING (NEW)
+  // -------------------------
+  const LOG = {
+    on: true,              // set false = no logs
+    tag: '[GVF]',
+    // throttle repeated logs
+    lastTickMs: 0,
+    tickEveryMs: 1000,     // analyzer status once per second
+    lastCutMs: 0,
+    cutEveryMs: 250,       // cut logs at most 4/s
+    lastToneMs: 0,
+    toneEveryMs: 800       // tone changes at most ~1.25/s
+  };
+
+  function log(...a) {
+    if (!LOG.on) return;
+    try { console.log(LOG.tag, ...a); } catch (_) {}
+  }
+  function logW(...a) {
+    if (!LOG.on) return;
+    try { console.warn(LOG.tag, ...a); } catch (_) {}
+  }
+  function logE(...a) {
+    if (!LOG.on) return;
+    try { console.error(LOG.tag, ...a); } catch (_) {}
+  }
+
+  // quick helper: show current hotkey state when toggled
+  function logToggle(name, state, extra) {
+    log(`${name}:`, state ? 'ON' : 'OFF', extra || '');
+  }
 
   // -------------------------
   // Global state
@@ -152,6 +193,317 @@
   };
 
   const PROFILE_VIDEO_OUTLINE = false;
+
+  // -------------------------
+  // Auto Scene Match ("AI") - lightweight, adaptive sampling
+  // -------------------------
+  let autoOn       = !!gmGet(K.AUTO_ON, false);
+  let autoStrength = Number(gmGet(K.AUTO_STRENGTH, 0.65)); // 0..1
+  autoStrength = clamp(autoStrength, 0, 1);
+  let autoLockWB   = !!gmGet(K.AUTO_LOCK_WB, false);
+
+  // output tone (applied to ALL videos as extra CSS)
+  let autoTone = '';
+  let _autoLastStyleStamp = 0;
+
+  // internal analyzer loop
+  const AUTO = {
+    baseFps: 2,
+    boostFps: 8,              // your choice: 8 (default)
+    boostMs: 1400,
+    minArea: 64*64,
+    canvasW: 96,
+    canvasH: 54,
+    running: false,
+    tBoostUntil: 0,
+    lastSig: null,
+    // smoothed params
+    cur: { br: 1.0, ct: 1.0, sat: 1.0, hue: 0.0 },
+    tgt: { br: 1.0, ct: 1.0, sat: 1.0, hue: 0.0 }
+  };
+
+  function choosePrimaryVideo() {
+    let best = null;
+    let bestScore = 0;
+    const vids = Array.from(document.querySelectorAll('video'));
+    for (const v of vids) {
+      try {
+        if (!v || v.readyState < 2) continue;
+        if (v.paused || v.ended) continue;
+        const r = v.getBoundingClientRect();
+        if (!r || r.width < 80 || r.height < 60) continue;
+        const area = r.width * r.height;
+        if (area < AUTO.minArea) continue;
+
+        // prefer in-viewport
+        const inView = !(r.bottom < 0 || r.right < 0 || r.top > (window.innerHeight||0) || r.left > (window.innerWidth||0));
+        const score = area * (inView ? 1.25 : 0.85);
+        if (score > bestScore) { best = v; bestScore = score; }
+      } catch (_) {}
+    }
+    return best;
+  }
+
+  function computeFrameStats(imgData) {
+    const d = imgData.data;
+
+    let sumR=0, sumG=0, sumB=0;
+    let sumY=0, sumY2=0;
+    let sumCh=0;
+
+    // sample every k pixels to reduce cost
+    const stepPx = 2; // 1=all, 2=quarter, 3=1/9
+    const w = imgData.width;
+    const h = imgData.height;
+    const stride = w * 4;
+
+    let count = 0;
+    for (let y=0; y<h; y+=stepPx) {
+      let idx = y*stride;
+      for (let x=0; x<w; x+=stepPx) {
+        const i = idx + x*4;
+        const r = d[i]   / 255;
+        const g = d[i+1] / 255;
+        const b = d[i+2] / 255;
+
+        // luma (Rec.709)
+        const Y = 0.2126*r + 0.7152*g + 0.0722*b;
+
+        sumR += r; sumG += g; sumB += b;
+        sumY += Y; sumY2 += Y*Y;
+
+        // simple chroma magnitude (distance from gray)
+        const mx = Math.max(r,g,b);
+        const mn = Math.min(r,g,b);
+        sumCh += (mx - mn);
+
+        count++;
+      }
+    }
+
+    const inv = 1 / Math.max(1, count);
+    const mR = sumR * inv;
+    const mG = sumG * inv;
+    const mB = sumB * inv;
+    const mY = sumY * inv;
+    const vY = Math.max(0, (sumY2 * inv) - (mY*mY));
+    const sdY = Math.sqrt(vY);
+    const mCh = sumCh * inv;
+
+    return { mR, mG, mB, mY, sdY, mCh };
+  }
+
+  function detectCut(sig, lastSig) {
+    if (!lastSig) return false;
+    // weighted difference: luma + chroma + channel balance
+    const dY  = Math.abs(sig.mY - lastSig.mY);
+    const dCh = Math.abs(sig.mCh - lastSig.mCh);
+    const dRB = Math.abs((sig.mR - sig.mB) - (lastSig.mR - lastSig.mB));
+    const dGB = Math.abs((sig.mG - sig.mB) - (lastSig.mG - lastSig.mB));
+
+    const score = (dY*1.1) + (dCh*0.9) + (dRB*0.7) + (dGB*0.7);
+    // (NEW) expose score for logging
+    sig.__cutScore = score;
+    return score > 0.14; // conservative: avoids constant boosting
+  }
+
+  function wrapHueDeg(deg) {
+    let d = deg;
+    while (d > 180) d -= 360;
+    while (d < -180) d += 360;
+    return d;
+  }
+
+  function approach(cur, tgt, a) {
+    return cur + (tgt - cur) * a;
+  }
+
+  function updateAutoTargetsFromStats(sig) {
+    // Goals: neutral-ish mid exposure, sane contrast, sane saturation, mild WB correction.
+    // Keep it STABLE: heavy smoothing + strength scaling.
+    const s = clamp(autoStrength, 0, 1);
+
+    // Exposure (brightness): aim mean luma ~0.50
+    const targetY = 0.50;
+    const errY = clamp(targetY - sig.mY, -0.22, 0.22);
+    // map error to brightness factor
+    const br = clamp(1.0 + errY * 0.85, 0.78, 1.22);
+
+    // Contrast: aim sdY ~0.23
+    const targetSd = 0.23;
+    const errSd = clamp(targetSd - sig.sdY, -0.18, 0.18);
+    const ct = clamp(1.0 + (-errSd) * 0.85, 0.82, 1.30);
+
+    // Saturation: aim chroma ~0.12
+    const targetCh = 0.12;
+    const errCh = clamp(targetCh - sig.mCh, -0.20, 0.20);
+    const sat = clamp(1.0 + (-errCh) * 0.90, 0.80, 1.45);
+
+    // White balance / hue tendency (very mild):
+    let hue = 0.0;
+    if (!autoLockWB) {
+      const rb = clamp(sig.mR - sig.mB, -0.18, 0.18);
+      hue = clamp((-rb) * 28.0, -10.0, 10.0);
+    }
+
+    // Apply strength
+    AUTO.tgt.br  = clamp(1.0 + (br  - 1.0) * s, 0.78, 1.22);
+    AUTO.tgt.ct  = clamp(1.0 + (ct  - 1.0) * s, 0.82, 1.30);
+    AUTO.tgt.sat = clamp(1.0 + (sat - 1.0) * s, 0.80, 1.45);
+    AUTO.tgt.hue = clamp(0.0 + (hue - 0.0) * s, -12.0, 12.0);
+  }
+
+  function updateAutoSmoothing(isCut) {
+    // Fast on cuts, slow otherwise to avoid pumping.
+    const a = isCut ? 0.32 : 0.09;
+    AUTO.cur.br  = approach(AUTO.cur.br,  AUTO.tgt.br,  a);
+    AUTO.cur.ct  = approach(AUTO.cur.ct,  AUTO.tgt.ct,  a);
+    AUTO.cur.sat = approach(AUTO.cur.sat, AUTO.tgt.sat, a);
+    AUTO.cur.hue = approach(AUTO.cur.hue, AUTO.tgt.hue, a);
+    AUTO.cur.hue = wrapHueDeg(AUTO.cur.hue);
+  }
+
+  function buildAutoToneCss() {
+    if (!autoOn) return '';
+    const br  = clamp(AUTO.cur.br,  0.78, 1.22);
+    const ct  = clamp(AUTO.cur.ct,  0.82, 1.30);
+    const sat = clamp(AUTO.cur.sat, 0.80, 1.45);
+    const hue = clamp(AUTO.cur.hue, -12, 12);
+    return ` brightness(${br.toFixed(3)}) contrast(${ct.toFixed(3)}) saturate(${sat.toFixed(3)}) hue-rotate(${hue.toFixed(2)}deg)`;
+  }
+
+  function setAutoToneAndApply() {
+    const tone = buildAutoToneCss();
+    if (tone === autoTone) return;
+    autoTone = tone;
+
+    const t = nowMs();
+    if ((t - _autoLastStyleStamp) < 35) return;
+    _autoLastStyleStamp = t;
+
+    // (NEW) tone log (throttled)
+    if (LOG.on && (t - LOG.lastToneMs) >= LOG.toneEveryMs) {
+      LOG.lastToneMs = t;
+      log('AutoTone updated:', autoTone.trim());
+    }
+
+    applyFilter({ skipSvgIfPossible: true });
+  }
+
+  function ensureAutoLoop() {
+    if (AUTO.running) return;
+    AUTO.running = true;
+
+    // one shared offscreen canvas
+    const c = document.createElement('canvas');
+    c.width = AUTO.canvasW;
+    c.height = AUTO.canvasH;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+
+    const loop = () => {
+      if (!AUTO.running) return;
+
+      if (!autoOn) {
+        AUTO.lastSig = null;
+        scheduleNext(AUTO.baseFps);
+        return;
+      }
+
+      const v = choosePrimaryVideo();
+      if (!v || !ctx) {
+        AUTO.lastSig = null;
+        // (NEW) idle log
+        const t = nowMs();
+        if (LOG.on && (t - LOG.lastTickMs) >= LOG.tickEveryMs) {
+          LOG.lastTickMs = t;
+          log('Auto(A) running: no playable video found.');
+        }
+        scheduleNext(AUTO.baseFps);
+        return;
+      }
+
+      try {
+        ctx.drawImage(v, 0, 0, AUTO.canvasW, AUTO.canvasH);
+        const img = ctx.getImageData(0, 0, AUTO.canvasW, AUTO.canvasH);
+        const sig = computeFrameStats(img);
+
+        const isCut = detectCut(sig, AUTO.lastSig);
+        AUTO.lastSig = sig;
+
+        if (isCut) AUTO.tBoostUntil = nowMs() + AUTO.boostMs;
+
+        updateAutoTargetsFromStats(sig);
+        updateAutoSmoothing(isCut);
+        setAutoToneAndApply();
+
+        const t = nowMs();
+        const fps = (t < AUTO.tBoostUntil) ? AUTO.boostFps : AUTO.baseFps;
+
+        // (NEW) cut + tick logs (throttled)
+        if (LOG.on) {
+          if (isCut && (t - LOG.lastCutMs) >= LOG.cutEveryMs) {
+            LOG.lastCutMs = t;
+            log(
+              `CUT detected → boost ${AUTO.boostFps}fps for ${AUTO.boostMs}ms`,
+              `score=${(sig.__cutScore || 0).toFixed(3)}`,
+              `Y=${sig.mY.toFixed(3)} sd=${sig.sdY.toFixed(3)} Ch=${sig.mCh.toFixed(3)}`,
+              `tgt br=${AUTO.tgt.br.toFixed(3)} ct=${AUTO.tgt.ct.toFixed(3)} sat=${AUTO.tgt.sat.toFixed(3)} hue=${AUTO.tgt.hue.toFixed(2)}`
+            );
+          }
+          if ((t - LOG.lastTickMs) >= LOG.tickEveryMs) {
+            LOG.lastTickMs = t;
+            log(
+              `Auto(A) tick @${fps}fps`,
+              `Y=${sig.mY.toFixed(3)} sd=${sig.sdY.toFixed(3)} Ch=${sig.mCh.toFixed(3)} rb=${(sig.mR-sig.mB).toFixed(3)}`,
+              `cur br=${AUTO.cur.br.toFixed(3)} ct=${AUTO.cur.ct.toFixed(3)} sat=${AUTO.cur.sat.toFixed(3)} hue=${AUTO.cur.hue.toFixed(2)}`
+            );
+          }
+        }
+
+        scheduleNext(fps);
+      } catch (e) {
+        // Cross-origin video frames can throw if tainted.
+        AUTO.lastSig = null;
+        autoTone = '';
+
+        // (NEW) error log
+        logW('Auto(A) frame read blocked (tainted/cross-origin). AutoTone disabled for now.', e && e.message ? e.message : e);
+
+        scheduleNext(AUTO.baseFps);
+      }
+    };
+
+    const scheduleNext = (fps) => {
+      const ms = Math.max(50, Math.round(1000 / Math.max(1, fps)));
+      setTimeout(loop, ms);
+    };
+
+    // (NEW) init log
+    log(`Auto analyzer loop created. baseFps=${AUTO.baseFps}, boostFps=${AUTO.boostFps}, canvas=${AUTO.canvasW}x${AUTO.canvasH}`);
+
+    scheduleNext(AUTO.baseFps);
+  }
+
+  function setAutoOn(on) {
+    autoOn = !!on;
+    gmSet(K.AUTO_ON, autoOn);
+
+    // (NEW) toggle log
+    logToggle('Auto Scene Match (Ctrl+Alt+A)', autoOn, `(strength=${autoStrength.toFixed(2)}, lockWB=${autoLockWB ? 'yes' : 'no'})`);
+
+    if (!autoOn) {
+      AUTO.lastSig = null;
+      AUTO.tBoostUntil = 0;
+      AUTO.tgt = { br: 1.0, ct: 1.0, sat: 1.0, hue: 0.0 };
+      autoTone = '';
+      applyFilter({ skipSvgIfPossible: true });
+      scheduleOverlayUpdate();
+      return;
+    }
+
+    ensureAutoLoop();
+    scheduleOverlayUpdate();
+  }
 
   // -------------------------
   // Overlay infra
@@ -232,6 +584,7 @@
     row.appendChild(mkBtn('teal', 'O'));
     row.appendChild(mkBtn('vib',  'V'));
     row.appendChild(mkBtn('hdr',  'P'));
+    row.appendChild(mkBtn('auto', 'A')); // NEW
     top.appendChild(row);
     top.appendChild(profBadge);
     overlay.appendChild(top);
@@ -438,10 +791,9 @@
     `;
     stopEventsOn(ta);
 
-    // dirty lock: once user edits, auto-refresh never overwrites until we explicitly clear it
     const setDirty = (on) => { if (on) ta.dataset.dirty = '1'; else delete ta.dataset.dirty; };
     ta.addEventListener('input', () => setDirty(true));
-    ta.addEventListener('focus', () => {}); // keep simple; blur is NOT used anymore
+    ta.addEventListener('focus', () => {});
 
     const row = document.createElement('div');
     row.style.cssText = `display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;`;
@@ -466,10 +818,10 @@
     status.style.cssText = `margin-top:8px;font-size:11px;font-weight:900;color:#cfcfcf;opacity:0.95;`;
     status.textContent = 'Tip: paste JSON here → Save';
 
-    const btnRefresh   = mkBtn('Refresh');
-    const btnSave      = mkBtn('Save');
-    const btnSelect    = mkBtn('Select All');
-    const btnReset     = mkBtn('Reset to defaults');
+    const btnRefresh    = mkBtn('Refresh');
+    const btnSave       = mkBtn('Save');
+    const btnSelect     = mkBtn('Select All');
+    const btnReset      = mkBtn('Reset to defaults');
     const btnExportFile = mkBtn('Export .json');
     const btnImportFile = mkBtn('Import .json');
 
@@ -549,7 +901,6 @@
     });
 
     btnSave.addEventListener('click', () => {
-      // IMPORTANT: read BEFORE anything else can overwrite
       const raw = String(ta.value || '').trim();
       if (!raw) { status.textContent = 'Empty JSON.'; return; }
       try {
@@ -571,6 +922,9 @@
         sl: 1.3, sr: -1.1, bl: 0.3, wl: 0.2, dn: 0.6,
         hdr: 0.0, profile: 'off',
         gradingHudShown: false,
+        autoOn: false,
+        autoStrength: 0.65,
+        autoLockWB: false,
         user: { contrast:0, black:0, white:0, highlights:0, shadows:0, saturation:0, vibrance:0, sharpen:0, gamma:0, grain:0, hue:0 }
       };
       importSettings(defaults);
@@ -603,7 +957,7 @@
   function exportSettings() {
     return {
       schema: 'gvf-settings',
-      ver: '1.0',
+      ver: '1.1',
       enabled: !!enabled,
       darkMoody: !!darkMoody,
       tealOrange: !!tealOrange,
@@ -620,6 +974,10 @@
       profile: String(profile),
 
       gradingHudShown: !!gradingHudShown,
+
+      autoOn: !!autoOn,
+      autoStrength: nFix(autoStrength, 2),
+      autoLockWB: !!autoLockWB,
 
       user: {
         contrast:   nFix(normU(u_contrast), 1),
@@ -663,6 +1021,10 @@
 
     if ('gradingHudShown' in obj) gradingHudShown = !!obj.gradingHudShown;
 
+    if ('autoOn' in obj) autoOn = !!obj.autoOn;
+    if ('autoStrength' in obj) autoStrength = clamp(Number(obj.autoStrength), 0, 1);
+    if ('autoLockWB' in obj) autoLockWB = !!obj.autoLockWB;
+
     if ('contrast'   in u) u_contrast   = normU(u.contrast);
     if ('black'      in u) u_black      = normU(u.black);
     if ('white'      in u) u_white      = normU(u.white);
@@ -705,6 +1067,11 @@
     gmSet(K.U_GRAIN, u_grain);
     gmSet(K.U_HUE, u_hue);
 
+    gmSet(K.AUTO_ON, autoOn);
+    gmSet(K.AUTO_STRENGTH, autoStrength);
+    gmSet(K.AUTO_LOCK_WB, autoLockWB);
+
+    setAutoOn(autoOn);
     applyFilter();
     scheduleOverlayUpdate();
     return true;
@@ -722,7 +1089,8 @@
       moody: darkMoody,
       teal: tealOrange,
       vib: vibrantSat,
-      hdr: (normHDR() !== 0)
+      hdr: (normHDR() !== 0),
+      auto: autoOn
     };
 
     overlay.querySelectorAll('[data-key]').forEach(el => {
@@ -794,8 +1162,6 @@
 
     const ta = overlay.querySelector('.gvf-io-text');
     if (!ta) return;
-
-    // DO NOT overwrite if user edited (dirty)
     if (ta.dataset.dirty) return;
 
     ta.value = JSON.stringify(exportSettings(), null, 2);
@@ -1501,11 +1867,11 @@
     return '';
   }
 
-  function applyFilter() {
+  function applyFilter(opts = {}) {
     let style = document.getElementById(STYLE_ID);
 
     const nothingOn =
-      !enabled && !darkMoody && !tealOrange && !vibrantSat && normHDR() === 0 && (profile === 'off');
+      !enabled && !darkMoody && !tealOrange && !vibrantSat && normHDR() === 0 && (profile === 'off') && !autoOn;
 
     if (nothingOn) {
       if (style) style.remove();
@@ -1513,7 +1879,9 @@
       return;
     }
 
-    ensureSvgFilter();
+    const skipSvgIfPossible = !!opts.skipSvgIfPossible;
+    const svgExists = !!document.getElementById(SVG_ID);
+    if (!skipSvgIfPossible || !svgExists) ensureSvgFilter();
 
     if (!style) {
       style = document.createElement('style');
@@ -1524,6 +1892,7 @@
     const baseTone = enabled ? ' brightness(1.02) contrast(1.05) saturate(1.21)' : '';
     const profTone = profileToneCss();
     const userTone = userToneCss();
+    const aTone    = autoOn ? (autoTone || buildAutoToneCss()) : '';
 
     const outlineCss = (PROFILE_VIDEO_OUTLINE && profile !== 'off')
       ? `outline: 2px solid ${(PROF[profile]||PROF.off).color} !important; outline-offset: -2px;`
@@ -1533,7 +1902,7 @@
       video {
         will-change: filter;
         transform: translateZ(0);
-        filter: url("#${pickComboId()}")${baseTone}${profTone}${userTone} !important;
+        filter: url("#${pickComboId()}")${baseTone}${profTone}${userTone}${aTone} !important;
         ${outlineCss}
       }
     `;
@@ -1626,6 +1995,11 @@
       u_grain      = Number(gmGet(K.U_GRAIN, u_grain));
       u_hue        = Number(gmGet(K.U_HUE, u_hue));
 
+      autoOn       = !!gmGet(K.AUTO_ON, autoOn);
+      autoStrength = clamp(Number(gmGet(K.AUTO_STRENGTH, autoStrength)), 0, 1);
+      autoLockWB   = !!gmGet(K.AUTO_LOCK_WB, autoLockWB);
+
+      setAutoOn(autoOn);
       applyFilter();
       scheduleOverlayUpdate();
     };
@@ -1640,6 +2014,7 @@
     const cur = order.indexOf(profile);
     profile = order[(cur < 0 ? 0 : (cur + 1)) % order.length];
     gmSet(K.PROF, profile);
+    log('Profile cycled:', profile);
     applyFilter();
     scheduleOverlayUpdate();
   }
@@ -1647,12 +2022,14 @@
   function toggleGradingHud() {
     gradingHudShown = !gradingHudShown;
     gmSet(K.G_HUD, gradingHudShown);
+    logToggle('Grading HUD (Ctrl+Alt+G)', gradingHudShown);
     scheduleOverlayUpdate();
   }
 
   function toggleIOHud() {
     ioHudShown = !ioHudShown;
     gmSet(K.I_HUD, ioHudShown);
+    logToggle('IO HUD (Ctrl+Alt+I)', ioHudShown);
     scheduleOverlayUpdate();
   }
 
@@ -1686,9 +2063,23 @@
     if (!['off','film','anime','gaming','user'].includes(profile)) profile = 'off';
     gmSet(K.PROF, profile);
 
+    gmSet(K.AUTO_ON, autoOn);
+    gmSet(K.AUTO_STRENGTH, autoStrength);
+    gmSet(K.AUTO_LOCK_WB, autoLockWB);
+
     applyFilter();
     listenGlobalSync();
     watchIframes();
+
+    ensureAutoLoop();
+    setAutoOn(autoOn);
+
+    // (NEW) init summary log
+    log('Init complete.', {
+      enabled, darkMoody, tealOrange, vibrantSat, iconsShown,
+      hdr: normHDR(), profile,
+      autoOn, autoStrength: Number(autoStrength.toFixed(2)), autoLockWB
+    });
 
     document.addEventListener('keydown', (e) => {
       const tag = (e.target && e.target.tagName || '').toLowerCase();
@@ -1720,22 +2111,31 @@
         if (cur === 0) {
           const last = Number(gmGet(K.HDR_LAST, 0.3));
           hdr = clamp(last || 1.2, -1.0, 2.0);
+          logToggle('HDR (Ctrl+Alt+P)', true, `value=${normHDR().toFixed(1)}`);
         } else {
           gmSet(K.HDR_LAST, cur);
           hdr = 0;
+          logToggle('HDR (Ctrl+Alt+P)', false);
         }
         gmSet(K.HDR, normHDR());
         applyFilter();
         return;
       }
 
+      // Auto Scene Match toggle (Ctrl+Alt+A)
+      if (e.ctrlKey && e.altKey && !e.shiftKey && k === AUTO_KEY) {
+        e.preventDefault();
+        setAutoOn(!autoOn);
+        return;
+      }
+
       if (!(e.ctrlKey && e.altKey) || e.shiftKey) return;
 
-      if (k === HK.base)  { enabled = !enabled;       gmSet(K.enabled, enabled);   e.preventDefault(); applyFilter(); return; }
-      if (k === HK.moody) { darkMoody = !darkMoody;   gmSet(K.moody, darkMoody);   e.preventDefault(); applyFilter(); return; }
-      if (k === HK.teal)  { tealOrange = !tealOrange; gmSet(K.teal, tealOrange);   e.preventDefault(); applyFilter(); return; }
-      if (k === HK.vib)   { vibrantSat = !vibrantSat; gmSet(K.vib, vibrantSat);    e.preventDefault(); applyFilter(); return; }
-      if (k === HK.icons) { iconsShown = !iconsShown; gmSet(K.icons, iconsShown);  e.preventDefault(); scheduleOverlayUpdate(); return; }
+      if (k === HK.base)  { enabled = !enabled;       gmSet(K.enabled, enabled);   e.preventDefault(); logToggle('Base (Ctrl+Alt+B)', enabled); applyFilter(); return; }
+      if (k === HK.moody) { darkMoody = !darkMoody;   gmSet(K.moody, darkMoody);   e.preventDefault(); logToggle('Dark&Moody (Ctrl+Alt+D)', darkMoody); applyFilter(); return; }
+      if (k === HK.teal)  { tealOrange = !tealOrange; gmSet(K.teal, tealOrange);   e.preventDefault(); logToggle('Teal&Orange (Ctrl+Alt+O)', tealOrange); applyFilter(); return; }
+      if (k === HK.vib)   { vibrantSat = !vibrantSat; gmSet(K.vib, vibrantSat);    e.preventDefault(); logToggle('Vibrant (Ctrl+Alt+V)', vibrantSat); applyFilter(); return; }
+      if (k === HK.icons) { iconsShown = !iconsShown; gmSet(K.icons, iconsShown);  e.preventDefault(); logToggle('Overlay Icons (Ctrl+Alt+H)', iconsShown); scheduleOverlayUpdate(); return; }
     });
 
     window.addEventListener('scroll', scheduleOverlayUpdate, { passive: true });
