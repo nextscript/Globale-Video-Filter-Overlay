@@ -42,7 +42,7 @@ All shortcuts use: CTRL + ALT + key
 <li>CTRL + ALT + C → Profile Cycle (Color Grading)</li>
 <li>CTRL + ALT + G → Show/Hide Grading Settings (For User Profile)</li>
 <li>CTRL + ALT + A → Toggle Auto-Scene-Match <b style="color:red;">(New)</b></li>
-<li>CTRL + ALT + I → Show/Hide Export/Import JSON</li>
+<li>CTRL + ALT + I → Show/Hide Export/Import JSON ((Screenshot & Recording)<b style="color:red;">(New)</b>)</li>
 <li>CTRL + ALT + H → Show/Hide the overlay UI (icons + sliders)</li>
 <hr>
 Notes:
