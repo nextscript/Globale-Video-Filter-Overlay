@@ -27,6 +27,8 @@ It also renders a small on-video overlay UI (icons + sliders). The slider values
 <ul><li>Green = Movie, Blue = Anime, Red = Gaming, White = User</li></ul>
 <li>Grading Settings (G)</li>
 <ul><li>Make your own Settings for User Profile</li></ul>
+<li>Auto-Scene-Match <b style="color:red;">(New)</b></li>
+<ul><li>The script continuously samples frames and gently auto-adjusts brightness/contrast/saturation/hue-rotate to keep exposure, contrast, saturation and color cast more stable/neutral</li></ul>
 <hr>
 <h2>Keyboard shortcuts (toggle on/off)</h2>
 All shortcuts use: CTRL + ALT + key
@@ -39,7 +41,8 @@ All shortcuts use: CTRL + ALT + key
 <li>CTRL + ALT + P → Toggle HDR</li>
 <li>CTRL + ALT + C → Profile Cycle (Color Grading)</li>
 <li>CTRL + ALT + G → Show/Hide Grading Settings (For User Profile)</li>
-<li>CTRL + ALT + I → Show/Hide Export/Import JSON <b style="color:red;">(New)</b></li>
+<li>CTRL + ALT + A → Toggle Auto-Scene-Match <b style="color:red;">(New)</b></li>
+<li>CTRL + ALT + I → Show/Hide Export/Import JSON</li>
 <li>CTRL + ALT + H → Show/Hide the overlay UI (icons + sliders)</li>
 <hr>
 Notes:
@@ -131,7 +134,7 @@ All sliders support Snap-to-0 around the center, so you can easily return to neu
 <li>Gamma: +0.6</li>
 <li>Gain: +1.2</li>
 <li>Hue-Correction: -0.3</li>
-</ul>
+<ul>
 <hr>
 <h1>Screenshot</h1><br>
 <b>OFF:</b><br>
