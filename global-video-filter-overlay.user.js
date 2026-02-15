@@ -585,8 +585,8 @@
     try {
       const opts = {
         mimeType: mime,
-        videoBitsPerSecond: 12_000_000,
-        audioBitsPerSecond: 160_000
+        videoBitsPerSecond: 6_000_000,
+        audioBitsPerSecond: 128_000
       };
       mr = new MediaRecorder(filteredStream, opts);
     } catch (_) {
