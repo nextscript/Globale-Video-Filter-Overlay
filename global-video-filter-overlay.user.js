@@ -3,7 +3,7 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.2.3
+// @version      1.2.4
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
@@ -692,13 +692,10 @@
 
   // -------------------------
   // 5x5 Color Matrix utils (Browser SVG feColorMatrix)
-  //   - We'll use 4x5 (RGBA) representation for feColorMatrix "matrix"
-  //   - This gives: Y-Luma pipeline (for analysis) + 5×5 matrix (for applying) + Frame Averaging (EMA on stats)
   // -------------------------
   const LUMA = { r: 0.2126, g: 0.7152, b: 0.0722 };
 
   function matIdentity4x5() {
-    // 4 rows x 5 cols
     return [
       1,0,0,0,0,
       0,1,0,0,0,
@@ -708,9 +705,6 @@
   }
 
   function matMul4x5(a, b) {
-    // Both are 4x5; treat as 4x4 + offset.
-    // Composition: out(x) = A(B(x))
-    // A: M_A + o_A, B: M_B + o_B
     const out = new Array(20);
 
     for (let row=0; row<4; row++) {
@@ -719,7 +713,6 @@
         for (let k=0; k<4; k++) s += a[row*5 + k] * b[k*5 + col];
         out[row*5 + col] = s;
       }
-      // offset
       let o = a[row*5 + 4];
       for (let k=0; k<4; k++) o += a[row*5 + k] * b[k*5 + 4];
       out[row*5 + 4] = o;
@@ -728,8 +721,6 @@
   }
 
   function matBrightnessContrast(br, ct) {
-    // Apply contrast around 0.5, then multiply by brightness:
-    // out = br*( ct*(in-0.5) + 0.5 ) = (br*ct)*in + br*0.5*(1-ct)
     const g = br * ct;
     const off = br * 0.5 * (1 - ct);
     return [
@@ -754,25 +745,20 @@
   }
 
   function matHueRotate(deg) {
-    // Approximation compatible with feColorMatrix hue rotate math in sRGB-ish domain.
     const rad = (deg * Math.PI) / 180;
     const cosA = Math.cos(rad);
     const sinA = Math.sin(rad);
 
     const lr = LUMA.r, lg = LUMA.g, lb = LUMA.b;
 
-    // Based on common hue rotation matrix used in SVG/CSS implementations.
-    // R'
     const a00 = lr + cosA*(1-lr) + sinA*(-lr);
     const a01 = lg + cosA*(-lg)  + sinA*(-lg);
     const a02 = lb + cosA*(-lb)  + sinA*(1-lb);
 
-    // G'
     const a10 = lr + cosA*(-lr)  + sinA*(0.143);
     const a11 = lg + cosA*(1-lg) + sinA*(0.140);
     const a12 = lb + cosA*(-lb)  + sinA*(-0.283);
 
-    // B'
     const a20 = lr + cosA*(-lr)  + sinA*(-(1-lr));
     const a21 = lg + cosA*(-lg)  + sinA*(lg);
     const a22 = lb + cosA*(1-lb) + sinA*(lb);
@@ -786,7 +772,6 @@
   }
 
   function matToSvgValues(m) {
-    // feColorMatrix expects 20 numbers
     return m.map(x => (Math.abs(x) < 1e-10 ? '0' : Number(x).toFixed(6))).join(' ');
   }
 
@@ -816,7 +801,6 @@
 
   let _autoLastStyleStamp = 0;
 
-  // --- BEST-OF-BOTH scan scheduler (2/4/6/8/10) ---
   const AUTO_LEVELS = [2,4,6,8,10];
 
   const AUTO = {
@@ -842,18 +826,25 @@
     lastLuma: null,
     motionEma: 0,
     motionAlpha: 0.35,
-    motionThresh: 0.012,    // higher = less sensitive (0.010..0.020 typical)
-    motionMinFrames: 2,     // require N consecutive motion frames
-    motionFrames: 0,        // consecutive counter
-    lastAppliedMs: 0,
+    motionThresh: 0.012,
+    motionMinFrames: 2,
+    motionFrames: 0,
 
-    // FRAME AVERAGING (EMA) over luma/chroma stats to stop oscillation
+    // --- used for "stale -> red dot" ---
+    lastAppliedMs: 0, // set whenever AutoMatrix actually updates
+
+    // FRAME AVERAGING (EMA)
     statsEma: null,
-    statsAlpha: 0.22,       // lower = more averaging (0.15..0.30)
+    statsAlpha: 0.22,
     lastStatsMs: 0,
 
     // debug-dot state
-    blink: false
+    blink: false,
+
+    // ---- DRM / taint fallback ----
+    drmBlocked: false,
+    blockUntilMs: 0,
+    lastGoodMatrixStr: autoMatrixStr
   };
 
   // -------------------------
@@ -897,6 +888,16 @@
     }
 
     dotEl.style.display = 'block';
+
+    // --- NEW: if AutoMatrix didn't change for 2 minutes -> RED DOT ---
+    const t = nowMs();
+    const staleMs = 10_000;
+    const isStale = (AUTO.lastAppliedMs > 0) && ((t - AUTO.lastAppliedMs) >= staleMs);
+    if (isStale) {
+      dotEl.style.background = '#ff2a2a';
+      dotEl.style.boxShadow = '0 0 0 1px rgba(0,0,0,0.80), 0 0 16px rgba(255,42,42,0.55)';
+      return;
+    }
 
     if (autoDotMode === 'idle') {
       dotEl.style.background = '#0b3d17';
@@ -1000,7 +1001,6 @@
         const g = d[i+1] / 255;
         const b = d[i+2] / 255;
 
-        // Y (luma) = matrix
         const Y = LUMA.r*r + LUMA.g*g + LUMA.b*b;
 
         sumR += r; sumG += g; sumB += b;
@@ -1047,7 +1047,6 @@
         const r = d[i];
         const g = d[i+1];
         const b = d[i+2];
-        // integer luma approx (matrix)
         const y8 = (r * 54 + g * 183 + b * 19) >> 8;
         cur[k++] = y8;
       }
@@ -1087,7 +1086,6 @@
   function approach(cur, tgt, a) { return cur + (tgt - cur) * a; }
 
   function updateStatsAveraging(sig) {
-    // EMA of stats (Frame Averaging)
     const a = clamp(AUTO.statsAlpha, 0.05, 0.95);
     if (!AUTO.statsEma) {
       AUTO.statsEma = { ...sig };
@@ -1100,7 +1098,6 @@
     e.mY  = e.mY  * (1-a) + sig.mY  * a;
     e.sdY = e.sdY * (1-a) + sig.sdY * a;
     e.mCh = e.mCh * (1-a) + sig.mCh * a;
-    // keep cutScore for fps logic
     e.__cutScore = sig.__cutScore;
     return e;
   }
@@ -1141,7 +1138,6 @@
     AUTO.cur.hue = wrapHueDeg(AUTO.cur.hue);
   }
 
-  // Build 5×5 (feColorMatrix 4×5) from auto params.
   function buildAutoMatrixValues() {
     if (!autoOn) return matIdentity4x5();
 
@@ -1150,8 +1146,6 @@
     const sat = clamp(AUTO.cur.sat, 0.80, 1.45);
     const hue = clamp(AUTO.cur.hue, -12, 12);
 
-    // Compose: hue -> saturation -> brightness/contrast
-    // (order matters; this one feels closest to "grading" expectations)
     let m = matIdentity4x5();
     m = matMul4x5(matHueRotate(hue), m);
     m = matMul4x5(matSaturation(sat), m);
@@ -1168,6 +1162,12 @@
     autoMatrixStr = valuesStr;
     _autoLastMatrixStr = valuesStr;
 
+    // keep last good matrix for DRM fallback
+    AUTO.lastGoodMatrixStr = _autoLastMatrixStr;
+
+    // --- NEW: mark "values changed" timestamp for red-dot logic ---
+    AUTO.lastAppliedMs = nowMs();
+
     const t = nowMs();
     if ((t - _autoLastStyleStamp) < 35) return;
     _autoLastStyleStamp = t;
@@ -1177,10 +1177,7 @@
       log('AutoMatrix updated:', autoMatrixStr);
     }
 
-    // Update live auto nodes in SVG (no rebuild)
     updateAutoMatrixInSvg(autoMatrixStr);
-
-    // Ensure CSS still present if needed
     applyFilter({ skipSvgIfPossible: true });
   }
 
@@ -1196,6 +1193,8 @@
         AUTO.statsEma = null;
         AUTO.tBoostStart = nowMs();
         AUTO.tBoostUntil = AUTO.tBoostStart + AUTO.boostMs;
+        AUTO.drmBlocked = false;
+        AUTO.blockUntilMs = 0;
       };
 
       document.addEventListener('play', resetAuto, true);
@@ -1208,13 +1207,12 @@
         AUTO.motionFrames = 0;
         AUTO.scoreEma = 0;
         AUTO.statsEma = null;
+        AUTO.drmBlocked = false;
+        AUTO.blockUntilMs = 0;
       }, true);
     } catch (_) {}
   }
 
-  // -------------------------
-  // BEST-OF-BOTH FPS chooser
-  // -------------------------
   function scoreToIdx(score) {
     if (score < 0.020) return 0;
     if (score < 0.045) return 1;
@@ -1240,7 +1238,7 @@
   }
 
   // -------------------------
-  // Auto loop (STRICT motion-gated)
+  // Auto loop (STRICT motion-gated) + DRM fallback
   // -------------------------
   function ensureAutoLoop() {
     if (AUTO.running) return;
@@ -1269,7 +1267,18 @@
         AUTO.motionEma = 0;
         AUTO.motionFrames = 0;
         AUTO.statsEma = null;
+        AUTO.drmBlocked = false;
+        AUTO.blockUntilMs = 0;
+        AUTO.lastAppliedMs = 0; // reset stale timer
         setAutoDotState('off');
+        scheduleNext(AUTO.baseFps);
+        return;
+      }
+
+      // DRM backoff window
+      const tNow = nowMs();
+      if (AUTO.drmBlocked && tNow < (AUTO.blockUntilMs || 0)) {
+        setAutoDotState('idle');
         scheduleNext(AUTO.baseFps);
         return;
       }
@@ -1292,7 +1301,6 @@
         return;
       }
 
-      // HARD stop: if paused or seeking -> never adjust
       if (v.paused || v.seeking) {
         AUTO.motionFrames = 0;
         setAutoDotState('idle');
@@ -1304,11 +1312,15 @@
         ctx.drawImage(v, 0, 0, AUTO.canvasW, AUTO.canvasH);
         const img = ctx.getImageData(0, 0, AUTO.canvasW, AUTO.canvasH);
 
+        if (AUTO.drmBlocked) {
+          AUTO.drmBlocked = false;
+          AUTO.blockUntilMs = 0;
+        }
+
         const motion = computeMotionFromImage(img);
         const ma = clamp(AUTO.motionAlpha, 0.05, 0.95);
         AUTO.motionEma = (AUTO.motionEma * (1 - ma)) + (motion * ma);
 
-        // consecutive motion frames (hysteresis)
         const hasMotionNow = (AUTO.motionEma >= AUTO.motionThresh);
         AUTO.motionFrames = hasMotionNow ? (AUTO.motionFrames + 1) : 0;
 
@@ -1316,7 +1328,6 @@
         const isCut = detectCut(sigRaw, AUTO.lastSig);
         AUTO.lastSig = sigRaw;
 
-        // FRAME AVERAGING over stats
         const sig = updateStatsAveraging(sigRaw);
 
         if (isCut) {
@@ -1327,8 +1338,6 @@
         const t = nowMs();
         const rawScore = clamp(sigRaw.__cutScore || 0, 0, 1);
 
-        // STRICT rule:
-        // - allow update ONLY if: CUT OR (motionFrames >= motionMinFrames)
         const hasMotion = (AUTO.motionFrames >= AUTO.motionMinFrames);
         const allowUpdate = isCut || hasMotion;
 
@@ -1359,19 +1368,30 @@
 
         scheduleNext(fps);
       } catch (e) {
+        AUTO.drmBlocked = true;
+
+        const t = nowMs();
+        const nextWait = (AUTO.blockUntilMs && (t - AUTO.blockUntilMs) < 2000) ? 5000 : 2000;
+        AUTO.blockUntilMs = t + nextWait;
+
         AUTO.lastSig = null;
         AUTO.lastLuma = null;
         AUTO.motionEma = 0;
         AUTO.motionFrames = 0;
         AUTO.statsEma = null;
 
-        // reset auto matrix to identity (but keep autoOn)
-        autoMatrixStr = matToSvgValues(matIdentity4x5());
-        _autoLastMatrixStr = autoMatrixStr;
-        updateAutoMatrixInSvg(autoMatrixStr);
+        const keep = AUTO.lastGoodMatrixStr || _autoLastMatrixStr || autoMatrixStr || matToSvgValues(matIdentity4x5());
+        autoMatrixStr = keep;
+        _autoLastMatrixStr = keep;
+        updateAutoMatrixInSvg(keep);
 
         setAutoDotState('idle');
-        logW('Auto(A) frame read blocked (tainted/cross-origin). AutoMatrix reset for now.', e && e.message ? e.message : e);
+
+        if (LOG.on && (t - LOG.lastTickMs) >= LOG.tickEveryMs) {
+          LOG.lastTickMs = t;
+          logW('Auto(A) DRM/cross-origin: pixels blocked. Using last AutoMatrix (static) + backoff.', e && e.message ? e.message : e);
+        }
+
         scheduleNext(AUTO.baseFps);
       }
     };
@@ -1408,10 +1428,13 @@
       AUTO.tBoostUntil = 0;
       AUTO.tBoostStart = 0;
       AUTO.tgt = { br: 1.0, ct: 1.0, sat: 1.0, hue: 0.0 };
+      AUTO.drmBlocked = false;
+      AUTO.blockUntilMs = 0;
+      AUTO.lastAppliedMs = 0; // reset stale timer
 
-      // reset auto matrix
       autoMatrixStr = matToSvgValues(matIdentity4x5());
       _autoLastMatrixStr = autoMatrixStr;
+      AUTO.lastGoodMatrixStr = autoMatrixStr;
       updateAutoMatrixInSvg(autoMatrixStr);
 
       setAutoDotState('off');
@@ -1420,11 +1443,12 @@
       return;
     }
 
+    // start fresh; red-dot starts only after a real change occurs
+    AUTO.lastAppliedMs = 0;
+
     setAutoDotState('idle');
     ensureAutoLoop();
-    // ensure we have nodes to update
     applyFilter({ skipSvgIfPossible: false });
-    // apply current matrix immediately
     setAutoMatrixAndApply();
     scheduleOverlayUpdate();
   }
@@ -2278,7 +2302,6 @@
         if (ioHudShown) positionOverlayAt(v, oIO, 10, 10 + 560);
       }
 
-      // Auto-dot: ONLY on primary video (so it stays "im video frame" ohne duplikate)
       if (oDot) {
         applyAutoDotStyle(oDot);
 
@@ -2763,8 +2786,6 @@
       }
     }
 
-    // ---- AUTO Scene Match: 5×5 Color Matrix (feColorMatrix matrix; 4×5 values) ----
-    // We always include it, but keep identity when autoOff.
     const autoCM = document.createElementNS(svgNS, 'feColorMatrix');
     autoCM.setAttribute('type', 'matrix');
     autoCM.setAttribute('in', last);
@@ -2800,14 +2821,12 @@
       normU(u_sat), normU(u_vib), normU(u_sharp), normU(u_gamma), normU(u_grain), normU(u_hue)
     ].map(x => Number(x).toFixed(1)).join(',');
 
-    // Auto matrix is LIVE-updated; do NOT include it in "want" signature (otherwise we'd rebuild constantly)
     const want = `${SL}|${SR}|${R}|${A}|${BS}|${BL}|${WL}|${DN}|${HDR}|${P}|U:${uSig}`;
 
     const existing = document.getElementById(SVG_ID);
     if (existing) {
       const has = existing.getAttribute('data-params') || '';
       if (has === want) {
-        // Still ensure auto nodes reflect current value
         updateAutoMatrixInSvg(autoMatrixStr);
         return;
       }
@@ -2837,7 +2856,6 @@
 
     (document.body || document.documentElement).appendChild(svg);
 
-    // Ensure live auto matrix is applied
     updateAutoMatrixInSvg(autoMatrixStr);
   }
 
@@ -2893,7 +2911,6 @@
       ? `outline: 2px solid ${(PROF[profile]||PROF.off).color} !important; outline-offset: -2px;`
       : `outline: none !important;`;
 
-    // Auto is now applied INSIDE the SVG filter via 5×5 Color Matrix (feColorMatrix).
     style.textContent = `
       video {
         will-change: filter;
@@ -3070,9 +3087,10 @@
 
     setAutoDotState(autoOn ? 'idle' : 'off');
 
-    // init auto matrix based on current state
     autoMatrixStr = matToSvgValues(autoOn ? buildAutoMatrixValues() : matIdentity4x5());
     _autoLastMatrixStr = autoMatrixStr;
+    AUTO.lastGoodMatrixStr = autoMatrixStr;
+    AUTO.lastAppliedMs = 0;
 
     applyFilter();
     listenGlobalSync();
