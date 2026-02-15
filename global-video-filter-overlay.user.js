@@ -3,7 +3,7 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.2.1
+// @version      1.2.2
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
@@ -40,8 +40,8 @@
   // -------------------------
   // LOG + DEBUG SWITCH
   // -------------------------
-  const logs  = true;  // console logs
-  const debug = false;  // visual debug (Auto-dot)
+  const logs  = true;   // console logs
+  const debug = false;   // visual debug (Auto-dot)
 
   // -------------------------
   // CSS.escape Polyfill + safer selectors
@@ -50,7 +50,6 @@
     try {
       if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(String(s));
     } catch (_) {}
-    // minimal safe escape for querySelector
     return String(s).replace(/[^a-zA-Z0-9_-]/g, (m) => '\\' + m);
   };
 
@@ -101,15 +100,10 @@
   const roundTo = (n, step) => Math.round(n / step) * step;
   const snap0   = (n, eps)  => (Math.abs(n) <= eps ? 0 : n);
   const nFix = (n, digits = 1) => Number((Number(n) || 0).toFixed(digits));
-
   const gmGet = (key, fallback) => { try { return GM_getValue(key, fallback); } catch (_) { return fallback; } };
   const gmSet = (key, val) => { try { GM_setValue(key, val); } catch (_) {} };
-
   const nowMs = () => (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-
-  const isFirefox = () => {
-    try { return /firefox/i.test(navigator.userAgent || ''); } catch (_) { return false; }
-  };
+  const isFirefox = () => { try { return /firefox/i.test(navigator.userAgent || ''); } catch (_) { return false; } };
 
   // -------------------------
   // Screenshot / Recording helpers
@@ -141,15 +135,11 @@
     return document.querySelector('video');
   }
 
-  // ---------- Filter capture helpers (bake *applied* filters into canvas) ----------
   function getAppliedCssFilterString(video) {
-    // We can bake CSS filters like brightness/contrast/saturate/hue-rotate into canvas ctx.filter.
-    // BUT url("#svg") cannot be applied to canvas -> strip it and keep the rest.
     try {
       const cs = window.getComputedStyle(video);
       let f = String(cs.filter || '').trim();
       if (!f || f === 'none') return '';
-      // remove url(...) parts
       f = f.replace(/url\([^)]+\)/g, '').replace(/\s+/g, ' ').trim();
       if (!f || f === 'none') return '';
       return f;
@@ -159,7 +149,6 @@
   }
 
   function canBakeToCanvas(video) {
-    // Quick taint/DRM/cross-origin test: draw + getImageData. If it throws -> blocked.
     try {
       const w = Math.max(2, video.videoWidth || 0);
       const h = Math.max(2, video.videoHeight || 0);
@@ -177,18 +166,14 @@
   }
 
   // -------------------------
-  // Firefox audio fix:
-  // Prefer WebAudio tap (avoids Firefox auto-muting that can happen with captureStream()).
-  // Falls back to captureStream audio if WebAudio is blocked.
+  // Firefox audio tap
   // -------------------------
   const AUDIO_TAPS = new WeakMap();
 
   function ensureAudioTap(video) {
-    // Returns { tracks: MediaStreamTrack[], note: string } or null
     try {
       if (!video) return null;
 
-      // reuse if already created
       const existing = AUDIO_TAPS.get(video);
       if (existing && existing.dest && existing.dest.stream) {
         const tracks = existing.dest.stream.getAudioTracks ? existing.dest.stream.getAudioTracks() : [];
@@ -199,7 +184,6 @@
       if (!AC) return null;
 
       const ctx = new AC({ latencyHint: 'interactive' });
-      // IMPORTANT: MediaElementSource hijacks output path, so we must connect to ctx.destination to keep normal playback.
       const src = ctx.createMediaElementSource(video);
       const gain = ctx.createGain();
       gain.gain.value = 1.0;
@@ -216,18 +200,14 @@
       const tracks = dest.stream.getAudioTracks ? dest.stream.getAudioTracks() : [];
       if (!tracks || !tracks.length) return null;
 
-      // Mark tracks: don't stop on cleanup (stopping would permanently kill dest tracks)
       tracks.forEach(t => { try { t.__gvfNoStop = true; } catch (_) {} });
-
       return { tracks, note: 'webaudio' };
     } catch (_) {
-      // createMediaElementSource fails on cross-origin w/o CORS, DRM, or if the element is already bound elsewhere
       return null;
     }
   }
 
   async function resumeAudioContextsFor(video) {
-    // Best-effort: in Firefox, AudioContext may start suspended until a user gesture
     try {
       const tap = AUDIO_TAPS.get(video);
       if (tap && tap.ctx && tap.ctx.state === 'suspended') {
@@ -236,7 +216,7 @@
     } catch (_) {}
   }
 
-  // ---------- Canvas pipeline for recording (stable + filtered) ----------
+  // ---------- Canvas pipeline for recording ----------
   const REC_PIPE = {
     active: false,
     v: null,
@@ -254,12 +234,9 @@
     try { if (REC_PIPE.raf) cancelAnimationFrame(REC_PIPE.raf); } catch (_) {}
     REC_PIPE.raf = 0;
 
-    // Stop only stoppable tracks (NOT WebAudio destination tracks)
     try {
       REC_PIPE.audioTracks.forEach(t => {
-        try {
-          if (t && !t.__gvfNoStop) t.stop();
-        } catch (_) {}
+        try { if (t && !t.__gvfNoStop) t.stop(); } catch (_) {}
       });
     } catch (_) {}
     REC_PIPE.audioTracks = [];
@@ -267,10 +244,7 @@
     try {
       if (REC_PIPE.stream) {
         REC_PIPE.stream.getTracks().forEach(t => {
-          try {
-            // Don't stop webaudio dest tracks even if they got into stream (shouldn't, but safe)
-            if (t && !t.__gvfNoStop) t.stop();
-          } catch (_) {}
+          try { if (t && !t.__gvfNoStop) t.stop(); } catch (_) {}
         });
       }
     } catch (_) {}
@@ -304,7 +278,6 @@
     const draw = (t) => {
       if (!REC_PIPE.active) return;
 
-      // keep a stable frame pacing
       const dt = t - (REC_PIPE.lastDraw || 0);
       const minDt = 1000 / Math.max(10, REC_PIPE.fps);
       if (dt < (minDt * 0.55)) {
@@ -319,7 +292,6 @@
         ctx.drawImage(video, 0, 0, w, h);
         ctx.restore();
       } catch (e) {
-        // if it becomes tainted mid-way, stop nicely
         if (statusEl) statusEl.textContent = 'Recording stopped: blocked (DRM/cross-origin).';
         try { REC.stopRequested = true; REC.mr && REC.mr.stop(); } catch (_) {}
         return;
@@ -328,19 +300,12 @@
       REC_PIPE.raf = requestAnimationFrame(draw);
     };
 
-    // Capture stream from canvas (filtered)
     let stream = null;
-    try {
-      stream = c.captureStream(REC_PIPE.fps);
-    } catch (_) {
-      return null;
-    }
+    try { stream = c.captureStream(REC_PIPE.fps); } catch (_) { return null; }
 
-    // Try to attach audio WITHOUT muting video (Firefox fix: prefer WebAudio tap)
     let audioTracks = [];
     let audioNote = '';
     try {
-      // Firefox: prefer WebAudio tap (prevents the "video goes muted + no audio in recording" issue)
       if (isFirefox()) {
         const tap = ensureAudioTap(video);
         if (tap && tap.tracks && tap.tracks.length) {
@@ -348,8 +313,6 @@
           audioNote = 'Audio: WebAudio tap';
         }
       }
-
-      // Fallback: captureStream audio tracks (may be muted/empty on some Firefox builds + some sites)
       if (!audioTracks.length) {
         const vs = (video.captureStream && video.captureStream()) || (video.mozCaptureStream && video.mozCaptureStream());
         if (vs) {
@@ -381,7 +344,6 @@
     REC_PIPE.raf = requestAnimationFrame(draw);
 
     if (statusEl && audioTracks.length && audioNote) {
-      // Don't spam: only set if idle text is present
       if (statusEl.textContent && statusEl.textContent.startsWith('Tip:')) {
         statusEl.textContent = audioNote;
       }
@@ -390,7 +352,7 @@
     return stream;
   }
 
-  // ---------- Robust recorder (FIX: file not opening) ----------
+  // ---------- Robust recorder ----------
   const REC = {
     active: false,
     stopRequested: false,
@@ -402,7 +364,6 @@
   };
 
   function pickRecorderMime(hasAudio) {
-    // Prefer MP4 if browser supports it (best compatibility on Windows).
     const mp4Audio = [
       'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
       'video/mp4;codecs=avc1.4D401E,mp4a.40.2',
@@ -425,13 +386,9 @@
       'video/webm;codecs=vp8',
       'video/webm'
     ];
-
     const cands = hasAudio ? [...mp4Audio, ...webmAudio] : [...mp4NoAudio, ...webmNoAudio];
-
     for (const m of cands) {
-      try {
-        if (window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) return m;
-      } catch (_) {}
+      try { if (window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) return m; } catch (_) {}
     }
     return '';
   }
@@ -458,7 +415,6 @@
     const h = Math.max(2, v.videoHeight || 0);
     if (!w || !h) { if (statusEl) statusEl.textContent = 'Video not ready.'; return; }
 
-    // DRM / cross-origin check (and ensures we can bake filters)
     const chk = canBakeToCanvas(v);
     if (!chk.ok) { if (statusEl) statusEl.textContent = `Screenshot blocked: ${chk.reason}`; return; }
 
@@ -477,7 +433,6 @@
       ctx.filter = cssFilter || 'none';
       ctx.drawImage(v, 0, 0, w, h);
       ctx.restore();
-      // touch pixels so taint is caught now, not during toBlob
       ctx.getImageData(0, 0, 1, 1);
     } catch (_) {
       if (statusEl) statusEl.textContent = 'Screenshot blocked (cross-origin/DRM).';
@@ -493,7 +448,6 @@
   }
 
   async function toggleVideoRecord(statusEl, btnEl) {
-    // STOP (FIX: flush last chunk before stopping)
     if (REC.active) {
       try {
         REC.stopRequested = true;
@@ -521,7 +475,6 @@
     const v = getActiveVideoForCapture();
     if (!v) { if (statusEl) statusEl.textContent = 'No video found.'; return; }
 
-    // DRM/cross-origin check: if we cannot draw, disable capture (requested behavior)
     const chk = canBakeToCanvas(v);
     if (!chk.ok) {
       if (statusEl) statusEl.textContent = `Recording disabled: ${chk.reason}`;
@@ -539,10 +492,8 @@
       return;
     }
 
-    // Firefox: resume AudioContext on user gesture (record click)
     try { if (isFirefox()) await resumeAudioContextsFor(v); } catch (_) {}
 
-    // Build filtered canvas stream (better quality + applied filters)
     const filteredStream = startCanvasRecorderPipeline(v, statusEl);
     if (!filteredStream) {
       if (statusEl) statusEl.textContent = 'Recording not supported (canvas capture failed).';
@@ -609,7 +560,6 @@
     };
 
     mr.onstop = () => {
-      // FIX: wait a tick so the final dataavailable can land in REC.chunks
       setTimeout(() => {
         try {
           const type = safeBlobTypeFromRecorder(mr, (REC.ext === 'mp4' ? 'video/mp4' : 'video/webm'));
@@ -651,10 +601,7 @@
       }, 250);
     };
 
-    // FIX: no timeslice → more compatible final file
-    try {
-      mr.start();
-    } catch (_) {
+    try { mr.start(); } catch (_) {
       stopCanvasRecorderPipeline();
       if (statusEl) statusEl.textContent = 'Recorder start failed.';
       try { mr.stop(); } catch (__) {}
@@ -677,8 +624,6 @@
 
   function log(...a)  { if (!LOG.on) return; try { console.log(LOG.tag, ...a); } catch (_) {} }
   function logW(...a) { if (!LOG.on) return; try { console.warn(LOG.tag, ...a); } catch (_) {} }
-  function logE(...a) { if (!LOG.on) return; try { console.error(LOG.tag, ...a); } catch (_) {} }
-
   function logToggle(name, state, extra) { log(`${name}:`, state ? 'ON' : 'OFF', extra || ''); }
 
   // -------------------------
@@ -716,7 +661,6 @@
   let u_grain      = Number(gmGet(K.U_GRAIN,      0.0));
   let u_hue        = Number(gmGet(K.U_HUE,        0.0));
 
-  // Hotkeys
   const HK = { base: 'b', moody: 'd', teal: 'o', vib: 'v', icons: 'h' };
 
   function normSL()  { return snap0(roundTo(clamp(Number(sl)||0,  -2, 2),   0.1), 0.05); }
@@ -725,17 +669,14 @@
   function normWL()  { return snap0(roundTo(clamp(Number(wl)||0,  -2, 2),   0.1), 0.05); }
   function normDN()  { return snap0(roundTo(clamp(Number(dn)||0, -1.5, 1.5), 0.1), 0.05); }
   function normHDR() { return snap0(roundTo(clamp(Number(hdr)||0, -1.0, 2.0), 0.1), 0.05); }
-
   function normU(v)  { return roundTo(clamp(Number(v)||0, -10, 10), 0.1); }
   function uDelta(v) { return normU(v); }
 
   function getSharpenA()  { return Math.max(0, normSL()) * 1.0; }
   function getBlurSigma() { return Math.max(0, -normSL()) * 1.0; }
   function getRadius() { return Math.max(0.1, Math.abs(normSR())); }
-
   function blackToOffset(v) { return clamp(v, -2, 2) * 0.04; }
   function whiteToHiAdj(v)  { return clamp(v, -2, 2) * 0.06; }
-
   function dnToDenoiseMix(v)   { return clamp(v, 0, 1.5) * 0.5; }
   function dnToDenoiseSigma(v) { return clamp(v, 0, 1.5) * 0.8; }
   function dnToGrainAlpha(v)   { return clamp(-v, 0, 1.5) * (0.20/1.5); }
@@ -766,10 +707,10 @@
 
   const AUTO = {
     baseFps: 2,
-    boostMs: 1200,      // window after CUT/Play where we enforce a minimum fps
-    minBoostIdx: 3,     // 0..4 -> 3 == 8fps minimum during boost window
-    minBoostEarlyMs: 450, // first N ms after boost start => enforce even higher min
-    minBoostEarlyIdx: 4,  // 10fps minimum in the first slice
+    boostMs: 1200,
+    minBoostIdx: 3,
+    minBoostEarlyMs: 450,
+    minBoostEarlyIdx: 4,
     minArea: 64*64,
     canvasW: 96,
     canvasH: 54,
@@ -780,9 +721,17 @@
     cur: { br: 1.0, ct: 1.0, sat: 1.0, hue: 0.0 },
     tgt: { br: 1.0, ct: 1.0, sat: 1.0, hue: 0.0 },
 
-    // score smoothing
     scoreEma: 0,
     scoreAlpha: 0.35,
+
+    // motion gating (STRICT): only update when motion exists
+    lastLuma: null,
+    motionEma: 0,
+    motionAlpha: 0.35,
+    motionThresh: 0.012,    // higher = less sensitive (0.010..0.020 typical)
+    motionMinFrames: 2,     // require N consecutive motion frames
+    motionFrames: 0,        // consecutive counter
+    lastAppliedMs: 0,
 
     // debug-dot state
     lastWorkMs: 0,
@@ -840,10 +789,7 @@
         const inView = !(r.bottom < 0 || r.right < 0 || r.top > (window.innerHeight||0) || r.left > (window.innerWidth||0));
         const playing = (!v.paused && !v.seeking);
 
-        const score = area
-          * (inView ? 1.25 : 0.90)
-          * (playing ? 1.20 : 1.00);
-
+        const score = area * (inView ? 1.25 : 0.90) * (playing ? 1.20 : 1.00);
         if (score > bestScore) { best = v; bestScore = score; }
       } catch (_) {}
     }
@@ -896,6 +842,44 @@
     return { mR, mG, mB, mY, sdY, mCh };
   }
 
+  // motion metric from downsampled luma (0..1)
+  function computeMotionFromImage(imgData) {
+    const d = imgData.data;
+    const stepPx = 2;
+    const w = imgData.width;
+    const h = imgData.height;
+    const stride = w * 4;
+
+    const sw = Math.ceil(w / stepPx);
+    const sh = Math.ceil(h / stepPx);
+    const n = sw * sh;
+    const cur = new Uint8Array(n);
+
+    let k = 0;
+    for (let y=0; y<h; y+=stepPx) {
+      let idx = y*stride;
+      for (let x=0; x<w; x+=stepPx) {
+        const i = idx + x*4;
+        const r = d[i];
+        const g = d[i+1];
+        const b = d[i+2];
+        const y8 = (r * 54 + g * 183 + b * 19) >> 8;
+        cur[k++] = y8;
+      }
+    }
+
+    const prev = AUTO.lastLuma;
+    AUTO.lastLuma = cur;
+
+    if (!prev || prev.length !== cur.length) return 1.0;
+
+    let sum = 0;
+    for (let i=0; i<cur.length; i++) sum += Math.abs(cur[i] - prev[i]);
+
+    const meanAbs = sum / Math.max(1, cur.length);
+    return meanAbs / 255;
+  }
+
   function detectCut(sig, lastSig) {
     if (!lastSig) return false;
     const dY  = Math.abs(sig.mY - lastSig.mY);
@@ -915,9 +899,7 @@
     return d;
   }
 
-  function approach(cur, tgt, a) {
-    return cur + (tgt - cur) * a;
-  }
+  function approach(cur, tgt, a) { return cur + (tgt - cur) * a; }
 
   function updateAutoTargetsFromStats(sig) {
     const s = clamp(autoStrength, 0, 1);
@@ -986,27 +968,33 @@
       document.addEventListener('play', () => {
         if (!autoOn) return;
         AUTO.lastSig = null;
+        AUTO.lastLuma = null;
+        AUTO.motionEma = 0;
+        AUTO.motionFrames = 0;
         AUTO.tBoostStart = nowMs();
         AUTO.tBoostUntil = AUTO.tBoostStart + AUTO.boostMs;
       }, true);
       document.addEventListener('playing', () => {
         if (!autoOn) return;
         AUTO.lastSig = null;
+        AUTO.lastLuma = null;
+        AUTO.motionEma = 0;
+        AUTO.motionFrames = 0;
         AUTO.tBoostStart = nowMs();
         AUTO.tBoostUntil = AUTO.tBoostStart + AUTO.boostMs;
       }, true);
       document.addEventListener('loadeddata', () => {
         if (!autoOn) return;
         AUTO.lastSig = null;
+        AUTO.lastLuma = null;
+        AUTO.motionEma = 0;
+        AUTO.motionFrames = 0;
       }, true);
     } catch (_) {}
   }
 
   // -------------------------
   // Auto debug-dot (top-right)
-  // - appears ONLY when Auto Scene Match is ON
-  // - dark green: not working / no video / blocked
-  // - blinking bright/dark: working (toggles each successful scan)
   // -------------------------
   let _autoDotEl = null;
 
@@ -1036,7 +1024,6 @@
   }
 
   function setAutoDotState(mode) {
-    // mode: 'off' | 'idle' | 'workBright' | 'workDark'
     const el = ensureAutoDot();
     if (!el) return;
 
@@ -1048,19 +1035,19 @@
     el.style.display = 'block';
 
     if (mode === 'idle') {
-      el.style.background = '#0b3d17'; // dark green
+      el.style.background = '#0b3d17';
       el.style.boxShadow = '0 0 0 1px rgba(0,0,0,0.75), 0 0 10px rgba(0,255,0,0.12)';
       return;
     }
 
     if (mode === 'workBright') {
-      el.style.background = '#38ff64'; // bright green
+      el.style.background = '#38ff64';
       el.style.boxShadow = '0 0 0 1px rgba(0,0,0,0.75), 0 0 14px rgba(56,255,100,0.45)';
       return;
     }
 
     if (mode === 'workDark') {
-      el.style.background = '#0f7a2b'; // medium/dark green (blink low)
+      el.style.background = '#0f7a2b';
       el.style.boxShadow = '0 0 0 1px rgba(0,0,0,0.75), 0 0 12px rgba(56,255,100,0.22)';
       return;
     }
@@ -1068,27 +1055,21 @@
 
   // -------------------------
   // BEST-OF-BOTH FPS chooser
-  // - base: score-adaptive 2/4/6/8/10 (EMA)
-  // - boost-window: enforces minimum fps after cuts/plays
   // -------------------------
   function scoreToIdx(score) {
-    // Tuned for your cutScore scale:
-    // typical: quiet ~0.00..0.03, motion ~0.04..0.10, cut spikes >=0.14
-    if (score < 0.020) return 0; // 2
-    if (score < 0.045) return 1; // 4
-    if (score < 0.075) return 2; // 6
-    if (score < 0.115) return 3; // 8
-    return 4;                    // 10
+    if (score < 0.020) return 0;
+    if (score < 0.045) return 1;
+    if (score < 0.075) return 2;
+    if (score < 0.115) return 3;
+    return 4;
   }
 
   function pickAutoFps(nowT, cutScore) {
-    // EMA smoothing
     const a = clamp(AUTO.scoreAlpha, 0.05, 0.95);
     AUTO.scoreEma = (AUTO.scoreEma * (1 - a)) + (cutScore * a);
 
     let idx = scoreToIdx(AUTO.scoreEma);
 
-    // boost window min clamp
     if (nowT < AUTO.tBoostUntil) {
       const age = nowT - (AUTO.tBoostStart || nowT);
       const early = age >= 0 && age < AUTO.minBoostEarlyMs;
@@ -1099,6 +1080,9 @@
     return AUTO_LEVELS[clamp(idx, 0, AUTO_LEVELS.length - 1)];
   }
 
+  // -------------------------
+  // Auto loop (STRICT motion-gated)
+  // -------------------------
   function ensureAutoLoop() {
     if (AUTO.running) return;
     AUTO.running = true;
@@ -1106,12 +1090,13 @@
     const c = document.createElement('canvas');
     c.width = AUTO.canvasW;
     c.height = AUTO.canvasH;
+
     let ctx = null;
     try { ctx = c.getContext('2d', { willReadFrequently: true }); }
     catch (_) { try { ctx = c.getContext('2d'); } catch (__) {} }
 
     const scheduleNext = (fps) => {
-      const ms = Math.max(50, Math.round(1000 / Math.max(1, fps)));
+      const ms = Math.max(80, Math.round(1000 / Math.max(1, fps)));
       setTimeout(loop, ms);
     };
 
@@ -1120,7 +1105,10 @@
 
       if (!autoOn) {
         AUTO.lastSig = null;
+        AUTO.lastLuma = null;
         AUTO.scoreEma = 0;
+        AUTO.motionEma = 0;
+        AUTO.motionFrames = 0;
         setAutoDotState('off');
         scheduleNext(AUTO.baseFps);
         return;
@@ -1129,7 +1117,9 @@
       const v = choosePrimaryVideo();
       if (!v || !ctx) {
         AUTO.lastSig = null;
-        // show idle (auto on but not working)
+        AUTO.lastLuma = null;
+        AUTO.motionEma = 0;
+        AUTO.motionFrames = 0;
         setAutoDotState('idle');
 
         const t = nowMs();
@@ -1141,11 +1131,27 @@
         return;
       }
 
+      // HARD stop: if paused or seeking -> never adjust
+      if (v.paused || v.seeking) {
+        AUTO.motionFrames = 0;
+        setAutoDotState('idle');
+        scheduleNext(AUTO.baseFps);
+        return;
+      }
+
       try {
         ctx.drawImage(v, 0, 0, AUTO.canvasW, AUTO.canvasH);
         const img = ctx.getImageData(0, 0, AUTO.canvasW, AUTO.canvasH);
-        const sig = computeFrameStats(img);
 
+        const motion = computeMotionFromImage(img);
+        const ma = clamp(AUTO.motionAlpha, 0.05, 0.95);
+        AUTO.motionEma = (AUTO.motionEma * (1 - ma)) + (motion * ma);
+
+        // consecutive motion frames (hysteresis)
+        const hasMotionNow = (AUTO.motionEma >= AUTO.motionThresh);
+        AUTO.motionFrames = hasMotionNow ? (AUTO.motionFrames + 1) : 0;
+
+        const sig = computeFrameStats(img);
         const isCut = detectCut(sig, AUTO.lastSig);
         AUTO.lastSig = sig;
 
@@ -1154,58 +1160,59 @@
           AUTO.tBoostUntil = AUTO.tBoostStart + AUTO.boostMs;
         }
 
-        updateAutoTargetsFromStats(sig);
-        updateAutoSmoothing(isCut);
-        setAutoToneAndApply();
-
-        // --- best-of-both fps selection ---
         const t = nowMs();
         const rawScore = clamp(sig.__cutScore || 0, 0, 1);
-        const fps = pickAutoFps(t, rawScore);
 
-        // --- debug dot: blink while working ---
-        AUTO.lastWorkMs = t;
-        AUTO.blink = !AUTO.blink;
-        setAutoDotState(AUTO.blink ? 'workBright' : 'workDark');
+        // STRICT rule:
+        // - allow update ONLY if: CUT OR (motionFrames >= motionMinFrames)
+        const hasMotion = (AUTO.motionFrames >= AUTO.motionMinFrames);
+        const allowUpdate = isCut || hasMotion;
 
-        if (LOG.on) {
-          if (isCut && (t - LOG.lastCutMs) >= LOG.cutEveryMs) {
-            LOG.lastCutMs = t;
-            log(
-              `CUT detected → boost window ${AUTO.boostMs}ms`,
-              `score=${(sig.__cutScore || 0).toFixed(3)}`,
-              `Y=${sig.mY.toFixed(3)} sd=${sig.sdY.toFixed(3)} Ch=${sig.mCh.toFixed(3)}`
-            );
-          }
-          if ((t - LOG.lastTickMs) >= LOG.tickEveryMs) {
-            LOG.lastTickMs = t;
-            log(
-              `Auto(A) tick @${fps}fps`,
-              `raw=${rawScore.toFixed(3)} ema=${AUTO.scoreEma.toFixed(3)}`,
-              `cur br=${AUTO.cur.br.toFixed(3)} ct=${AUTO.cur.ct.toFixed(3)} sat=${AUTO.cur.sat.toFixed(3)} hue=${AUTO.cur.hue.toFixed(2)}`
-            );
-          }
+        let fps = AUTO.baseFps;
+        if (allowUpdate) fps = pickAutoFps(t, rawScore);
+
+        if (allowUpdate) {
+          updateAutoTargetsFromStats(sig);
+          updateAutoSmoothing(isCut);
+          setAutoToneAndApply();
+          AUTO.lastAppliedMs = t;
+
+          AUTO.lastWorkMs = t;
+          AUTO.blink = !AUTO.blink;
+          setAutoDotState(AUTO.blink ? 'workBright' : 'workDark');
+        } else {
+          setAutoDotState('idle');
+        }
+
+        if (LOG.on && (t - LOG.lastTickMs) >= LOG.tickEveryMs) {
+          LOG.lastTickMs = t;
+          log(
+            `Auto(A) tick @${fps}fps`,
+            `update=${allowUpdate ? 'YES' : 'NO'}`,
+            `motion=${motion.toFixed(4)} ema=${AUTO.motionEma.toFixed(4)} thr=${AUTO.motionThresh.toFixed(3)} frames=${AUTO.motionFrames}/${AUTO.motionMinFrames}`,
+            `raw=${rawScore.toFixed(3)} emaScore=${AUTO.scoreEma.toFixed(3)}`
+          );
         }
 
         scheduleNext(fps);
       } catch (e) {
         AUTO.lastSig = null;
+        AUTO.lastLuma = null;
+        AUTO.motionEma = 0;
+        AUTO.motionFrames = 0;
         autoTone = '';
-
-        // idle (blocked) + keep it visibly "not working"
         setAutoDotState('idle');
-
         logW('Auto(A) frame read blocked (tainted/cross-origin). AutoTone disabled for now.', e && e.message ? e.message : e);
         scheduleNext(AUTO.baseFps);
       }
     };
 
-    log(`Auto analyzer loop created. levels=${AUTO_LEVELS.join(',')} canvas=${AUTO.canvasW}x${AUTO.canvasH}`);
+    log(`Auto analyzer loop created. levels=${AUTO_LEVELS.join(',')} canvas=${AUTO.canvasW}x${AUTO.canvasH} motionThresh=${AUTO.motionThresh}`);
     scheduleNext(AUTO.baseFps);
   }
 
   // -------------------------
-  // FIX: stop Ctrl+Alt+A flicker (sync-loop guard)
+  // Auto toggle + sync guard
   // -------------------------
   let _inSync = false;
 
@@ -1213,7 +1220,6 @@
     const next = !!on;
     if (next === autoOn && AUTO.running) {
       scheduleOverlayUpdate();
-      // ensure dot matches state
       setAutoDotState(next ? 'idle' : 'off');
       return;
     }
@@ -1225,6 +1231,9 @@
 
     if (!autoOn) {
       AUTO.lastSig = null;
+      AUTO.lastLuma = null;
+      AUTO.motionEma = 0;
+      AUTO.motionFrames = 0;
       AUTO.scoreEma = 0;
       AUTO.tBoostUntil = 0;
       AUTO.tBoostStart = 0;
@@ -1236,7 +1245,6 @@
       return;
     }
 
-    // enable: show idle until first successful tick
     setAutoDotState('idle');
     ensureAutoLoop();
     scheduleOverlayUpdate();
@@ -1562,7 +1570,6 @@
     const btnShot       = mkBtn('Screenshot');
     const btnRec        = mkBtn('Record');
 
-    // store refs for state updates
     overlay.__btnRec = btnRec;
     overlay.__status = status;
 
@@ -1666,7 +1673,6 @@
     btnShot.addEventListener('click', async () => { await takeVideoScreenshot(status); });
 
     btnRec.addEventListener('click', async () => {
-      // If disabled (DRM), do nothing
       if (btnRec.disabled) return;
       await toggleVideoRecord(status, btnRec);
     });
@@ -1817,7 +1823,7 @@
   }
 
   // -------------------------
-  // Overlay state updates (FIXED: data-attributes)
+  // Overlay state updates
   // -------------------------
   function updateMainOverlayState(overlay) {
     if (!iconsShown) { overlay.style.display = 'none'; return; }
@@ -1899,7 +1905,6 @@
     if (!ioHudShown) { overlay.style.display = 'none'; return; }
     overlay.style.display = 'flex';
 
-    // Update DRM/record state button
     try {
       const btnRec = overlay.__btnRec;
       const status = overlay.__status;
@@ -1926,11 +1931,9 @@
             btnRec.style.opacity = '1';
             btnRec.style.cursor = 'pointer';
 
-            // Firefox: show quick hint if audio tap is possible
             if (isFirefox()) {
-              // best effort, don't spam
               const tap = ensureAudioTap(v);
-              if (tap && tap.tracks && tap.tracks.length && status && status.textContent.startsWith('Recording disabled') === false) {
+              if (tap && tap.tracks && tap.tracks.length && status && !status.textContent.startsWith('Recording disabled')) {
                 if (status.textContent === 'Tip: paste JSON here → Save') {
                   status.textContent = 'Firefox: recording uses WebAudio tap (should keep audio + no auto-mute).';
                 }
@@ -1951,8 +1954,10 @@
   // -------------------------
   // Fullscreen wrapper
   // -------------------------
+  const fsWraps2  = new WeakMap();
+
   function ensureFsWrapper(video) {
-    if (fsWraps.has(video)) return fsWraps.get(video);
+    if (fsWraps2.has(video)) return fsWraps2.get(video);
     if (!video || !video.parentNode) return null;
 
     const parent = video.parentNode;
@@ -1970,12 +1975,12 @@
     wrap.appendChild(video);
 
     wrap.__gvfPlaceholder = ph;
-    fsWraps.set(video, wrap);
+    fsWraps2.set(video, wrap);
     return wrap;
   }
 
   function restoreFromFsWrapper(video) {
-    const wrap = fsWraps.get(video);
+    const wrap = fsWraps2.get(video);
     if (!wrap) return;
     const ph = wrap.__gvfPlaceholder;
     if (ph && ph.parentNode) {
@@ -1983,7 +1988,7 @@
       ph.parentNode.removeChild(ph);
     }
     if (wrap.parentNode) wrap.parentNode.removeChild(wrap);
-    fsWraps.delete(video);
+    fsWraps2.delete(video);
   }
 
   function patchFullscreenRequest(video) {
@@ -2019,7 +2024,7 @@
 
   function getOverlayContainer(video) {
     const fsEl = getFsEl();
-    const wrap = fsWraps.get(video);
+    const wrap = fsWraps2.get(video);
 
     if (fsEl && wrap && fsEl === wrap) return wrap;
 
@@ -2107,7 +2112,7 @@
     const fsEl = getFsEl();
     if (!fsEl) {
       document.querySelectorAll('video').forEach(v => {
-        if (fsWraps.has(v)) restoreFromFsWrapper(v);
+        if (fsWraps2.has(v)) restoreFromFsWrapper(v);
       });
     }
     scheduleOverlayUpdate();
@@ -2851,14 +2856,12 @@
     gmSet(K.AUTO_STRENGTH, autoStrength);
     gmSet(K.AUTO_LOCK_WB, autoLockWB);
 
-    // ensure debug-dot exists early if auto is on
     if (debug) ensureAutoDot();
     setAutoDotState(autoOn ? 'idle' : 'off');
 
     applyFilter();
     listenGlobalSync();
     watchIframes();
-
     primeAutoOnVideoActivity();
 
     ensureAutoLoop();
@@ -2867,7 +2870,9 @@
     log('Init complete.', {
       enabled, darkMoody, tealOrange, vibrantSat, iconsShown,
       hdr: normHDR(), profile,
-      autoOn, autoStrength: Number(autoStrength.toFixed(2)), autoLockWB
+      autoOn, autoStrength: Number(autoStrength.toFixed(2)), autoLockWB,
+      motionThresh: AUTO.motionThresh,
+      motionMinFrames: AUTO.motionMinFrames
     });
 
     document.addEventListener('keydown', (e) => {
