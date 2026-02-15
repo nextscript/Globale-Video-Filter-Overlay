@@ -586,7 +586,7 @@
       const opts = {
         mimeType: mime,
         videoBitsPerSecond: 6_000_000,
-        audioBitsPerSecond: 128_000
+        audioBitsPerSecond: 96_000
       };
       mr = new MediaRecorder(filteredStream, opts);
     } catch (_) {
@@ -2801,3 +2801,4 @@
     : init();
 
 })();
+
