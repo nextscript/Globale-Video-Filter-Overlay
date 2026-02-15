@@ -3,7 +3,7 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.2.0
+// @version      1.2.1
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
@@ -35,13 +35,13 @@
   const PROF_TOGGLE_KEY = 'c'; // Strg+Alt+C
   const GRADE_HUD_KEY   = 'g'; // Strg+Alt+G
   const IO_HUD_KEY      = 'i'; // Strg+Alt+I (Settings Export/Import)
-  const AUTO_KEY        = 'a'; // Strg+Alt+A (Auto Scene Match)
+  const AUTO_KEY        = 'a'; // Strg+Alt+A (Auto Scene Match "AI")
 
   // -------------------------
-  // LOG SWITCH + DEBUG DOT
+  // LOG + DEBUG SWITCH
   // -------------------------
-  const logs = true;
-  const debugAutoDot = false; // <--- NEW: show Auto status dot (top-right)
+  const logs  = true;  // console logs
+  const debug = false;  // visual debug (Auto-dot)
 
   // -------------------------
   // CSS.escape Polyfill + safer selectors
@@ -670,7 +670,9 @@
     lastTickMs: 0,
     tickEveryMs: 1000,
     lastCutMs: 0,
-    cutEveryMs: 250
+    cutEveryMs: 250,
+    lastToneMs: 0,
+    toneEveryMs: 800
   };
 
   function log(...a)  { if (!LOG.on) return; try { console.log(LOG.tag, ...a); } catch (_) {} }
@@ -749,113 +751,43 @@
   const PROFILE_VIDEO_OUTLINE = false;
 
   // -------------------------
-  // Auto Scene Match (CCM + Frame Averaging)
+  // Auto Scene Match ("AI")
   // -------------------------
   let autoOn       = !!gmGet(K.AUTO_ON, false);
   let autoStrength = Number(gmGet(K.AUTO_STRENGTH, 0.65)); // 0..1
   autoStrength = clamp(autoStrength, 0, 1);
   let autoLockWB   = !!gmGet(K.AUTO_LOCK_WB, false);
 
-  // NEW: debug dot state
-  const AUTO_DOT_ID = 'gvf-auto-dot';
-  let _autoDotEl = null;
-  let _autoLastFrameAt = 0;   // for "working" status
-  let _autoBlocked = false;   // taint/cors
-  let _autoDotBlink = false;  // toggles dark/bright on activity transitions
+  let autoTone = '';
+  let _autoLastStyleStamp = 0;
 
-  // CCM current (4x5 matrix, 20 values)
-  // We update SVG feColorMatrix values live without rebuilding SVG.
-  const AUTO_CCM = {
-    // row-major for 4x5:
-    // r0..r4, g0..g4, b0..b4, a0..a4
-    cur: [
-      1,0,0,0,0,
-      0,1,0,0,0,
-      0,0,1,0,0,
-      0,0,0,1,0
-    ],
-    tgt: [
-      1,0,0,0,0,
-      0,1,0,0,0,
-      0,0,1,0,0,
-      0,0,0,1,0
-    ]
-  };
+  // --- BEST-OF-BOTH scan scheduler (2/4/6/8/10) ---
+  const AUTO_LEVELS = [2,4,6,8,10];
 
-  // Analyzer config
   const AUTO = {
     baseFps: 2,
-    boostFps: 8,
-    boostMs: 1400,
+    boostMs: 1200,      // window after CUT/Play where we enforce a minimum fps
+    minBoostIdx: 3,     // 0..4 -> 3 == 8fps minimum during boost window
+    minBoostEarlyMs: 450, // first N ms after boost start => enforce even higher min
+    minBoostEarlyIdx: 4,  // 10fps minimum in the first slice
     minArea: 64*64,
     canvasW: 96,
     canvasH: 54,
     running: false,
     tBoostUntil: 0,
+    tBoostStart: 0,
     lastSig: null,
-    // NEW: frame averaging (EMA)
-    avg: null
+    cur: { br: 1.0, ct: 1.0, sat: 1.0, hue: 0.0 },
+    tgt: { br: 1.0, ct: 1.0, sat: 1.0, hue: 0.0 },
+
+    // score smoothing
+    scoreEma: 0,
+    scoreAlpha: 0.35,
+
+    // debug-dot state
+    lastWorkMs: 0,
+    blink: false
   };
-
-  const LUMA = { r: 0.2126, g: 0.7152, b: 0.0722 };
-
-  function ensureAutoDot() {
-    if (!debugAutoDot) return null;
-    if (_autoDotEl && document.getElementById(AUTO_DOT_ID) === _autoDotEl) return _autoDotEl;
-    try {
-      const d = document.createElement('div');
-      d.id = AUTO_DOT_ID;
-      d.style.cssText = `
-        position: fixed;
-        top: 10px;
-        right: 10px;
-        width: 10px;
-        height: 10px;
-        border-radius: 999px;
-        background: rgba(0,0,0,0);
-        z-index: 2147483647;
-        box-shadow: 0 0 0 1px rgba(255,255,255,0.20) inset, 0 0 10px rgba(0,0,0,0.25);
-        pointer-events: none;
-        opacity: 0.95;
-      `;
-      (document.body || document.documentElement).appendChild(d);
-      _autoDotEl = d;
-      return d;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  function setAutoDotState() {
-    if (!debugAutoDot) return;
-    const el = ensureAutoDot();
-    if (!el) return;
-
-    // Only show when autoOn
-    if (!autoOn) {
-      el.style.background = 'rgba(0,0,0,0)';
-      el.style.boxShadow = '0 0 0 1px rgba(255,255,255,0.14) inset, 0 0 8px rgba(0,0,0,0.20)';
-      return;
-    }
-
-    const t = nowMs();
-    const working = !_autoBlocked && (t - _autoLastFrameAt) < 450;
-
-    // dark green = idle, bright green = working
-    const dark = 'rgba(0, 120, 60, 0.85)';
-    const bright = 'rgba(0, 255, 120, 0.95)';
-
-    // requested "hin und her togglen": blink when working pulses
-    // We'll pulse brightness slightly while working by flipping a flag every ~200ms.
-    if (working) {
-      if ((t - _autoLastFrameAt) < 250) _autoDotBlink = !_autoDotBlink;
-      el.style.background = _autoDotBlink ? bright : 'rgba(0, 210, 100, 0.92)';
-      el.style.boxShadow = '0 0 0 1px rgba(255,255,255,0.18) inset, 0 0 12px rgba(0,255,120,0.35)';
-    } else {
-      el.style.background = dark;
-      el.style.boxShadow = '0 0 0 1px rgba(255,255,255,0.14) inset, 0 0 10px rgba(0,120,60,0.22)';
-    }
-  }
 
   function isActuallyVisible(v) {
     try {
@@ -976,139 +908,77 @@
     return score > 0.14;
   }
 
+  function wrapHueDeg(deg) {
+    let d = deg;
+    while (d > 180) d -= 360;
+    while (d < -180) d += 360;
+    return d;
+  }
+
   function approach(cur, tgt, a) {
     return cur + (tgt - cur) * a;
   }
 
-  // --- NEW: build luma-preserving saturation matrix (3x3) ---
-  function satMat3(s) {
-    const lr = LUMA.r, lg = LUMA.g, lb = LUMA.b;
-    const a = (1 - s);
-    return [
-      lr*a + s, lg*a,     lb*a,
-      lr*a,     lg*a + s, lb*a,
-      lr*a,     lg*a,     lb*a + s
-    ];
-  }
-
-  function mul3(A, B) {
-    // 3x3 multiply: A*B
-    return [
-      A[0]*B[0] + A[1]*B[3] + A[2]*B[6],  A[0]*B[1] + A[1]*B[4] + A[2]*B[7],  A[0]*B[2] + A[1]*B[5] + A[2]*B[8],
-      A[3]*B[0] + A[4]*B[3] + A[5]*B[6],  A[3]*B[1] + A[4]*B[4] + A[5]*B[7],  A[3]*B[2] + A[4]*B[5] + A[5]*B[8],
-      A[6]*B[0] + A[7]*B[3] + A[8]*B[6],  A[6]*B[1] + A[7]*B[4] + A[8]*B[7],  A[6]*B[2] + A[7]*B[5] + A[8]*B[8]
-    ];
-  }
-
-  function clampCcmVal(x) {
-    // keep it sane
-    return clamp(x, -0.50, 2.50);
-  }
-
-  function ccmToFeValues(M3, offRGB) {
-    const oR = offRGB[0] || 0, oG = offRGB[1] || 0, oB = offRGB[2] || 0;
-    // 4x5 matrix (20 vals)
-    return [
-      clampCcmVal(M3[0]), clampCcmVal(M3[1]), clampCcmVal(M3[2]), 0, clamp(oR, -0.25, 0.25),
-      clampCcmVal(M3[3]), clampCcmVal(M3[4]), clampCcmVal(M3[5]), 0, clamp(oG, -0.25, 0.25),
-      clampCcmVal(M3[6]), clampCcmVal(M3[7]), clampCcmVal(M3[8]), 0, clamp(oB, -0.25, 0.25),
-      0, 0, 0, 1, 0
-    ];
-  }
-
-  function setAutoCcmTargetsFromSig(sigAvg, isCut) {
+  function updateAutoTargetsFromStats(sig) {
     const s = clamp(autoStrength, 0, 1);
 
-    // --- White balance gains (diagonal) from avg RGB ---
-    const eps = 1e-4;
-    const mR = clamp(sigAvg.mR, eps, 1);
-    const mG = clamp(sigAvg.mG, eps, 1);
-    const mB = clamp(sigAvg.mB, eps, 1);
+    const targetY = 0.50;
+    const errY = clamp(targetY - sig.mY, -0.22, 0.22);
+    const br = clamp(1.0 + errY * 0.85, 0.78, 1.22);
 
-    const target = (mR + mG + mB) / 3;
-
-    let gR = clamp(target / mR, 0.85, 1.15);
-    let gG = clamp(target / mG, 0.90, 1.10); // keep G tighter (usually stable)
-    let gB = clamp(target / mB, 0.85, 1.15);
-
-    // lock WB -> no RGB gain skew (but still allow mild sat)
-    if (autoLockWB) {
-      gR = 1.0; gG = 1.0; gB = 1.0;
-    }
-
-    // keep overall luma ~1.0
-    const lumaGain = (LUMA.r*gR + LUMA.g*gG + LUMA.b*gB) || 1;
-    gR /= lumaGain; gG /= lumaGain; gB /= lumaGain;
-
-    // soften the correction with strength
-    gR = 1.0 + (gR - 1.0) * s;
-    gG = 1.0 + (gG - 1.0) * s;
-    gB = 1.0 + (gB - 1.0) * s;
-
-    // --- Saturation from chroma metric ---
-    // If chroma is low -> increase sat; if high -> reduce a bit.
-    const ch = clamp(sigAvg.mCh, 0.02, 0.35);
-    const targetCh = 0.12;
-    const errCh = clamp(targetCh - ch, -0.12, 0.12);
-    let sat = clamp(1.0 + (-errCh) * 0.85, 0.90, 1.20);
-    sat = 1.0 + (sat - 1.0) * s;
-
-    // --- mild linear contrast from sdY (VERY conservative) ---
-    // low sd -> raise contrast a bit; high sd -> reduce slightly
-    const sd = clamp(sigAvg.sdY, 0.05, 0.40);
     const targetSd = 0.23;
-    const errSd = clamp(targetSd - sd, -0.12, 0.12);
-    let ct = clamp(1.0 + (-errSd) * 0.25, 0.97, 1.05);
-    ct = 1.0 + (ct - 1.0) * s;
+    const errSd = clamp(targetSd - sig.sdY, -0.18, 0.18);
+    const ct = clamp(1.0 + (-errSd) * 0.85, 0.82, 1.30);
 
-    // Build matrix: Ct * (Gains * SatMatrix)
-    const S = satMat3(sat);
-    const G = [
-      gR, 0,  0,
-      0,  gG, 0,
-      0,  0,  gB
-    ];
-    let M = mul3(G, S);
+    const targetCh = 0.12;
+    const errCh = clamp(targetCh - sig.mCh, -0.20, 0.20);
+    const sat = clamp(1.0 + (-errCh) * 0.90, 0.80, 1.45);
 
-    // contrast scalar (linear)
-    M = M.map(v => v * ct);
-
-    // offset to keep mid-gray stable under contrast scaling:
-    const off = 0.5 * (1 - ct);
-    const offRGB = [off, off, off];
-
-    // convert to feColorMatrix values
-    AUTO_CCM.tgt = ccmToFeValues(M, offRGB);
-
-    // faster response on cuts
-    const a = isCut ? 0.28 : 0.10;
-    for (let i = 0; i < AUTO_CCM.cur.length; i++) {
-      AUTO_CCM.cur[i] = approach(AUTO_CCM.cur[i], AUTO_CCM.tgt[i], a);
+    let hue = 0.0;
+    if (!autoLockWB) {
+      const rb = clamp(sig.mR - sig.mB, -0.18, 0.18);
+      hue = clamp((-rb) * 28.0, -10.0, 10.0);
     }
+
+    AUTO.tgt.br  = clamp(1.0 + (br  - 1.0) * s, 0.78, 1.22);
+    AUTO.tgt.ct  = clamp(1.0 + (ct  - 1.0) * s, 0.82, 1.30);
+    AUTO.tgt.sat = clamp(1.0 + (sat - 1.0) * s, 0.80, 1.45);
+    AUTO.tgt.hue = clamp(0.0 + (hue - 0.0) * s, -12.0, 12.0);
   }
 
-  function ccmValuesString(vals) {
-    return vals.map(v => {
-      const n = Number(v);
-      if (!Number.isFinite(n)) return '0';
-      return n.toFixed(4);
-    }).join(' ');
+  function updateAutoSmoothing(isCut) {
+    const a = isCut ? 0.32 : 0.09;
+    AUTO.cur.br  = approach(AUTO.cur.br,  AUTO.tgt.br,  a);
+    AUTO.cur.ct  = approach(AUTO.cur.ct,  AUTO.tgt.ct,  a);
+    AUTO.cur.sat = approach(AUTO.cur.sat, AUTO.tgt.sat, a);
+    AUTO.cur.hue = approach(AUTO.cur.hue, AUTO.tgt.hue, a);
+    AUTO.cur.hue = wrapHueDeg(AUTO.cur.hue);
   }
 
-  function updateAutoCcmInSvg() {
-    if (!autoOn) return;
-    const svg = document.getElementById(SVG_ID);
-    if (!svg) return;
+  function buildAutoToneCss() {
+    if (!autoOn) return '';
+    const br  = clamp(AUTO.cur.br,  0.78, 1.22);
+    const ct  = clamp(AUTO.cur.ct,  0.82, 1.30);
+    const sat = clamp(AUTO.cur.sat, 0.80, 1.45);
+    const hue = clamp(AUTO.cur.hue, -12, 12);
+    return ` brightness(${br.toFixed(3)}) contrast(${ct.toFixed(3)}) saturate(${sat.toFixed(3)}) hue-rotate(${hue.toFixed(2)}deg)`;
+  }
 
-    const str = ccmValuesString(AUTO_CCM.cur);
+  function setAutoToneAndApply() {
+    const tone = buildAutoToneCss();
+    if (tone === autoTone) return;
+    autoTone = tone;
 
-    // Update ALL auto-ccm nodes in all combo filters
-    const nodes = svg.querySelectorAll('[data-gvf-auto-ccm="1"]');
-    if (!nodes || !nodes.length) return;
+    const t = nowMs();
+    if ((t - _autoLastStyleStamp) < 35) return;
+    _autoLastStyleStamp = t;
 
-    nodes.forEach(n => {
-      try { n.setAttribute('values', str); } catch (_) {}
-    });
+    if (LOG.on && (t - LOG.lastToneMs) >= LOG.toneEveryMs) {
+      LOG.lastToneMs = t;
+      log('AutoTone updated:', autoTone.trim());
+    }
+
+    applyFilter({ skipSvgIfPossible: true });
   }
 
   function primeAutoOnVideoActivity() {
@@ -1116,21 +986,117 @@
       document.addEventListener('play', () => {
         if (!autoOn) return;
         AUTO.lastSig = null;
-        AUTO.avg = null;
-        AUTO.tBoostUntil = nowMs() + 400;
+        AUTO.tBoostStart = nowMs();
+        AUTO.tBoostUntil = AUTO.tBoostStart + AUTO.boostMs;
       }, true);
       document.addEventListener('playing', () => {
         if (!autoOn) return;
         AUTO.lastSig = null;
-        AUTO.avg = null;
-        AUTO.tBoostUntil = nowMs() + 700;
+        AUTO.tBoostStart = nowMs();
+        AUTO.tBoostUntil = AUTO.tBoostStart + AUTO.boostMs;
       }, true);
       document.addEventListener('loadeddata', () => {
         if (!autoOn) return;
         AUTO.lastSig = null;
-        AUTO.avg = null;
       }, true);
     } catch (_) {}
+  }
+
+  // -------------------------
+  // Auto debug-dot (top-right)
+  // - appears ONLY when Auto Scene Match is ON
+  // - dark green: not working / no video / blocked
+  // - blinking bright/dark: working (toggles each successful scan)
+  // -------------------------
+  let _autoDotEl = null;
+
+  function ensureAutoDot() {
+    if (!debug) return null;
+    if (_autoDotEl && _autoDotEl.isConnected) return _autoDotEl;
+
+    const d = document.createElement('div');
+    d.id = 'gvf-auto-dot';
+    d.style.cssText = `
+      position: fixed;
+      top: 8px;
+      right: 8px;
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      z-index: 2147483647;
+      pointer-events: none;
+      opacity: 0.95;
+      display: none;
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.75), 0 0 10px rgba(0,255,0,0.18);
+      transform: translateZ(0);
+    `;
+    (document.body || document.documentElement).appendChild(d);
+    _autoDotEl = d;
+    return d;
+  }
+
+  function setAutoDotState(mode) {
+    // mode: 'off' | 'idle' | 'workBright' | 'workDark'
+    const el = ensureAutoDot();
+    if (!el) return;
+
+    if (!autoOn) {
+      el.style.display = 'none';
+      return;
+    }
+
+    el.style.display = 'block';
+
+    if (mode === 'idle') {
+      el.style.background = '#0b3d17'; // dark green
+      el.style.boxShadow = '0 0 0 1px rgba(0,0,0,0.75), 0 0 10px rgba(0,255,0,0.12)';
+      return;
+    }
+
+    if (mode === 'workBright') {
+      el.style.background = '#38ff64'; // bright green
+      el.style.boxShadow = '0 0 0 1px rgba(0,0,0,0.75), 0 0 14px rgba(56,255,100,0.45)';
+      return;
+    }
+
+    if (mode === 'workDark') {
+      el.style.background = '#0f7a2b'; // medium/dark green (blink low)
+      el.style.boxShadow = '0 0 0 1px rgba(0,0,0,0.75), 0 0 12px rgba(56,255,100,0.22)';
+      return;
+    }
+  }
+
+  // -------------------------
+  // BEST-OF-BOTH FPS chooser
+  // - base: score-adaptive 2/4/6/8/10 (EMA)
+  // - boost-window: enforces minimum fps after cuts/plays
+  // -------------------------
+  function scoreToIdx(score) {
+    // Tuned for your cutScore scale:
+    // typical: quiet ~0.00..0.03, motion ~0.04..0.10, cut spikes >=0.14
+    if (score < 0.020) return 0; // 2
+    if (score < 0.045) return 1; // 4
+    if (score < 0.075) return 2; // 6
+    if (score < 0.115) return 3; // 8
+    return 4;                    // 10
+  }
+
+  function pickAutoFps(nowT, cutScore) {
+    // EMA smoothing
+    const a = clamp(AUTO.scoreAlpha, 0.05, 0.95);
+    AUTO.scoreEma = (AUTO.scoreEma * (1 - a)) + (cutScore * a);
+
+    let idx = scoreToIdx(AUTO.scoreEma);
+
+    // boost window min clamp
+    if (nowT < AUTO.tBoostUntil) {
+      const age = nowT - (AUTO.tBoostStart || nowT);
+      const early = age >= 0 && age < AUTO.minBoostEarlyMs;
+      const minIdx = early ? AUTO.minBoostEarlyIdx : AUTO.minBoostIdx;
+      idx = Math.max(idx, clamp(minIdx, 0, AUTO_LEVELS.length - 1));
+    }
+
+    return AUTO_LEVELS[clamp(idx, 0, AUTO_LEVELS.length - 1)];
   }
 
   function ensureAutoLoop() {
@@ -1152,12 +1118,10 @@
     const loop = () => {
       if (!AUTO.running) return;
 
-      setAutoDotState();
-
       if (!autoOn) {
         AUTO.lastSig = null;
-        AUTO.avg = null;
-        _autoBlocked = false;
+        AUTO.scoreEma = 0;
+        setAutoDotState('off');
         scheduleNext(AUTO.baseFps);
         return;
       }
@@ -1165,7 +1129,14 @@
       const v = choosePrimaryVideo();
       if (!v || !ctx) {
         AUTO.lastSig = null;
-        _autoBlocked = false;
+        // show idle (auto on but not working)
+        setAutoDotState('idle');
+
+        const t = nowMs();
+        if (LOG.on && (t - LOG.lastTickMs) >= LOG.tickEveryMs) {
+          LOG.lastTickMs = t;
+          log('Auto(A) running: no playable video found.');
+        }
         scheduleNext(AUTO.baseFps);
         return;
       }
@@ -1178,48 +1149,40 @@
         const isCut = detectCut(sig, AUTO.lastSig);
         AUTO.lastSig = sig;
 
-        if (isCut) AUTO.tBoostUntil = nowMs() + AUTO.boostMs;
-
-        // EMA frame averaging (stronger smoothing, faster on cuts)
-        const a = isCut ? 0.45 : 0.12;
-        if (!AUTO.avg) {
-          AUTO.avg = { ...sig };
-        } else {
-          AUTO.avg.mR  = approach(AUTO.avg.mR,  sig.mR,  a);
-          AUTO.avg.mG  = approach(AUTO.avg.mG,  sig.mG,  a);
-          AUTO.avg.mB  = approach(AUTO.avg.mB,  sig.mB,  a);
-          AUTO.avg.mY  = approach(AUTO.avg.mY,  sig.mY,  a);
-          AUTO.avg.sdY = approach(AUTO.avg.sdY, sig.sdY, a);
-          AUTO.avg.mCh = approach(AUTO.avg.mCh, sig.mCh, a);
+        if (isCut) {
+          AUTO.tBoostStart = nowMs();
+          AUTO.tBoostUntil = AUTO.tBoostStart + AUTO.boostMs;
         }
 
-        setAutoCcmTargetsFromSig(AUTO.avg, isCut);
-        updateAutoCcmInSvg();
-        applyFilter({ skipSvgIfPossible: true });
+        updateAutoTargetsFromStats(sig);
+        updateAutoSmoothing(isCut);
+        setAutoToneAndApply();
 
-        _autoLastFrameAt = nowMs();
-        _autoBlocked = false;
-        setAutoDotState();
-
+        // --- best-of-both fps selection ---
         const t = nowMs();
-        const fps = (t < AUTO.tBoostUntil) ? AUTO.boostFps : AUTO.baseFps;
+        const rawScore = clamp(sig.__cutScore || 0, 0, 1);
+        const fps = pickAutoFps(t, rawScore);
+
+        // --- debug dot: blink while working ---
+        AUTO.lastWorkMs = t;
+        AUTO.blink = !AUTO.blink;
+        setAutoDotState(AUTO.blink ? 'workBright' : 'workDark');
 
         if (LOG.on) {
           if (isCut && (t - LOG.lastCutMs) >= LOG.cutEveryMs) {
             LOG.lastCutMs = t;
             log(
-              `CUT detected → boost ${AUTO.boostFps}fps for ${AUTO.boostMs}ms`,
+              `CUT detected → boost window ${AUTO.boostMs}ms`,
               `score=${(sig.__cutScore || 0).toFixed(3)}`,
-              `avg RGB=${AUTO.avg.mR.toFixed(3)}/${AUTO.avg.mG.toFixed(3)}/${AUTO.avg.mB.toFixed(3)}`,
-              `ct/sd=${AUTO.avg.sdY.toFixed(3)} ch=${AUTO.avg.mCh.toFixed(3)}`
+              `Y=${sig.mY.toFixed(3)} sd=${sig.sdY.toFixed(3)} Ch=${sig.mCh.toFixed(3)}`
             );
           }
           if ((t - LOG.lastTickMs) >= LOG.tickEveryMs) {
             LOG.lastTickMs = t;
             log(
               `Auto(A) tick @${fps}fps`,
-              `avg RGB=${AUTO.avg.mR.toFixed(3)}/${AUTO.avg.mG.toFixed(3)}/${AUTO.avg.mB.toFixed(3)}`,
-              `avg sd=${AUTO.avg.sdY.toFixed(3)} ch=${AUTO.avg.mCh.toFixed(3)}`
+              `raw=${rawScore.toFixed(3)} ema=${AUTO.scoreEma.toFixed(3)}`,
+              `cur br=${AUTO.cur.br.toFixed(3)} ct=${AUTO.cur.ct.toFixed(3)} sat=${AUTO.cur.sat.toFixed(3)} hue=${AUTO.cur.hue.toFixed(2)}`
             );
           }
         }
@@ -1227,15 +1190,17 @@
         scheduleNext(fps);
       } catch (e) {
         AUTO.lastSig = null;
-        AUTO.avg = null;
-        _autoBlocked = true;
-        setAutoDotState();
-        logW('Auto(A) frame read blocked (tainted/cross-origin). CCM update paused.', e && e.message ? e.message : e);
+        autoTone = '';
+
+        // idle (blocked) + keep it visibly "not working"
+        setAutoDotState('idle');
+
+        logW('Auto(A) frame read blocked (tainted/cross-origin). AutoTone disabled for now.', e && e.message ? e.message : e);
         scheduleNext(AUTO.baseFps);
       }
     };
 
-    log(`Auto analyzer loop created. baseFps=${AUTO.baseFps}, boostFps=${AUTO.boostFps}, canvas=${AUTO.canvasW}x${AUTO.canvasH}`);
+    log(`Auto analyzer loop created. levels=${AUTO_LEVELS.join(',')} canvas=${AUTO.canvasW}x${AUTO.canvasH}`);
     scheduleNext(AUTO.baseFps);
   }
 
@@ -1246,6 +1211,13 @@
 
   function setAutoOn(on) {
     const next = !!on;
+    if (next === autoOn && AUTO.running) {
+      scheduleOverlayUpdate();
+      // ensure dot matches state
+      setAutoDotState(next ? 'idle' : 'off');
+      return;
+    }
+
     autoOn = next;
     if (!_inSync) gmSet(K.AUTO_ON, autoOn);
 
@@ -1253,28 +1225,21 @@
 
     if (!autoOn) {
       AUTO.lastSig = null;
-      AUTO.avg = null;
+      AUTO.scoreEma = 0;
       AUTO.tBoostUntil = 0;
-
-      // reset CCM to identity
-      AUTO_CCM.cur = [
-        1,0,0,0,0,
-        0,1,0,0,0,
-        0,0,1,0,0,
-        0,0,0,1,0
-      ];
-      AUTO_CCM.tgt = AUTO_CCM.cur.slice();
-
-      updateAutoCcmInSvg();
+      AUTO.tBoostStart = 0;
+      AUTO.tgt = { br: 1.0, ct: 1.0, sat: 1.0, hue: 0.0 };
+      autoTone = '';
       applyFilter({ skipSvgIfPossible: true });
       scheduleOverlayUpdate();
-      setAutoDotState();
+      setAutoDotState('off');
       return;
     }
 
+    // enable: show idle until first successful tick
+    setAutoDotState('idle');
     ensureAutoLoop();
     scheduleOverlayUpdate();
-    setAutoDotState();
   }
 
   // -------------------------
@@ -1731,7 +1696,7 @@
   function exportSettings() {
     return {
       schema: 'gvf-settings',
-      ver: '1.2',
+      ver: '1.1',
       enabled: !!enabled,
       darkMoody: !!darkMoody,
       tealOrange: !!tealOrange,
@@ -2149,7 +2114,7 @@
   }
 
   // -------------------------
-  // SVG filter build (unchanged + NEW: auto CCM node)
+  // SVG filter build (unchanged)
   // -------------------------
   function mkGamma(ch, amp, exp, off) {
     const f = document.createElementNS(svgNS, ch);
@@ -2600,16 +2565,6 @@
       }
     }
 
-    // NEW: Auto CCM stage (applied only when autoOn, but node exists always and is set to identity when off)
-    const autoCcm = document.createElementNS(svgNS, 'feColorMatrix');
-    autoCcm.setAttribute('in', last);
-    autoCcm.setAttribute('type', 'matrix');
-    autoCcm.setAttribute('data-gvf-auto-ccm', '1');
-    autoCcm.setAttribute('values', ccmValuesString(AUTO_CCM.cur));
-    autoCcm.setAttribute('result', 'r_auto_ccm');
-    filter.appendChild(autoCcm);
-    last = 'r_auto_ccm';
-
     const merge = document.createElementNS(svgNS, 'feMerge');
     const n1 = document.createElementNS(svgNS, 'feMergeNode');
     n1.setAttribute('in', last);
@@ -2667,9 +2622,6 @@
     buildFilter(svg, 'gvf_smtv', { moody:true,  teal:true,  vib:true  }, R, A, BS, blackOffset, whiteAdj, DN, HDR, P);
 
     (document.body || document.documentElement).appendChild(svg);
-
-    // after rebuild, push current CCM into SVG nodes
-    updateAutoCcmInSvg();
   }
 
   function pickComboId() {
@@ -2703,7 +2655,6 @@
     if (nothingOn) {
       if (style) style.remove();
       scheduleOverlayUpdate();
-      setAutoDotState();
       return;
     }
 
@@ -2720,6 +2671,7 @@
     const baseTone = enabled ? ' brightness(1.02) contrast(1.05) saturate(1.21)' : '';
     const profTone = profileToneCss();
     const userTone = userToneCss();
+    const aTone    = autoOn ? (autoTone || buildAutoToneCss()) : '';
 
     const outlineCss = (PROFILE_VIDEO_OUTLINE && profile !== 'off')
       ? `outline: 2px solid ${(PROF[profile]||PROF.off).color} !important; outline-offset: -2px;`
@@ -2729,13 +2681,12 @@
       video {
         will-change: filter;
         transform: translateZ(0);
-        filter: url("#${pickComboId()}")${baseTone}${profTone}${userTone} !important;
+        filter: url("#${pickComboId()}")${baseTone}${profTone}${userTone}${aTone} !important;
         ${outlineCss}
       }
     `;
 
     scheduleOverlayUpdate();
-    setAutoDotState();
   }
 
   // -------------------------
@@ -2900,6 +2851,10 @@
     gmSet(K.AUTO_STRENGTH, autoStrength);
     gmSet(K.AUTO_LOCK_WB, autoLockWB);
 
+    // ensure debug-dot exists early if auto is on
+    if (debug) ensureAutoDot();
+    setAutoDotState(autoOn ? 'idle' : 'off');
+
     applyFilter();
     listenGlobalSync();
     watchIframes();
@@ -2980,12 +2935,7 @@
     new MutationObserver(() => {
       if (!document.getElementById(SVG_ID)) ensureSvgFilter();
       scheduleOverlayUpdate();
-      setAutoDotState();
     }).observe(document.documentElement, { childList: true, subtree: true });
-
-    // ensure dot exists and correct at start
-    ensureAutoDot();
-    setAutoDotState();
 
     scheduleOverlayUpdate();
   }
