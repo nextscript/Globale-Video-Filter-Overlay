@@ -1,4 +1,4 @@
-<img src="https://i.ibb.co/bgwB7jRn/89VLz9x.png">
+<img src="https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/preview.png">
 
 <h2>What this script does</h2>
 
