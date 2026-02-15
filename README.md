@@ -108,33 +108,9 @@ All sliders support Snap-to-0 around the center, so you can easily return to neu
 <li>WL: -0.1</li>
 <li>DN: 0.0</li>
 </ul>
-<h2>My Personal Preset:</h2>
 <hr>
-[D] [Movie] / [B][D][User] / [B][D]
-<b>Preset Values</b>
-<ul>
-<li>SL: +1.3</li>
-<li>SR: -1.1</li>
-<li>BL: +0.3</li>
-<li>WL: +0.2</li>
-<li>DN: +0.6</li>
-<li>HDR: +0.2</li>
-</ul>
-
-<b>My User Profile:</b>
-<ul>
-<li>Contrast: +2.5</li>
-<li>Black Level: -1.0</li>
-<li>White Level: -0.5</li>
-<li>Highlight: -2.5</li>
-<li>Shadows: +1.5</li>
-<li>Saturation: -0.8</li>
-<li>Vibrance: +0.6</li>
-<li>Sharpen: -0.6</li>
-<li>Gamma: +0.6</li>
-<li>Gain: +1.2</li>
-<li>Hue-Correction: -0.3</li>
-<ul>
+<h2>My Profile:</h2>
+<a href="https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/My_Profile.json" target="_blank">My_Profile.json</a>
 <hr>
 <h1>Screenshot</h1><br>
 <b>OFF:</b><br>
