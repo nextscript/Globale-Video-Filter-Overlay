@@ -616,8 +616,6 @@
     tag: '[GVF]',
     lastTickMs: 0,
     tickEveryMs: 1000,
-    lastCutMs: 0,
-    cutEveryMs: 250,
     lastToneMs: 0,
     toneEveryMs: 800
   };
@@ -734,10 +732,73 @@
     lastAppliedMs: 0,
 
     // debug-dot state
-    lastWorkMs: 0,
     blink: false
   };
 
+  // -------------------------
+  // Auto debug-dot (IN VIDEO FRAME)
+  // -------------------------
+  const overlaysAutoDot = new WeakMap();
+  let autoDotMode = 'off'; // off | idle | workBright | workDark
+
+  function mkAutoDotOverlay() {
+    const d = document.createElement('div');
+    d.className = 'gvf-auto-dot';
+    d.style.cssText = `
+      position: fixed;
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      z-index: 2147483647;
+      pointer-events: none;
+      opacity: 0.95;
+      display: none;
+      transform: translateZ(0);
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.75), 0 0 10px rgba(0,255,0,0.18);
+      background: #0b3d17;
+    `;
+    (document.body || document.documentElement).appendChild(d);
+    return d;
+  }
+
+  function setAutoDotState(mode) {
+    if (!debug) return;
+    autoDotMode = mode || 'off';
+    scheduleOverlayUpdate();
+  }
+
+  function applyAutoDotStyle(dotEl) {
+    if (!dotEl) return;
+
+    if (!autoOn || autoDotMode === 'off') {
+      dotEl.style.display = 'none';
+      return;
+    }
+
+    dotEl.style.display = 'block';
+
+    if (autoDotMode === 'idle') {
+      dotEl.style.background = '#0b3d17';
+      dotEl.style.boxShadow = '0 0 0 1px rgba(0,0,0,0.75), 0 0 10px rgba(0,255,0,0.12)';
+      return;
+    }
+
+    if (autoDotMode === 'workBright') {
+      dotEl.style.background = '#38ff64';
+      dotEl.style.boxShadow = '0 0 0 1px rgba(0,0,0,0.75), 0 0 14px rgba(56,255,100,0.45)';
+      return;
+    }
+
+    if (autoDotMode === 'workDark') {
+      dotEl.style.background = '#0f7a2b';
+      dotEl.style.boxShadow = '0 0 0 1px rgba(0,0,0,0.75), 0 0 12px rgba(56,255,100,0.22)';
+      return;
+    }
+  }
+
+  // -------------------------
+  // Video picking helpers
+  // -------------------------
   function isActuallyVisible(v) {
     try {
       const cs = window.getComputedStyle(v);
@@ -994,66 +1055,6 @@
   }
 
   // -------------------------
-  // Auto debug-dot (top-right)
-  // -------------------------
-  let _autoDotEl = null;
-
-  function ensureAutoDot() {
-    if (!debug) return null;
-    if (_autoDotEl && _autoDotEl.isConnected) return _autoDotEl;
-
-    const d = document.createElement('div');
-    d.id = 'gvf-auto-dot';
-    d.style.cssText = `
-      position: fixed;
-      top: 8px;
-      right: 8px;
-      width: 10px;
-      height: 10px;
-      border-radius: 999px;
-      z-index: 2147483647;
-      pointer-events: none;
-      opacity: 0.95;
-      display: none;
-      box-shadow: 0 0 0 1px rgba(0,0,0,0.75), 0 0 10px rgba(0,255,0,0.18);
-      transform: translateZ(0);
-    `;
-    (document.body || document.documentElement).appendChild(d);
-    _autoDotEl = d;
-    return d;
-  }
-
-  function setAutoDotState(mode) {
-    const el = ensureAutoDot();
-    if (!el) return;
-
-    if (!autoOn) {
-      el.style.display = 'none';
-      return;
-    }
-
-    el.style.display = 'block';
-
-    if (mode === 'idle') {
-      el.style.background = '#0b3d17';
-      el.style.boxShadow = '0 0 0 1px rgba(0,0,0,0.75), 0 0 10px rgba(0,255,0,0.12)';
-      return;
-    }
-
-    if (mode === 'workBright') {
-      el.style.background = '#38ff64';
-      el.style.boxShadow = '0 0 0 1px rgba(0,0,0,0.75), 0 0 14px rgba(56,255,100,0.45)';
-      return;
-    }
-
-    if (mode === 'workDark') {
-      el.style.background = '#0f7a2b';
-      el.style.boxShadow = '0 0 0 1px rgba(0,0,0,0.75), 0 0 12px rgba(56,255,100,0.22)';
-      return;
-    }
-  }
-
-  // -------------------------
   // BEST-OF-BOTH FPS chooser
   // -------------------------
   function scoreToIdx(score) {
@@ -1175,9 +1176,7 @@
           updateAutoTargetsFromStats(sig);
           updateAutoSmoothing(isCut);
           setAutoToneAndApply();
-          AUTO.lastAppliedMs = t;
 
-          AUTO.lastWorkMs = t;
           AUTO.blink = !AUTO.blink;
           setAutoDotState(AUTO.blink ? 'workBright' : 'workDark');
         } else {
@@ -1239,9 +1238,9 @@
       AUTO.tBoostStart = 0;
       AUTO.tgt = { br: 1.0, ct: 1.0, sat: 1.0, hue: 0.0 };
       autoTone = '';
+      setAutoDotState('off');
       applyFilter({ skipSvgIfPossible: true });
       scheduleOverlayUpdate();
-      setAutoDotState('off');
       return;
     }
 
@@ -1256,7 +1255,6 @@
   const overlaysMain  = new WeakMap();
   const overlaysGrade = new WeakMap();
   const overlaysIO    = new WeakMap();
-  const fsWraps  = new WeakMap();
   let rafScheduled = false;
 
   function getFsEl() {
@@ -1799,6 +1797,7 @@
 
     gmSet(K.PROF, profile);
     gmSet(K.G_HUD, gradingHudShown);
+    gmSet(K.I_HUD, ioHudShown);
 
     gmSet(K.U_CONTRAST, u_contrast);
     gmSet(K.U_BLACK, u_black);
@@ -1823,7 +1822,7 @@
   }
 
   // -------------------------
-  // Overlay state updates
+  // Overlay state updates + positioning
   // -------------------------
   function updateMainOverlayState(overlay) {
     if (!iconsShown) { overlay.style.display = 'none'; return; }
@@ -2053,8 +2052,6 @@
       }
     }
 
-    overlay.style.display = 'flex';
-
     if (isWrapFs) {
       const cr = container.getBoundingClientRect();
       overlay.style.top  = `${Math.round((r.top - cr.top) + dy)}px`;
@@ -2073,16 +2070,20 @@
       if (!overlaysMain.has(v))  overlaysMain.set(v, mkMainOverlay());
       if (!overlaysGrade.has(v)) overlaysGrade.set(v, mkGradingOverlay());
       if (!overlaysIO.has(v))    overlaysIO.set(v, mkIOOverlay());
+      if (debug && !overlaysAutoDot.has(v)) overlaysAutoDot.set(v, mkAutoDotOverlay());
     });
   }
 
   function updateAllOverlays() {
     ensureOverlays();
 
+    const primary = choosePrimaryVideo();
+
     document.querySelectorAll('video').forEach(v => {
       const oMain = overlaysMain.get(v);
       const oGr   = overlaysGrade.get(v);
       const oIO   = overlaysIO.get(v);
+      const oDot  = overlaysAutoDot.get(v);
 
       if (oMain) {
         updateMainOverlayState(oMain);
@@ -2095,6 +2096,19 @@
       if (oIO) {
         updateIOOverlayState(oIO);
         if (ioHudShown) positionOverlayAt(v, oIO, 10, 10 + 560);
+      }
+
+      // Auto-dot: ONLY on primary video (so it stays "im video frame" ohne duplikate)
+      if (oDot) {
+        applyAutoDotStyle(oDot);
+
+        if (!debug || !autoOn || !primary || v !== primary) {
+          oDot.style.display = 'none';
+        } else {
+          // put it top-right inside video frame (separate from icon overlay)
+          positionOverlayAt(v, oDot, 10, 10);
+          oDot.style.display = 'block';
+        }
       }
     });
   }
@@ -2119,7 +2133,7 @@
   }
 
   // -------------------------
-  // SVG filter build (unchanged)
+  // SVG filter build + apply (unchanged from your previous build)
   // -------------------------
   function mkGamma(ch, amp, exp, off) {
     const f = document.createElementNS(svgNS, ch);
@@ -2856,7 +2870,6 @@
     gmSet(K.AUTO_STRENGTH, autoStrength);
     gmSet(K.AUTO_LOCK_WB, autoLockWB);
 
-    if (debug) ensureAutoDot();
     setAutoDotState(autoOn ? 'idle' : 'off');
 
     applyFilter();
