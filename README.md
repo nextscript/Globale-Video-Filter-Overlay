@@ -111,12 +111,3 @@ All sliders support Snap-to-0 around the center, so you can easily return to neu
 <hr>
 <h2>My Profile:</h2>
 <a href="https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/My_Profile.json" target="_blank">My_Profile.json</a>
-<hr>
-<h1>Screenshot</h1><br>
-<b>OFF:</b><br>
-<img src="https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/scriptOFF.png"><br>
-
-<b>ON:</b><br>
-<img src="https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/scriptON.png">
-<hr>
-https://greasyfork.org/de/scripts/561189-global-video-filter-overlay
