@@ -3,7 +3,7 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.1.8
+// @version      1.1.9
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
@@ -106,6 +106,10 @@
 
   const nowMs = () => (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
 
+  const isFirefox = () => {
+    try { return /firefox/i.test(navigator.userAgent || ''); } catch (_) { return false; }
+  };
+
   // -------------------------
   // Screenshot / Recording helpers
   // -------------------------
@@ -171,6 +175,66 @@
     }
   }
 
+  // -------------------------
+  // Firefox audio fix:
+  // Prefer WebAudio tap (avoids Firefox auto-muting that can happen with captureStream()).
+  // Falls back to captureStream audio if WebAudio is blocked.
+  // -------------------------
+  const AUDIO_TAPS = new WeakMap();
+
+  function ensureAudioTap(video) {
+    // Returns { tracks: MediaStreamTrack[], note: string } or null
+    try {
+      if (!video) return null;
+
+      // reuse if already created
+      const existing = AUDIO_TAPS.get(video);
+      if (existing && existing.dest && existing.dest.stream) {
+        const tracks = existing.dest.stream.getAudioTracks ? existing.dest.stream.getAudioTracks() : [];
+        if (tracks && tracks.length) return { tracks, note: 'webaudio' };
+      }
+
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return null;
+
+      const ctx = new AC({ latencyHint: 'interactive' });
+      // IMPORTANT: MediaElementSource hijacks output path, so we must connect to ctx.destination to keep normal playback.
+      const src = ctx.createMediaElementSource(video);
+      const gain = ctx.createGain();
+      gain.gain.value = 1.0;
+
+      const dest = ctx.createMediaStreamDestination();
+
+      src.connect(gain);
+      gain.connect(ctx.destination);
+      gain.connect(dest);
+
+      const tap = { ctx, src, gain, dest };
+      AUDIO_TAPS.set(video, tap);
+
+      const tracks = dest.stream.getAudioTracks ? dest.stream.getAudioTracks() : [];
+      if (!tracks || !tracks.length) return null;
+
+      // Mark tracks: don't stop on cleanup (stopping would permanently kill dest tracks)
+      tracks.forEach(t => { try { t.__gvfNoStop = true; } catch (_) {} });
+
+      return { tracks, note: 'webaudio' };
+    } catch (_) {
+      // createMediaElementSource fails on cross-origin w/o CORS, DRM, or if the element is already bound elsewhere
+      return null;
+    }
+  }
+
+  async function resumeAudioContextsFor(video) {
+    // Best-effort: in Firefox, AudioContext may start suspended until a user gesture
+    try {
+      const tap = AUDIO_TAPS.get(video);
+      if (tap && tap.ctx && tap.ctx.state === 'suspended') {
+        await tap.ctx.resume();
+      }
+    } catch (_) {}
+  }
+
   // ---------- Canvas pipeline for recording (stable + filtered) ----------
   const REC_PIPE = {
     active: false,
@@ -189,12 +253,24 @@
     try { if (REC_PIPE.raf) cancelAnimationFrame(REC_PIPE.raf); } catch (_) {}
     REC_PIPE.raf = 0;
 
-    try { REC_PIPE.audioTracks.forEach(t => { try { t.stop(); } catch (_) {} }); } catch (_) {}
+    // Stop only stoppable tracks (NOT WebAudio destination tracks)
+    try {
+      REC_PIPE.audioTracks.forEach(t => {
+        try {
+          if (t && !t.__gvfNoStop) t.stop();
+        } catch (_) {}
+      });
+    } catch (_) {}
     REC_PIPE.audioTracks = [];
 
     try {
       if (REC_PIPE.stream) {
-        REC_PIPE.stream.getTracks().forEach(t => { try { t.stop(); } catch (_) {} });
+        REC_PIPE.stream.getTracks().forEach(t => {
+          try {
+            // Don't stop webaudio dest tracks even if they got into stream (shouldn't, but safe)
+            if (t && !t.__gvfNoStop) t.stop();
+          } catch (_) {}
+        });
       }
     } catch (_) {}
 
@@ -259,11 +335,30 @@
       return null;
     }
 
-    // Try to attach audio from the original video (if allowed)
+    // Try to attach audio WITHOUT muting video (Firefox fix: prefer WebAudio tap)
     let audioTracks = [];
+    let audioNote = '';
     try {
-      const vs = (video.captureStream && video.captureStream()) || (video.mozCaptureStream && video.mozCaptureStream());
-      if (vs) audioTracks = vs.getAudioTracks ? vs.getAudioTracks() : [];
+      // Firefox: prefer WebAudio tap (prevents the "video goes muted + no audio in recording" issue)
+      if (isFirefox()) {
+        const tap = ensureAudioTap(video);
+        if (tap && tap.tracks && tap.tracks.length) {
+          audioTracks = tap.tracks.slice();
+          audioNote = 'Audio: WebAudio tap';
+        }
+      }
+
+      // Fallback: captureStream audio tracks (may be muted/empty on some Firefox builds + some sites)
+      if (!audioTracks.length) {
+        const vs = (video.captureStream && video.captureStream()) || (video.mozCaptureStream && video.mozCaptureStream());
+        if (vs) {
+          const at = vs.getAudioTracks ? vs.getAudioTracks() : [];
+          if (at && at.length) {
+            audioTracks = at.slice();
+            audioNote = 'Audio: captureStream';
+          }
+        }
+      }
     } catch (_) {}
 
     try {
@@ -283,6 +378,13 @@
     REC_PIPE.lastDraw = 0;
 
     REC_PIPE.raf = requestAnimationFrame(draw);
+
+    if (statusEl && audioTracks.length && audioNote) {
+      // Don't spam: only set if idle text is present
+      if (statusEl.textContent && statusEl.textContent.startsWith('Tip:')) {
+        statusEl.textContent = audioNote;
+      }
+    }
 
     return stream;
   }
@@ -436,6 +538,9 @@
       return;
     }
 
+    // Firefox: resume AudioContext on user gesture (record click)
+    try { if (isFirefox()) await resumeAudioContextsFor(v); } catch (_) {}
+
     // Build filtered canvas stream (better quality + applied filters)
     const filteredStream = startCanvasRecorderPipeline(v, statusEl);
     if (!filteredStream) {
@@ -470,7 +575,11 @@
       btnEl.style.opacity = '1';
       btnEl.style.cursor = 'pointer';
     }
-    if (statusEl) statusEl.textContent = `Recording... (${ext.toUpperCase()}${hasAudio ? '' : ' (no audio)'})`;
+
+    if (statusEl) {
+      if (hasAudio) statusEl.textContent = `Recording... (${ext.toUpperCase()})`;
+      else statusEl.textContent = `Recording... (${ext.toUpperCase()} (no audio)) — site may block audio capture.`;
+    }
 
     let mr;
     try {
@@ -1676,6 +1785,17 @@
             btnRec.textContent = 'Record';
             btnRec.style.opacity = '1';
             btnRec.style.cursor = 'pointer';
+
+            // Firefox: show quick hint if audio tap is possible
+            if (isFirefox()) {
+              // best effort, don't spam
+              const tap = ensureAudioTap(v);
+              if (tap && tap.tracks && tap.tracks.length && status && status.textContent.startsWith('Recording disabled') === false) {
+                if (status.textContent === 'Tip: paste JSON here → Save') {
+                  status.textContent = 'Firefox: recording uses WebAudio tap (should keep audio + no auto-mute).';
+                }
+              }
+            }
           }
         }
       }
