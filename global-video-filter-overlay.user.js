@@ -41,7 +41,7 @@
   // LOG + DEBUG SWITCH
   // -------------------------
   const logs  = true;    // console logs
-  const debug = false;   // visual debug ( Auto-dot ) if true
+  const debug = false;   // visual debug ( Auto-dot ) if true green dot work / red dot idle or not work for DRM
 
   // -------------------------
   // CSS.escape Polyfill + safer selectors
@@ -3184,4 +3184,5 @@
     : init();
 
 })();
+
 
