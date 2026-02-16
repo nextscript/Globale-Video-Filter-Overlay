@@ -3,7 +3,7 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.2.4
+// @version      1.2.5
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
@@ -41,7 +41,7 @@
   // LOG + DEBUG SWITCH
   // -------------------------
   const logs  = true;    // console logs
-  const debug = false;   // visual debug ( Auto-dot ) if true green dot work / red dot idle or not work for DRM
+  const debug = true;   // visual debug (Auto-dot)
 
   // -------------------------
   // CSS.escape Polyfill + safer selectors
@@ -825,8 +825,8 @@
     // motion gating (STRICT): only update when motion exists
     lastLuma: null,
     motionEma: 0,
-    motionAlpha: 0.35,
-    motionThresh: 0.012,
+    motionAlpha: 0.55,
+    motionThresh: 0.0045,
     motionMinFrames: 2,
     motionFrames: 0,
 
@@ -3184,5 +3184,3 @@
     : init();
 
 })();
-
-
