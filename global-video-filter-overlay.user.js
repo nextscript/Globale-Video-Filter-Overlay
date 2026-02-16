@@ -3,7 +3,7 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.2.5
+// @version      1.2.6
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
@@ -104,6 +104,12 @@
   const gmSet = (key, val) => { try { GM_setValue(key, val); } catch (_) {} };
   const nowMs = () => (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
   const isFirefox = () => { try { return /firefox/i.test(navigator.userAgent || ''); } catch (_) { return false; } };
+
+  // -------------------------
+  // Bulk-update guard (FIX: Import/Reset applies ALL at once)
+  // -------------------------
+  let _inSync = false;          // existing guard for not re-writing GM inside sync
+  let _suspendSync = false;     // NEW: suppress GM_addValueChangeListener during bulk import/reset
 
   // -------------------------
   // Screenshot / Recording helpers
@@ -889,7 +895,7 @@
 
     dotEl.style.display = 'block';
 
-    // --- NEW: if AutoMatrix didn't change for 2 minutes -> RED DOT ---
+    // --- if AutoMatrix didn't change for 10s -> RED DOT (your code had 10_000)
     const t = nowMs();
     const staleMs = 10_000;
     const isStale = (AUTO.lastAppliedMs > 0) && ((t - AUTO.lastAppliedMs) >= staleMs);
@@ -1165,7 +1171,7 @@
     // keep last good matrix for DRM fallback
     AUTO.lastGoodMatrixStr = _autoLastMatrixStr;
 
-    // --- NEW: mark "values changed" timestamp for red-dot logic ---
+    // mark "values changed" timestamp for red-dot logic
     AUTO.lastAppliedMs = nowMs();
 
     const t = nowMs();
@@ -1401,15 +1407,17 @@
   }
 
   // -------------------------
-  // Auto toggle + sync guard
+  // Auto toggle + sync guard (UPDATED: supports silent bulk apply)
   // -------------------------
-  let _inSync = false;
-
-  function setAutoOn(on) {
+  function setAutoOn(on, opts = {}) {
+    const silent = !!opts.silent;
     const next = !!on;
+
     if (next === autoOn && AUTO.running) {
-      scheduleOverlayUpdate();
-      setAutoDotState(next ? 'idle' : 'off');
+      if (!silent) {
+        scheduleOverlayUpdate();
+        setAutoDotState(next ? 'idle' : 'off');
+      }
       return;
     }
 
@@ -1438,8 +1446,11 @@
       updateAutoMatrixInSvg(autoMatrixStr);
 
       setAutoDotState('off');
-      applyFilter({ skipSvgIfPossible: true });
-      scheduleOverlayUpdate();
+
+      if (!silent) {
+        applyFilter({ skipSvgIfPossible: true });
+        scheduleOverlayUpdate();
+      }
       return;
     }
 
@@ -1448,9 +1459,18 @@
 
     setAutoDotState('idle');
     ensureAutoLoop();
-    applyFilter({ skipSvgIfPossible: false });
-    setAutoMatrixAndApply();
-    scheduleOverlayUpdate();
+
+    if (!silent) {
+      applyFilter({ skipSvgIfPossible: false });
+      setAutoMatrixAndApply();
+      scheduleOverlayUpdate();
+    } else {
+      // still prime matrix so later applyFilter uses correct values
+      autoMatrixStr = matToSvgValues(buildAutoMatrixValues());
+      _autoLastMatrixStr = autoMatrixStr;
+      AUTO.lastGoodMatrixStr = autoMatrixStr;
+      updateAutoMatrixInSvg(autoMatrixStr);
+    }
   }
 
   // -------------------------
@@ -1806,7 +1826,11 @@
       catch (_) { status.textContent = 'Export failed.'; }
     });
 
-    btnImportFile.addEventListener('click', () => { fileInput.value = ''; fileInput.click(); });
+    // FIX: always reset input so SAME FILE triggers change every time
+    btnImportFile.addEventListener('click', () => {
+      try { fileInput.value = ''; } catch (_) {}
+      fileInput.click();
+    });
 
     fileInput.addEventListener('change', () => {
       const f = fileInput.files && fileInput.files[0];
@@ -1825,9 +1849,15 @@
           status.textContent = 'Imported + applied.';
         } catch (_) {
           status.textContent = 'Import failed (invalid JSON).';
+        } finally {
+          // FIX: allow immediate re-import of same file without reselect quirks
+          try { fileInput.value = ''; } catch (_) {}
         }
       };
-      reader.onerror = () => { status.textContent = 'Import failed (read error).'; };
+      reader.onerror = () => {
+        status.textContent = 'Import failed (read error).';
+        try { fileInput.value = ''; } catch (_) {}
+      };
       reader.readAsText(f);
     });
 
@@ -1945,84 +1975,115 @@
   function importSettings(obj) {
     if (!obj || typeof obj !== 'object') return false;
 
-    const u = (obj.user && typeof obj.user === 'object') ? obj.user : {};
+    // FIX: batch apply; prevent value-change listeners from racing mid-import
+    _suspendSync = true;
+    _inSync = true;
 
-    if ('enabled' in obj)      enabled    = !!obj.enabled;
-    if ('darkMoody' in obj)    darkMoody  = !!obj.darkMoody;
-    if ('tealOrange' in obj)   tealOrange = !!obj.tealOrange;
-    if ('vibrantSat' in obj)   vibrantSat = !!obj.vibrantSat;
-    if ('iconsShown' in obj)   iconsShown = !!obj.iconsShown;
+    try {
+      const u = (obj.user && typeof obj.user === 'object') ? obj.user : {};
 
-    if ('sl' in obj)  sl  = clamp(Number(obj.sl),  -2, 2);
-    if ('sr' in obj)  sr  = clamp(Number(obj.sr),  -2, 2);
-    if ('bl' in obj)  bl  = clamp(Number(obj.bl),  -2, 2);
-    if ('wl' in obj)  wl  = clamp(Number(obj.wl),  -2, 2);
-    if ('dn' in obj)  dn  = clamp(Number(obj.dn),  -1.5, 1.5);
+      if ('enabled' in obj)      enabled    = !!obj.enabled;
+      if ('darkMoody' in obj)    darkMoody  = !!obj.darkMoody;
+      if ('tealOrange' in obj)   tealOrange = !!obj.tealOrange;
+      if ('vibrantSat' in obj)   vibrantSat = !!obj.vibrantSat;
+      if ('iconsShown' in obj)   iconsShown = !!obj.iconsShown;
 
-    if ('hdr' in obj) hdr = clamp(Number(obj.hdr), -1, 2);
+      if ('sl' in obj)  sl  = clamp(Number(obj.sl),  -2, 2);
+      if ('sr' in obj)  sr  = clamp(Number(obj.sr),  -2, 2);
+      if ('bl' in obj)  bl  = clamp(Number(obj.bl),  -2, 2);
+      if ('wl' in obj)  wl  = clamp(Number(obj.wl),  -2, 2);
+      if ('dn' in obj)  dn  = clamp(Number(obj.dn),  -1.5, 1.5);
 
-    if ('profile' in obj) {
-      const p = String(obj.profile).toLowerCase();
-      profile = (['off','film','anime','gaming','user'].includes(p) ? p : 'off');
+      if ('hdr' in obj) hdr = clamp(Number(obj.hdr), -1, 2);
+
+      if ('profile' in obj) {
+        const p = String(obj.profile).toLowerCase();
+        profile = (['off','film','anime','gaming','user'].includes(p) ? p : 'off');
+      }
+
+      if ('gradingHudShown' in obj) gradingHudShown = !!obj.gradingHudShown;
+
+      if ('autoOn' in obj) autoOn = !!obj.autoOn;
+      if ('autoStrength' in obj) autoStrength = clamp(Number(obj.autoStrength), 0, 1);
+      if ('autoLockWB' in obj) autoLockWB = !!obj.autoLockWB;
+
+      if ('contrast'   in u) u_contrast   = normU(u.contrast);
+      if ('black'      in u) u_black      = normU(u.black);
+      if ('white'      in u) u_white      = normU(u.white);
+      if ('highlights' in u) u_highlights = normU(u.highlights);
+      if ('shadows'    in u) u_shadows    = normU(u.shadows);
+      if ('saturation' in u) u_sat        = normU(u.saturation);
+      if ('vibrance'   in u) u_vib        = normU(u.vibrance);
+      if ('sharpen'    in u) u_sharp      = normU(u.sharpen);
+      if ('gamma'      in u) u_gamma      = normU(u.gamma);
+      if ('grain'      in u) u_grain      = normU(u.grain);
+      if ('hue'        in u) u_hue        = normU(u.hue);
+
+      // normalize + write ALL GM keys (still in suspended mode)
+      enabled = !!enabled; darkMoody = !!darkMoody; tealOrange = !!tealOrange; vibrantSat = !!vibrantSat; iconsShown = !!iconsShown;
+
+      sl = normSL(); sr = normSR(); bl = normBL(); wl = normWL(); dn = normDN(); hdr = normHDR();
+
+      u_contrast   = normU(u_contrast);
+      u_black      = normU(u_black);
+      u_white      = normU(u_white);
+      u_highlights = normU(u_highlights);
+      u_shadows    = normU(u_shadows);
+      u_sat        = normU(u_sat);
+      u_vib        = normU(u_vib);
+      u_sharp      = normU(u_sharp);
+      u_gamma      = normU(u_gamma);
+      u_grain      = normU(u_grain);
+      u_hue        = normU(u_hue);
+
+      gmSet(K.enabled, enabled);
+      gmSet(K.moody, darkMoody);
+      gmSet(K.teal, tealOrange);
+      gmSet(K.vib, vibrantSat);
+      gmSet(K.icons, iconsShown);
+
+      gmSet(K.SL, sl);
+      gmSet(K.SR, sr);
+      gmSet(K.BL, bl);
+      gmSet(K.WL, wl);
+      gmSet(K.DN, dn);
+
+      gmSet(K.HDR, hdr);
+      if (hdr !== 0) gmSet(K.HDR_LAST, hdr);
+
+      gmSet(K.PROF, profile);
+      gmSet(K.G_HUD, gradingHudShown);
+      gmSet(K.I_HUD, ioHudShown);
+
+      gmSet(K.U_CONTRAST, u_contrast);
+      gmSet(K.U_BLACK, u_black);
+      gmSet(K.U_WHITE, u_white);
+      gmSet(K.U_HIGHLIGHTS, u_highlights);
+      gmSet(K.U_SHADOWS, u_shadows);
+      gmSet(K.U_SAT, u_sat);
+      gmSet(K.U_VIB, u_vib);
+      gmSet(K.U_SHARP, u_sharp);
+      gmSet(K.U_GAMMA, u_gamma);
+      gmSet(K.U_GRAIN, u_grain);
+      gmSet(K.U_HUE, u_hue);
+
+      gmSet(K.AUTO_ON, autoOn);
+      gmSet(K.AUTO_STRENGTH, autoStrength);
+      gmSet(K.AUTO_LOCK_WB, autoLockWB);
+
+      // apply ONCE at end (no mid-import races)
+      setAutoOn(autoOn, { silent: true });
+
+      applyFilter({ skipSvgIfPossible: false });
+      scheduleOverlayUpdate();
+
+      return true;
+    } catch (_) {
+      return false;
+    } finally {
+      _inSync = false;
+      _suspendSync = false;
     }
-
-    if ('gradingHudShown' in obj) gradingHudShown = !!obj.gradingHudShown;
-
-    if ('autoOn' in obj) autoOn = !!obj.autoOn;
-    if ('autoStrength' in obj) autoStrength = clamp(Number(obj.autoStrength), 0, 1);
-    if ('autoLockWB' in obj) autoLockWB = !!obj.autoLockWB;
-
-    if ('contrast'   in u) u_contrast   = normU(u.contrast);
-    if ('black'      in u) u_black      = normU(u.black);
-    if ('white'      in u) u_white      = normU(u.white);
-    if ('highlights' in u) u_highlights = normU(u.highlights);
-    if ('shadows'    in u) u_shadows    = normU(u.shadows);
-    if ('saturation' in u) u_sat        = normU(u.saturation);
-    if ('vibrance'   in u) u_vib        = normU(u.vibrance);
-    if ('sharpen'    in u) u_sharp      = normU(u.sharpen);
-    if ('gamma'      in u) u_gamma      = normU(u.gamma);
-    if ('grain'      in u) u_grain      = normU(u.grain);
-    if ('hue'        in u) u_hue        = normU(u.hue);
-
-    gmSet(K.enabled, enabled);
-    gmSet(K.moody, darkMoody);
-    gmSet(K.teal, tealOrange);
-    gmSet(K.vib, vibrantSat);
-    gmSet(K.icons, iconsShown);
-
-    sl = normSL(); gmSet(K.SL, sl);
-    sr = normSR(); gmSet(K.SR, sr);
-    bl = normBL(); gmSet(K.BL, bl);
-    wl = normWL(); gmSet(K.WL, wl);
-    dn = normDN(); gmSet(K.DN, dn);
-
-    hdr = normHDR(); gmSet(K.HDR, hdr);
-    if (hdr !== 0) gmSet(K.HDR_LAST, hdr);
-
-    gmSet(K.PROF, profile);
-    gmSet(K.G_HUD, gradingHudShown);
-    gmSet(K.I_HUD, ioHudShown);
-
-    gmSet(K.U_CONTRAST, u_contrast);
-    gmSet(K.U_BLACK, u_black);
-    gmSet(K.U_WHITE, u_white);
-    gmSet(K.U_HIGHLIGHTS, u_highlights);
-    gmSet(K.U_SHADOWS, u_shadows);
-    gmSet(K.U_SAT, u_sat);
-    gmSet(K.U_VIB, u_vib);
-    gmSet(K.U_SHARP, u_sharp);
-    gmSet(K.U_GAMMA, u_gamma);
-    gmSet(K.U_GRAIN, u_grain);
-    gmSet(K.U_HUE, u_hue);
-
-    gmSet(K.AUTO_ON, autoOn);
-    gmSet(K.AUTO_STRENGTH, autoStrength);
-    gmSet(K.AUTO_LOCK_WB, autoLockWB);
-
-    setAutoOn(autoOn);
-    applyFilter();
-    scheduleOverlayUpdate();
-    return true;
   }
 
   // -------------------------
@@ -2977,6 +3038,9 @@
   // -------------------------
   function listenGlobalSync() {
     const sync = () => {
+      // FIX: ignore mid-import / mid-reset cascades
+      if (_suspendSync) return;
+
       _inSync = true;
       try {
         enabled    = !!gmGet(K.enabled, enabled);
@@ -3184,4 +3248,3 @@
     : init();
 
 })();
-
