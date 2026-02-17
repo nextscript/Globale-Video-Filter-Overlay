@@ -3,7 +3,7 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.5.6
+// @version      1.3.2
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
@@ -42,7 +42,7 @@
   // LOG + DEBUG SWITCH
   // -------------------------
   const logs  = true;    // console logs
-  const debug = true;   // visual debug (Auto-dot)
+  const debug = false;   // visual debug (Auto-dot)
 
   // -------------------------
   // CSS.escape Polyfill + safer selectors
@@ -88,8 +88,8 @@
     U_GAMMA:      'gvf_u_gamma',
     U_GRAIN:      'gvf_u_grain',
     U_HUE:        'gvf_u_hue',
-    
-    // RGB direct controls (0-255) - only Gain, Lift removed
+
+    // RGB direct controls (0-255)
     U_R_GAIN:     'gvf_u_r_gain',
     U_G_GAIN:     'gvf_u_g_gain',
     U_B_GAIN:     'gvf_u_b_gain',
@@ -674,7 +674,7 @@
   let u_gamma      = Number(gmGet(K.U_GAMMA,      0.0));
   let u_grain      = Number(gmGet(K.U_GRAIN,      0.0));
   let u_hue        = Number(gmGet(K.U_HUE,        0.0));
-  
+
   // RGB direct controls (0-255) - only Gain
   let u_r_gain     = Number(gmGet(K.U_R_GAIN, 128));
   let u_g_gain     = Number(gmGet(K.U_G_GAIN, 128));
@@ -690,7 +690,7 @@
   function normHDR() { return snap0(roundTo(clamp(Number(hdr)||0, -1.0, 2.0), 0.1), 0.05); }
   function normU(v)  { return roundTo(clamp(Number(v)||0, -10, 10), 0.1); }
   function uDelta(v) { return normU(v); }
-  
+
   // RGB helpers
   function normRGB(v) { return clamp(Math.round(Number(v)||128), 0, 255); }
   function rgbGainToFactor(v) { return (normRGB(v) / 128); } // 128 = 1.0, 0 = 0.0, 255 = 2.0
@@ -795,8 +795,8 @@
       0  , 0  , 0  , 1, 0
     ];
   }
-  
-  // RGB gain matrix (Lift removed)
+
+  // RGB gain matrix
   function matRGBGain(rGain, gGain, bGain) {
     return [
       rGain, 0, 0, 0, 0,
@@ -1646,7 +1646,7 @@
   }
 
   // -------------------------
-  // Grading overlay (Ctrl+Alt+G) - ENHANCED with RGB Gain sliders only (Lift removed)
+  // Grading overlay (Ctrl+Alt+G) - ENHANCED with RGB Gain sliders
   // -------------------------
   function mkGradingOverlay() {
     const overlay = document.createElement('div');
@@ -1786,7 +1786,7 @@
     sep.style.cssText = `height:1px;background:rgba(255,255,255,0.14);margin:8px 0;`;
     overlay.appendChild(sep);
 
-    // RGB Gain controls only (Lift removed)
+    // RGB Gain controls
     overlay.appendChild(mkRGBRow('U_R_GAIN','R Gain',  () => normRGB(u_r_gain), (v)=>{ u_r_gain=v; }, K.U_R_GAIN, '#ff6b6b'));
     overlay.appendChild(mkRGBRow('U_G_GAIN','G Gain',  () => normRGB(u_g_gain), (v)=>{ u_g_gain=v; }, K.U_G_GAIN, '#6bff6b'));
     overlay.appendChild(mkRGBRow('U_B_GAIN','B Gain',  () => normRGB(u_b_gain), (v)=>{ u_b_gain=v; }, K.U_B_GAIN, '#6b6bff'));
@@ -1992,7 +1992,7 @@
         autoOn: false,
         autoStrength: 0.65,
         autoLockWB: false,
-        user: { 
+        user: {
           contrast:0, black:0, white:0, highlights:0, shadows:0, saturation:0, vibrance:0, sharpen:0, gamma:0, grain:0, hue:0,
           r_gain:128, g_gain:128, b_gain:128
         }
@@ -2030,7 +2030,7 @@
   }
 
   // -------------------------
-  // Scopes HUD (Ctrl+Alt+S) - FIXED: Properly reads video data
+  // Scopes HUD (Ctrl+Alt+S) - FIXED: Properly reads video data with filters applied
   // -------------------------
   function mkScopesOverlay() {
     const overlay = document.createElement('div');
@@ -2082,7 +2082,7 @@
     // Luma Histogram
     const lumaSection = document.createElement('div');
     lumaSection.style.cssText = `display:flex;flex-direction:column;gap:2px;`;
-    
+
     const lumaTitle = document.createElement('div');
     lumaTitle.style.cssText = `font-size:9px;font-weight:900;color:#cfcfcf;text-transform:uppercase;letter-spacing:0.5px;`;
     lumaTitle.textContent = 'Luma Y';
@@ -2108,7 +2108,7 @@
     // RGB Parade
     const rgbSection = document.createElement('div');
     rgbSection.style.cssText = `display:flex;flex-direction:column;gap:2px;`;
-    
+
     const rgbTitle = document.createElement('div');
     rgbTitle.style.cssText = `font-size:9px;font-weight:900;color:#cfcfcf;text-transform:uppercase;letter-spacing:0.5px;`;
     rgbTitle.textContent = 'RGB';
@@ -2182,7 +2182,7 @@
     // Saturation Meter
     const satSection = document.createElement('div');
     satSection.style.cssText = `display:flex;flex-direction:column;gap:2px;`;
-    
+
     const satTitle = document.createElement('div');
     satTitle.style.cssText = `font-size:9px;font-weight:900;color:#cfcfcf;text-transform:uppercase;letter-spacing:0.5px;`;
     satTitle.textContent = 'Sat';
@@ -2248,64 +2248,40 @@
   }
 
   // -------------------------
-  // Scopes update logic - FIXED: Better canvas handling and error recovery
+  // Scopes update logic - FIXED: Uses filtered video frames
   // -------------------------
   const SCOPES = {
     running: false,
-    canvas: null,
+    canvas: document.createElement('canvas'),
     ctx: null,
     lastUpdate: 0,
-    updateInterval: 100, // Faster updates (100ms instead of 150)
-    lastVideo: null,
-    lastVideoWidth: 0,
-    lastVideoHeight: 0
+    updateInterval: 100,
+    lastVideo: null
   };
 
-  function ensureScopesCanvas(video) {
-    if (!SCOPES.canvas) {
-      SCOPES.canvas = document.createElement('canvas');
-      SCOPES.canvas.width = 160;
-      SCOPES.canvas.height = 90;
-      try {
-        SCOPES.ctx = SCOPES.canvas.getContext('2d', { willReadFrequently: true, alpha: false });
-      } catch (_) {
-        try { 
-          SCOPES.ctx = SCOPES.canvas.getContext('2d', { alpha: false }); 
-        } catch (__) {
-          SCOPES.ctx = SCOPES.canvas.getContext('2d');
-        }
-      }
+  // Initialize canvas
+  SCOPES.canvas.width = 160;
+  SCOPES.canvas.height = 90;
+  try {
+    SCOPES.ctx = SCOPES.canvas.getContext('2d', { willReadFrequently: true, alpha: false });
+  } catch (_) {
+    try {
+      SCOPES.ctx = SCOPES.canvas.getContext('2d', { alpha: false });
+    } catch (__) {
+      SCOPES.ctx = SCOPES.canvas.getContext('2d');
     }
-    
-    // Recreate canvas if video dimensions changed significantly
-    if (video && (video.videoWidth !== SCOPES.lastVideoWidth || video.videoHeight !== SCOPES.lastVideoHeight)) {
-      SCOPES.lastVideoWidth = video.videoWidth;
-      SCOPES.lastVideoHeight = video.videoHeight;
-      
-      // Clear cached data on resolution change
-      if (SCOPES.lastVideo !== video) {
-        SCOPES.lastVideo = video;
-        SCOPES.lastUpdate = 0; // Force immediate update
-      }
-    }
-    
-    return SCOPES.ctx;
   }
 
   function updateScopesData() {
     if (!scopesHudShown) return;
 
     const v = choosePrimaryVideo();
-    if (!v) return;
-    
+    if (!v || !SCOPES.ctx) return;
+
     // Check if video is playable
     if (v.paused || v.seeking || v.ended || v.readyState < 2) {
-      // Still show zeros but don't update data
       return;
     }
-
-    const ctx = ensureScopesCanvas(v);
-    if (!ctx) return;
 
     const now = nowMs();
     if (now - SCOPES.lastUpdate < SCOPES.updateInterval) return;
@@ -2315,20 +2291,27 @@
       const h = Math.max(2, v.videoHeight || 0);
       if (!w || !h) return;
 
-      // Draw video frame to canvas
-      ctx.drawImage(v, 0, 0, 160, 90);
-      
+      // Get the applied CSS filter from the video element
+      const cssFilter = getAppliedCssFilterString(v);
+
+      // Draw video frame with filters applied
+      SCOPES.ctx.save();
+      if (cssFilter) {
+        SCOPES.ctx.filter = cssFilter;
+      }
+      SCOPES.ctx.drawImage(v, 0, 0, 160, 90);
+      SCOPES.ctx.restore();
+
       // Try to get image data - this may fail for cross-origin/DRM video
       let imgData;
       try {
-        imgData = ctx.getImageData(0, 0, 160, 90);
+        imgData = SCOPES.ctx.getImageData(0, 0, 160, 90);
       } catch (e) {
         // If we can't get pixel data, just return (keep old values)
-        if (debug) console.log('[GVF] Scopes: Cannot read video pixels (cross-origin/DRM)');
-        SCOPES.lastUpdate = now; // Still update timestamp to avoid constant retries
+        SCOPES.lastUpdate = now;
         return;
       }
-      
+
       const d = imgData.data;
 
       // Histogram buckets (16 buckets)
@@ -2386,7 +2369,7 @@
       document.querySelectorAll('.gvf-scope-luma [data-index]').forEach(bar => {
         const idx = parseInt(bar.dataset.index);
         const val = lumaHist[idx] || 0;
-        const pct = (val / maxLuma) * 36; // max height 36px
+        const pct = (val / maxLuma) * 36;
         bar.style.height = Math.max(2, pct) + 'px';
       });
 
@@ -2394,7 +2377,7 @@
       document.querySelectorAll('.gvf-scope-red [data-index]').forEach(bar => {
         const idx = parseInt(bar.dataset.index);
         const val = redHist[idx] || 0;
-        const pct = (val / maxRed) * 28; // max height 28px
+        const pct = (val / maxRed) * 28;
         bar.style.height = Math.max(2, pct) + 'px';
       });
 
@@ -2413,8 +2396,8 @@
       });
 
       // Update saturation meter
-      const avgSat = sumSat / count / 255; // normalize to 0-1
-      const satPct = Math.min(100, avgSat * 200); // scale for visibility
+      const avgSat = sumSat / count / 255;
+      const satPct = Math.min(100, avgSat * 200);
       const satFill = document.querySelector('.gvf-scope-sat-fill');
       const satValue = document.querySelector('.gvf-scope-sat-value');
       if (satFill) satFill.style.width = satPct + '%';
@@ -2438,9 +2421,8 @@
       SCOPES.lastUpdate = now;
 
     } catch (e) {
-      // Silently fail if DRM/cross-origin
       if (debug) console.log('[GVF] Scopes update failed:', e);
-      SCOPES.lastUpdate = now; // Update timestamp to avoid constant retries
+      SCOPES.lastUpdate = now;
     }
   }
 
@@ -2450,8 +2432,7 @@
 
     const loop = () => {
       if (!SCOPES.running) return;
-      
-      // Always update if scopes are shown, even if video is paused (to show zeros)
+
       if (scopesHudShown) {
         try {
           updateScopesData();
@@ -2459,12 +2440,10 @@
           if (debug) console.log('[GVF] Scopes loop error:', e);
         }
       }
-      
-      // Use requestAnimationFrame for smoother updates
+
       setTimeout(loop, SCOPES.updateInterval);
     };
 
-    // Start the loop after a short delay
     setTimeout(loop, 100);
   }
 
@@ -2509,8 +2488,8 @@
         gamma:      nFix(normU(u_gamma), 1),
         grain:      nFix(normU(u_grain), 1),
         hue:        nFix(normU(u_hue), 1),
-        
-        // RGB Gain controls only (Lift removed)
+
+        // RGB Gain controls
         r_gain:     Math.round(normRGB(u_r_gain)),
         g_gain:     Math.round(normRGB(u_g_gain)),
         b_gain:     Math.round(normRGB(u_b_gain))
@@ -2565,8 +2544,8 @@
       if ('gamma'      in u) u_gamma      = normU(u.gamma);
       if ('grain'      in u) u_grain      = normU(u.grain);
       if ('hue'        in u) u_hue        = normU(u.hue);
-      
-      // RGB Gain controls only (Lift removed)
+
+      // RGB Gain controls
       if ('r_gain'     in u) u_r_gain     = normRGB(u.r_gain);
       if ('g_gain'     in u) u_g_gain     = normRGB(u.g_gain);
       if ('b_gain'     in u) u_b_gain     = normRGB(u.b_gain);
@@ -2587,7 +2566,7 @@
       u_gamma      = normU(u_gamma);
       u_grain      = normU(u_grain);
       u_hue        = normU(u_hue);
-      
+
       u_r_gain     = normRGB(u_r_gain);
       u_g_gain     = normRGB(u_g_gain);
       u_b_gain     = normRGB(u_b_gain);
@@ -2623,7 +2602,7 @@
       gmSet(K.U_GAMMA, u_gamma);
       gmSet(K.U_GRAIN, u_grain);
       gmSet(K.U_HUE, u_hue);
-      
+
       gmSet(K.U_R_GAIN, u_r_gain);
       gmSet(K.U_G_GAIN, u_g_gain);
       gmSet(K.U_B_GAIN, u_b_gain);
@@ -2725,7 +2704,7 @@
     setPair('U_GAMMA',      normU(u_gamma));
     setPair('U_GRAIN',      normU(u_grain));
     setPair('U_HUE',        normU(u_hue));
-    
+
     // RGB Gain controls only (0-255, round to integer for display)
     const setRGBPair = (name, v) => {
       const r = overlay.querySelector(`[data-gvf-range="${cssEscape(name)}"]`);
@@ -2733,7 +2712,7 @@
       if (r) r.value = String(v);
       if (t) t.textContent = String(Math.round(v));
     };
-    
+
     setRGBPair('U_R_GAIN', normRGB(u_r_gain));
     setRGBPair('U_G_GAIN', normRGB(u_g_gain));
     setRGBPair('U_B_GAIN', normRGB(u_b_gain));
@@ -2882,7 +2861,7 @@
   function positionOverlayAt(video, overlay, dx, dy) {
     const fsEl = getFsEl();
     const container = getOverlayContainer(video);
-    
+
     // Ensure overlay is in the correct container
     if (overlay.parentNode !== container) container.appendChild(overlay);
 
@@ -2930,7 +2909,7 @@
   function ensureOverlays() {
     document.querySelectorAll('video').forEach(v => {
       patchFullscreenRequest(v);
-      
+
       // Create overlays if they don't exist (they will be attached in positionOverlayAt)
       if (!overlaysMain.has(v)) overlaysMain.set(v, mkMainOverlay());
       if (!overlaysGrade.has(v)) overlaysGrade.set(v, mkGradingOverlay());
@@ -3228,11 +3207,11 @@
         '0.00 1.04 0.00 0 -0.010 ' +
         '0.00 0.00 1.04 0 -0.010 ' +
         '0    0    0    1  0';
-    } else if (prof === 'eyecare') { // Enhanced EyeCare profile with 50% blue reduction
+    } else if (prof === 'eyecare') {
       values =
-        '1.08 0.00 0.00 0 0.00 ' + // R boosted to 108%
-        '0.15 1.05 0.00 0 0.00 ' + // G boosted to 105% + some R influence
-        '0.25 0.00 0.50 0 0.00 ' + // B reduced to 50% (50% reduction!)
+        '1.08 0.00 0.00 0 0.00 ' +
+        '0.15 1.05 0.00 0 0.00 ' +
+        '0.25 0.00 0.50 0 0.00 ' +
         '0    0    0    1  0';
     } else {
       return null;
@@ -3377,15 +3356,15 @@
       }
     }
 
-    // RGB Gain only (Lift removed)
+    // RGB Gain
     if (profile === 'user') {
       const rGain = rgbGainToFactor(u_r_gain);
       const gGain = rgbGainToFactor(u_g_gain);
       const bGain = rgbGainToFactor(u_b_gain);
-      
+
       // Only add if not neutral
       if (Math.abs(rGain - 1.0) > 0.01 || Math.abs(gGain - 1.0) > 0.01 || Math.abs(bGain - 1.0) > 0.01) {
-        
+
         const rgbMatrix = matRGBGain(rGain, gGain, bGain);
         const rgbCM = document.createElementNS(svgNS, 'feColorMatrix');
         rgbCM.setAttribute('type', 'matrix');
@@ -3474,7 +3453,7 @@
         if (prof === 'film')   sat.setAttribute('values', '1.08');
         if (prof === 'anime')  sat.setAttribute('values', '1.18');
         if (prof === 'gaming') sat.setAttribute('values', '1.06');
-        if (prof === 'eyecare') sat.setAttribute('values', '0.90'); // Reduced saturation for EyeCare
+        if (prof === 'eyecare') sat.setAttribute('values', '0.90');
         filter.appendChild(sat);
         last = 'r_prof_sat';
       }
@@ -3513,7 +3492,7 @@
     const uSig = [
       normU(u_contrast), normU(u_black), normU(u_white), normU(u_highlights), normU(u_shadows),
       normU(u_sat), normU(u_vib), normU(u_sharp), normU(u_gamma), normU(u_grain), normU(u_hue),
-      // Include RGB Gain values only (Lift removed)
+      // Include RGB Gain values
       normRGB(u_r_gain), normRGB(u_g_gain), normRGB(u_b_gain)
     ].map(x => Number(x).toFixed(1)).join(',');
 
@@ -3710,7 +3689,7 @@
         u_gamma      = Number(gmGet(K.U_GAMMA, u_gamma));
         u_grain      = Number(gmGet(K.U_GRAIN, u_grain));
         u_hue        = Number(gmGet(K.U_HUE, u_hue));
-        
+
         u_r_gain     = Number(gmGet(K.U_R_GAIN, u_r_gain));
         u_g_gain     = Number(gmGet(K.U_G_GAIN, u_g_gain));
         u_b_gain     = Number(gmGet(K.U_B_GAIN, u_b_gain));
@@ -3761,7 +3740,7 @@
     gmSet(K.S_HUD, scopesHudShown);
     logToggle('Scopes HUD (Ctrl+Alt+S)', scopesHudShown);
     scheduleOverlayUpdate();
-    
+
     // Start or stop the scopes loop based on visibility
     if (scopesHudShown) {
       startScopesLoop();
@@ -3783,7 +3762,7 @@
       if (satFill) satFill.style.width = '0%';
       const satValue = document.querySelector('.gvf-scope-sat-value');
       if (satValue) satValue.textContent = '0.00';
-      
+
       const avgYEl = document.querySelector('.gvf-scope-avg-y');
       if (avgYEl) avgYEl.textContent = 'Y: 0.00';
       const avgRGBEl = document.querySelector('.gvf-scope-avg-rgb');
@@ -3816,7 +3795,7 @@
     u_gamma      = normU(u_gamma);      gmSet(K.U_GAMMA, u_gamma);
     u_grain      = normU(u_grain);      gmSet(K.U_GRAIN, u_grain);
     u_hue        = normU(u_hue);        gmSet(K.U_HUE, u_hue);
-    
+
     u_r_gain     = normRGB(u_r_gain);   gmSet(K.U_R_GAIN, u_r_gain);
     u_g_gain     = normRGB(u_g_gain);   gmSet(K.U_G_GAIN, u_g_gain);
     u_b_gain     = normRGB(u_b_gain);   gmSet(K.U_B_GAIN, u_b_gain);
