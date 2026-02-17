@@ -92,6 +92,76 @@ All sliders support Snap-to-0 around the center, so you can easily return to neu
 <li>Negative = soften the image, reducing contrast for a smoother look</li>
 </ul><br>
 <hr>
+<h2>Profile Cycle</h2>
+
+<b>Off</b>
+No profile filtering active. Only manual settings (Base, Dark&Moody, Teal&Orange, Vibrant, HDR, RGB Gain) are applied.
+
+<b>Movie</b>
+Cinematic look with warm color grading and softer contrast. Optimized for movies and series with natural skin tone reproduction.
+
+<b>Anime</b>
+Vibrant, colorful look specifically for anime and animations. Enhances typical anime colors and provides clearer lines.
+
+<b>Gaming</b>
+High-contrast, intense look for games. Improves visibility in dark areas and enhances colors for a more immersive gaming experience.
+
+<b>EyeCare</b>
+Reduces blue light by 50% for more comfortable viewing during long sessions, especially in the evening. Warmer color temperature similar to night mode features.
+
+<b>User</b>
+Your own manual settings. All your personal adjustments from the Grading HUD (contrast, black level, white level, RGB gain, etc.) take effect here.
+<hr>
+<h2>Auto-Scene-Match</h2>
+An intelligent automatic image optimization that adapts to your video content in real-time.
+
+<b>How it works:</b>
+The function continuously analyzes the playing video image and calculates optimal values for brightness, contrast, saturation, and color cast. These values are smoothly and fluidly adjusted to the current scene.
+
+<b>What is automatically controlled:</b>
+<ul>
+<li>Brightness – Adjusts overall brightness to an optimal level</li>
+<li>Contrast – Optimizes dynamic range for more depth in the image</li>
+<li>Saturation – Brings out colors naturally without oversaturation</li>
+<li>Color Cast – Automatically corrects color tints (optional feature)</li>
+</ul>
+<br>
+<b>Special features:</b>
+<ul>
+<li>Responds to scene changes with faster adaptation</li>
+<li>Takes motion into account for more stable analysis</li>
+<li>Adaptive algorithm glides smoothly between values (no hard switching)</li>
+<li>Cannot analyze DRM-protected videos (uses last good values)</li>
+</ul>
+<br>
+<b>Visual feedback:</b>
+A small dot in the video shows the status(If debug=true Default: false):
+
+🟢 Green = Active, no changes
+🟢 Light Green = Active and currently adjusting
+🔴 Red = No updates (e.g., with DRM)
+<br>
+<b>Goal:</b>
+Always optimally looking videos without manual intervention – especially useful for changing scenes or different video sources.
+<hr>
+<h2>Scopes HUD</h2>
+A professional analysis tool directly in the video that helps you make precise color corrections.
+
+<b>Luma Histogram (Y)</b>
+Displays the brightness distribution in the image from black (left) to white (right). Ideal for checking contrast, exposure, and avoiding clipping in highlights or shadows.
+
+<b>RGB Parade</b>
+Separate histograms for Red, Green, and Blue side by side. Enables precise analysis of color balance and assists with color correction and white balance.
+
+<b>Saturation Meter</b>
+Live display of the average color saturation in the image. Helps detect excessive or insufficient saturation.
+
+<b>Average Values</b>
+Shows the mean values for brightness (Y), RGB average, and saturation as numerical readouts.
+
+<b>Special Feature:</b>
+The Scopes HUD displays values after applying all your filters – so you see exactly what your settings are doing.
+<hr>
 <h2>Recommended starting presets</h2>
 <b>Clean / natural</b>
 <ul>
