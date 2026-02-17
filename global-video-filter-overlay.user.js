@@ -3,7 +3,7 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.2.6
+// @version      1.3.0
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
@@ -31,11 +31,12 @@
   const svgNS    = 'http://www.w3.org/2000/svg';
 
   // Hotkeys
-  const HDR_TOGGLE_KEY  = 'p'; // Strg+Alt+P
-  const PROF_TOGGLE_KEY = 'c'; // Strg+Alt+C
-  const GRADE_HUD_KEY   = 'g'; // Strg+Alt+G
-  const IO_HUD_KEY      = 'i'; // Strg+Alt+I (Settings Export/Import)
-  const AUTO_KEY        = 'a'; // Strg+Alt+A (Auto Scene Match "AI")
+  const HDR_TOGGLE_KEY  = 'p'; // Ctrl+Alt+P
+  const PROF_TOGGLE_KEY = 'c'; // Ctrl+Alt+C
+  const GRADE_HUD_KEY   = 'g'; // Ctrl+Alt+G (Grading + RGB Slider)
+  const IO_HUD_KEY      = 'i'; // Ctrl+Alt+I (Settings Export/Import)
+  const AUTO_KEY        = 'a'; // Ctrl+Alt+A (Auto Scene Match "AI")
+  const SCOPES_KEY      = 's'; // Ctrl+Alt+S (Scopes HUD)
 
   // -------------------------
   // LOG + DEBUG SWITCH
@@ -74,6 +75,7 @@
 
     G_HUD:    'gvf_g_hud',
     I_HUD:    'gvf_i_hud',
+    S_HUD:    'gvf_s_hud', // Scopes HUD
 
     U_CONTRAST:   'gvf_u_contrast',
     U_BLACK:      'gvf_u_black',
@@ -86,6 +88,11 @@
     U_GAMMA:      'gvf_u_gamma',
     U_GRAIN:      'gvf_u_grain',
     U_HUE:        'gvf_u_hue',
+
+    // RGB direct controls (0-255)
+    U_R_GAIN:     'gvf_u_r_gain',
+    U_G_GAIN:     'gvf_u_g_gain',
+    U_B_GAIN:     'gvf_u_b_gain',
 
     // Auto scene match
     AUTO_ON:       'gvf_auto_on',
@@ -649,11 +656,13 @@
   let hdr = Number(gmGet(K.HDR, 0.0));
 
   let profile = String(gmGet(K.PROF, 'off')).toLowerCase();
-  if (!['off','film','anime','gaming','user'].includes(profile)) profile = 'off';
+  if (!['off','film','anime','gaming','eyecare','user'].includes(profile)) profile = 'off';
 
   let gradingHudShown = !!gmGet(K.G_HUD, false);
   let ioHudShown      = !!gmGet(K.I_HUD, false);
+  let scopesHudShown  = !!gmGet(K.S_HUD, false);
 
+  // User grading controls (-10..10)
   let u_contrast   = Number(gmGet(K.U_CONTRAST,   0.0));
   let u_black      = Number(gmGet(K.U_BLACK,      0.0));
   let u_white      = Number(gmGet(K.U_WHITE,      0.0));
@@ -666,6 +675,11 @@
   let u_grain      = Number(gmGet(K.U_GRAIN,      0.0));
   let u_hue        = Number(gmGet(K.U_HUE,        0.0));
 
+  // RGB direct controls (0-255) - only Gain
+  let u_r_gain     = Number(gmGet(K.U_R_GAIN, 128));
+  let u_g_gain     = Number(gmGet(K.U_G_GAIN, 128));
+  let u_b_gain     = Number(gmGet(K.U_B_GAIN, 128));
+
   const HK = { base: 'b', moody: 'd', teal: 'o', vib: 'v', icons: 'h' };
 
   function normSL()  { return snap0(roundTo(clamp(Number(sl)||0,  -2, 2),   0.1), 0.05); }
@@ -677,6 +691,10 @@
   function normU(v)  { return roundTo(clamp(Number(v)||0, -10, 10), 0.1); }
   function uDelta(v) { return normU(v); }
 
+  // RGB helpers
+  function normRGB(v) { return clamp(Math.round(Number(v)||128), 0, 255); }
+  function rgbGainToFactor(v) { return (normRGB(v) / 128); } // 128 = 1.0, 0 = 0.0, 255 = 2.0
+
   function getSharpenA()  { return Math.max(0, normSL()) * 1.0; }
   function getBlurSigma() { return Math.max(0, -normSL()) * 1.0; }
   function getRadius() { return Math.max(0.1, Math.abs(normSR())); }
@@ -687,11 +705,12 @@
   function dnToGrainAlpha(v)   { return clamp(-v, 0, 1.5) * (0.20/1.5); }
 
   const PROF = {
-    off:    { name: 'Off',   color: 'transparent' },
-    film:   { name: 'Movie', color: '#00b050' },
-    anime:  { name: 'Anime', color: '#1e6fff' },
-    gaming: { name: 'Gaming',color: '#ff2a2a' },
-    user:   { name: 'User',  color: '#bfbfbf' }
+    off:     { name: 'Off',     color: 'transparent' },
+    film:    { name: 'Movie',   color: '#00b050' },
+    anime:   { name: 'Anime',   color: '#1e6fff' },
+    gaming:  { name: 'Gaming',  color: '#ff2a2a' },
+    eyecare: { name: 'EyeCare', color: '#ffaa33' }, // Warm orange color
+    user:    { name: 'User',    color: '#bfbfbf' }
   };
 
   const PROFILE_VIDEO_OUTLINE = false;
@@ -774,6 +793,16 @@
       a10, a11, a12, 0, 0,
       a20, a21, a22, 0, 0,
       0  , 0  , 0  , 1, 0
+    ];
+  }
+
+  // RGB gain matrix
+  function matRGBGain(rGain, gGain, bGain) {
+    return [
+      rGain, 0, 0, 0, 0,
+      0, gGain, 0, 0, 0,
+      0, 0, bGain, 0, 0,
+      0, 0, 0, 1, 0
     ];
   }
 
@@ -1479,6 +1508,7 @@
   const overlaysMain  = new WeakMap();
   const overlaysGrade = new WeakMap();
   const overlaysIO    = new WeakMap();
+  const overlaysScopes = new WeakMap();
   let rafScheduled = false;
 
   function getFsEl() {
@@ -1500,7 +1530,7 @@
   }
 
   // -------------------------
-  // Main overlay
+  // Main overlay (stays on top of video)
   // -------------------------
   function mkMainOverlay() {
     const overlay = document.createElement('div');
@@ -1616,7 +1646,7 @@
   }
 
   // -------------------------
-  // Grading overlay (Ctrl+Alt+G)
+  // Grading overlay (Ctrl+Alt+G) - ENHANCED with RGB Gain sliders only
   // -------------------------
   function mkGradingOverlay() {
     const overlay = document.createElement('div');
@@ -1626,6 +1656,9 @@
       pointer-events: auto;opacity: 0.92;
       font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
       transform: translateZ(0);user-select: none;
+      width: 340px;
+      max-height: 90vh;
+      overflow-y: auto;
     `;
 
     const head = document.createElement('div');
@@ -1636,11 +1669,12 @@
     `;
 
     const title = document.createElement('div');
-    title.textContent = 'Grading Settings(G) Profil: User';
+    title.textContent = 'Grading (G) & RGB Gain (0-255)';
     title.style.cssText = `font-size:11px; font-weight:900; color:#eaeaea;`;
     head.appendChild(title);
     overlay.appendChild(head);
 
+    // Helper for standard -10..10 sliders
     const mkRow = (name, labelText, keyGet, keySet, gmKey) => {
       const wrap = document.createElement('div');
       wrap.style.cssText = `
@@ -1651,7 +1685,7 @@
       const lbl = document.createElement('div');
       lbl.textContent = labelText;
       lbl.style.cssText = `
-        min-width: 120px;text-align:left;font-size: 11px;font-weight: 900;
+        min-width: 100px;text-align:left;font-size: 11px;font-weight: 900;
         color:#cfcfcf;padding-left: 2px;
       `;
 
@@ -1687,6 +1721,54 @@
       return wrap;
     };
 
+    // Helper for RGB 0-255 sliders
+    const mkRGBRow = (name, labelText, keyGet, keySet, gmKey, color) => {
+      const wrap = document.createElement('div');
+      wrap.style.cssText = `
+        display:flex;align-items:center;gap:8px;padding: 6px 8px;border-radius: 10px;
+        background: rgba(0,0,0,0.92);box-shadow: 0 0 0 1px rgba(255,255,255,0.14) inset;
+      `;
+
+      const lbl = document.createElement('div');
+      lbl.textContent = labelText;
+      lbl.style.cssText = `
+        min-width: 100px;text-align:left;font-size: 11px;font-weight: 900;
+        color:${color};padding-left: 2px;
+      `;
+
+      const rng = document.createElement('input');
+      rng.type = 'range';
+      rng.min = '0';
+      rng.max = '255';
+      rng.step = '1';
+      rng.value = String(keyGet());
+      rng.dataset.gvfRange = name;
+      rng.style.cssText = `width: 120px; height: 18px; accent-color: ${color};`;
+
+      const val = document.createElement('div');
+      val.dataset.gvfVal = name;
+      val.textContent = String(Math.round(keyGet()));
+      val.style.cssText = `width: 54px;text-align:right;font-size: 11px;font-weight: 900;color:${color};`;
+
+      stopEventsOn(rng);
+
+      rng.addEventListener('input', () => {
+        const v = normRGB(parseFloat(rng.value));
+        keySet(v);
+        rng.value = String(keyGet());
+        val.textContent = String(Math.round(keyGet()));
+        gmSet(gmKey, keyGet());
+        applyFilter();
+        scheduleOverlayUpdate();
+      });
+
+      wrap.appendChild(lbl);
+      wrap.appendChild(rng);
+      wrap.appendChild(val);
+      return wrap;
+    };
+
+    // Standard controls
     overlay.appendChild(mkRow('U_CONTRAST','Contrast',        () => normU(u_contrast),   (v)=>{ u_contrast=v; },   K.U_CONTRAST));
     overlay.appendChild(mkRow('U_BLACK','Black Level',        () => normU(u_black),      (v)=>{ u_black=v; },      K.U_BLACK));
     overlay.appendChild(mkRow('U_WHITE','White Level',        () => normU(u_white),      (v)=>{ u_white=v; },      K.U_WHITE));
@@ -1699,12 +1781,28 @@
     overlay.appendChild(mkRow('U_GRAIN','Grain (Banding)',    () => normU(u_grain),      (v)=>{ u_grain=v; },      K.U_GRAIN));
     overlay.appendChild(mkRow('U_HUE','Hue-Correction',       () => normU(u_hue),        (v)=>{ u_hue=v; },        K.U_HUE));
 
+    // Separator
+    const sep = document.createElement('div');
+    sep.style.cssText = `height:1px;background:rgba(255,255,255,0.14);margin:8px 0;`;
+    overlay.appendChild(sep);
+
+    // RGB Gain controls only
+    overlay.appendChild(mkRGBRow('U_R_GAIN','R Gain',  () => normRGB(u_r_gain), (v)=>{ u_r_gain=v; }, K.U_R_GAIN, '#ff6b6b'));
+    overlay.appendChild(mkRGBRow('U_G_GAIN','G Gain',  () => normRGB(u_g_gain), (v)=>{ u_g_gain=v; }, K.U_G_GAIN, '#6bff6b'));
+    overlay.appendChild(mkRGBRow('U_B_GAIN','B Gain',  () => normRGB(u_b_gain), (v)=>{ u_b_gain=v; }, K.U_B_GAIN, '#6b6bff'));
+
+    // Hint
+    const hint = document.createElement('div');
+    hint.style.cssText = `font-size:9px;color:#888;text-align:center;padding:4px;`;
+    hint.textContent = 'Gain: 128=1.0, <128 darker, >128 brighter';
+    overlay.appendChild(hint);
+
     (document.body || document.documentElement).appendChild(overlay);
     return overlay;
   }
 
   // -------------------------
-  // Settings Import/Export overlay (Ctrl+Alt+I)
+  // Settings Import/Export overlay (Ctrl+Alt+I) - stays on top of video
   // -------------------------
   function mkIOOverlay() {
     const overlay = document.createElement('div');
@@ -1894,7 +1992,10 @@
         autoOn: false,
         autoStrength: 0.65,
         autoLockWB: false,
-        user: { contrast:0, black:0, white:0, highlights:0, shadows:0, saturation:0, vibrance:0, sharpen:0, gamma:0, grain:0, hue:0 }
+        user: {
+          contrast:0, black:0, white:0, highlights:0, shadows:0, saturation:0, vibrance:0, sharpen:0, gamma:0, grain:0, hue:0,
+          r_gain:128, g_gain:128, b_gain:128
+        }
       };
       importSettings(defaults);
       setDirty(false);
@@ -1929,12 +2030,398 @@
   }
 
   // -------------------------
+  // Scopes HUD (Ctrl+Alt+S) - EXACTLY like other overlays, positioned on LEFT
+  // -------------------------
+  function mkScopesOverlay() {
+    const overlay = document.createElement('div');
+    overlay.className = 'gvf-video-overlay-scopes';
+    overlay.style.cssText = `
+      position: fixed;
+      display: none;
+      flex-direction: column;
+      gap: 6px;
+      z-index: 2147483647;
+      pointer-events: none;
+      opacity: 0.95;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      transform: translateZ(0);
+      user-select: none;
+      width: 280px;
+    `;
+
+    const head = document.createElement('div');
+    head.style.cssText = `
+      display:flex;justify-content: space-between;align-items:center;
+      padding: 4px 8px;border-radius: 8px;background: rgba(0,0,0,0.85);
+      box-shadow: 0 0 0 1px rgba(255,255,255,0.2) inset;
+      backdrop-filter: blur(2px);
+    `;
+
+    const title = document.createElement('div');
+    title.textContent = 'Scopes (S)';
+    title.style.cssText = `font-size:10px; font-weight:900; color:#eaeaea;`;
+
+    const hint = document.createElement('div');
+    hint.textContent = 'live';
+    hint.style.cssText = `font-size:9px;font-weight:900;color:#aaa;`;
+
+    head.appendChild(title);
+    head.appendChild(hint);
+    overlay.appendChild(head);
+
+    const content = document.createElement('div');
+    content.style.cssText = `
+      padding: 8px;border-radius: 8px;background: rgba(0,0,0,0.85);
+      box-shadow: 0 0 0 1px rgba(255,255,255,0.2) inset;
+      backdrop-filter: blur(2px);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    `;
+
+    // Luma Histogram
+    const lumaSection = document.createElement('div');
+    lumaSection.style.cssText = `display:flex;flex-direction:column;gap:2px;`;
+
+    const lumaTitle = document.createElement('div');
+    lumaTitle.style.cssText = `font-size:9px;font-weight:900;color:#cfcfcf;text-transform:uppercase;letter-spacing:0.5px;`;
+    lumaTitle.textContent = 'Luma Y';
+    lumaSection.appendChild(lumaTitle);
+
+    const lumaBars = document.createElement('div');
+    lumaBars.style.cssText = `
+      display:flex;align-items:flex-end;height:40px;gap:1px;
+      background:rgba(20,20,20,0.6);border-radius:4px;padding:2px;
+    `;
+    lumaBars.className = 'gvf-scope-luma';
+    for (let i=0; i<16; i++) {
+      const bar = document.createElement('div');
+      bar.style.cssText = `
+        flex:1;height:2px;background:#4CAF50;border-radius:1px;
+        transition:height 0.1s ease;
+      `;
+      bar.dataset.index = i;
+      lumaBars.appendChild(bar);
+    }
+    lumaSection.appendChild(lumaBars);
+
+    // RGB Parade
+    const rgbSection = document.createElement('div');
+    rgbSection.style.cssText = `display:flex;flex-direction:column;gap:2px;`;
+
+    const rgbTitle = document.createElement('div');
+    rgbTitle.style.cssText = `font-size:9px;font-weight:900;color:#cfcfcf;text-transform:uppercase;letter-spacing:0.5px;`;
+    rgbTitle.textContent = 'RGB';
+    rgbSection.appendChild(rgbTitle);
+
+    const rgbGrid = document.createElement('div');
+    rgbGrid.style.cssText = `
+      display:grid;grid-template-columns:1fr 1fr 1fr;gap:2px;
+      background:rgba(20,20,20,0.6);border-radius:4px;padding:4px;
+    `;
+
+    // Red
+    const redCol = document.createElement('div');
+    redCol.style.cssText = `display:flex;flex-direction:column;gap:1px;`;
+    const redLabel = document.createElement('div');
+    redLabel.style.cssText = `font-size:8px;font-weight:900;color:#ff6b6b;text-align:center;`;
+    redLabel.textContent = 'R';
+    redCol.appendChild(redLabel);
+    const redBars = document.createElement('div');
+    redBars.style.cssText = `display:flex;align-items:flex-end;height:32px;gap:1px;`;
+    redBars.className = 'gvf-scope-red';
+    for (let i=0; i<16; i++) {
+      const bar = document.createElement('div');
+      bar.style.cssText = `flex:1;height:2px;background:#ff5252;border-radius:1px;transition:height 0.1s ease;`;
+      bar.dataset.index = i;
+      redBars.appendChild(bar);
+    }
+    redCol.appendChild(redBars);
+    rgbGrid.appendChild(redCol);
+
+    // Green
+    const greenCol = document.createElement('div');
+    greenCol.style.cssText = `display:flex;flex-direction:column;gap:1px;`;
+    const greenLabel = document.createElement('div');
+    greenLabel.style.cssText = `font-size:8px;font-weight:900;color:#6bff6b;text-align:center;`;
+    greenLabel.textContent = 'G';
+    greenCol.appendChild(greenLabel);
+    const greenBars = document.createElement('div');
+    greenBars.style.cssText = `display:flex;align-items:flex-end;height:32px;gap:1px;`;
+    greenBars.className = 'gvf-scope-green';
+    for (let i=0; i<16; i++) {
+      const bar = document.createElement('div');
+      bar.style.cssText = `flex:1;height:2px;background:#52ff52;border-radius:1px;transition:height 0.1s ease;`;
+      bar.dataset.index = i;
+      greenBars.appendChild(bar);
+    }
+    greenCol.appendChild(greenBars);
+    rgbGrid.appendChild(greenCol);
+
+    // Blue
+    const blueCol = document.createElement('div');
+    blueCol.style.cssText = `display:flex;flex-direction:column;gap:1px;`;
+    const blueLabel = document.createElement('div');
+    blueLabel.style.cssText = `font-size:8px;font-weight:900;color:#6b6bff;text-align:center;`;
+    blueLabel.textContent = 'B';
+    blueCol.appendChild(blueLabel);
+    const blueBars = document.createElement('div');
+    blueBars.style.cssText = `display:flex;align-items:flex-end;height:32px;gap:1px;`;
+    blueBars.className = 'gvf-scope-blue';
+    for (let i=0; i<16; i++) {
+      const bar = document.createElement('div');
+      bar.style.cssText = `flex:1;height:2px;background:#5252ff;border-radius:1px;transition:height 0.1s ease;`;
+      bar.dataset.index = i;
+      blueBars.appendChild(bar);
+    }
+    blueCol.appendChild(blueBars);
+    rgbGrid.appendChild(blueCol);
+
+    rgbSection.appendChild(rgbGrid);
+
+    // Saturation Meter
+    const satSection = document.createElement('div');
+    satSection.style.cssText = `display:flex;flex-direction:column;gap:2px;`;
+
+    const satTitle = document.createElement('div');
+    satTitle.style.cssText = `font-size:9px;font-weight:900;color:#cfcfcf;text-transform:uppercase;letter-spacing:0.5px;`;
+    satTitle.textContent = 'Sat';
+    satSection.appendChild(satTitle);
+
+    const satMeter = document.createElement('div');
+    satMeter.style.cssText = `
+      display:flex;align-items:center;gap:6px;
+      background:rgba(20,20,20,0.6);border-radius:4px;padding:4px;
+    `;
+
+    const satBarBg = document.createElement('div');
+    satBarBg.style.cssText = `flex:1;height:8px;background:#333;border-radius:4px;overflow:hidden;`;
+
+    const satBarFill = document.createElement('div');
+    satBarFill.style.cssText = `height:100%;width:0%;background:linear-gradient(90deg,#ffd700,#ff8c00);border-radius:4px;transition:width 0.1s ease;`;
+    satBarFill.className = 'gvf-scope-sat-fill';
+
+    const satValue = document.createElement('div');
+    satValue.style.cssText = `font-size:9px;font-weight:900;color:#eaeaea;min-width:36px;text-align:right;`;
+    satValue.className = 'gvf-scope-sat-value';
+    satValue.textContent = '0.00';
+
+    satBarBg.appendChild(satBarFill);
+    satMeter.appendChild(satBarBg);
+    satMeter.appendChild(satValue);
+    satSection.appendChild(satMeter);
+
+    // Average values
+    const avgSection = document.createElement('div');
+    avgSection.style.cssText = `
+      display:grid;grid-template-columns:1fr 1fr 1fr;gap:2px;margin-top:2px;
+      font-size:8px;font-weight:900;color:#aaa;
+    `;
+
+    const avgY = document.createElement('div');
+    avgY.className = 'gvf-scope-avg-y';
+    avgY.style.cssText = `text-align:center;background:rgba(30,30,30,0.6);border-radius:4px;padding:2px;`;
+    avgY.textContent = 'Y: 0.00';
+
+    const avgRGB = document.createElement('div');
+    avgRGB.className = 'gvf-scope-avg-rgb';
+    avgRGB.style.cssText = `text-align:center;background:rgba(30,30,30,0.6);border-radius:4px;padding:2px;`;
+    avgRGB.textContent = 'RGB: 0.00';
+
+    const avgSat = document.createElement('div');
+    avgSat.className = 'gvf-scope-avg-sat';
+    avgSat.style.cssText = `text-align:center;background:rgba(30,30,30,0.6);border-radius:4px;padding:2px;`;
+    avgSat.textContent = 'Sat: 0.00';
+
+    avgSection.appendChild(avgY);
+    avgSection.appendChild(avgRGB);
+    avgSection.appendChild(avgSat);
+
+    content.appendChild(lumaSection);
+    content.appendChild(rgbSection);
+    content.appendChild(satSection);
+    content.appendChild(avgSection);
+
+    overlay.appendChild(content);
+    (document.body || document.documentElement).appendChild(overlay);
+    return overlay;
+  }
+
+  // -------------------------
+  // Scopes update logic
+  // -------------------------
+  const SCOPES = {
+    running: false,
+    canvas: null,
+    ctx: null,
+    lastUpdate: 0,
+    updateInterval: 150 // ms between updates
+  };
+
+  function updateScopesData() {
+    if (!scopesHudShown) return;
+
+    const v = choosePrimaryVideo();
+    if (!v || v.paused || v.seeking || v.ended || v.readyState < 2) return;
+
+    if (!SCOPES.canvas) {
+      SCOPES.canvas = document.createElement('canvas');
+      SCOPES.canvas.width = 160;
+      SCOPES.canvas.height = 90;
+      try {
+        SCOPES.ctx = SCOPES.canvas.getContext('2d', { willReadFrequently: true });
+      } catch (_) {
+        try { SCOPES.ctx = SCOPES.canvas.getContext('2d'); } catch (__) {}
+      }
+    }
+
+    if (!SCOPES.ctx) return;
+
+    const now = nowMs();
+    if (now - SCOPES.lastUpdate < SCOPES.updateInterval) return;
+    SCOPES.lastUpdate = now;
+
+    try {
+      const w = Math.max(2, v.videoWidth || 0);
+      const h = Math.max(2, v.videoHeight || 0);
+      if (!w || !h) return;
+
+      SCOPES.ctx.drawImage(v, 0, 0, 160, 90);
+      const imgData = SCOPES.ctx.getImageData(0, 0, 160, 90);
+      const d = imgData.data;
+
+      // Histogram buckets (16 buckets)
+      const lumaHist = new Array(16).fill(0);
+      const redHist = new Array(16).fill(0);
+      const greenHist = new Array(16).fill(0);
+      const blueHist = new Array(16).fill(0);
+
+      let sumR = 0, sumG = 0, sumB = 0, sumSat = 0;
+      let count = 0;
+
+      // Sample every 2nd pixel for performance
+      for (let y = 0; y < 90; y += 2) {
+        for (let x = 0; x < 160; x += 2) {
+          const i = (y * 160 + x) * 4;
+          const r = d[i];
+          const g = d[i+1];
+          const b = d[i+2];
+
+          // Luma (simplified)
+          const yVal = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+          const lumaBucket = Math.floor(yVal / 16);
+          if (lumaBucket >= 0 && lumaBucket < 16) lumaHist[lumaBucket]++;
+
+          // RGB histograms
+          const rBucket = Math.floor(r / 16);
+          const gBucket = Math.floor(g / 16);
+          const bBucket = Math.floor(b / 16);
+          if (rBucket >= 0 && rBucket < 16) redHist[rBucket]++;
+          if (gBucket >= 0 && gBucket < 16) greenHist[gBucket]++;
+          if (bBucket >= 0 && bBucket < 16) blueHist[bBucket]++;
+
+          // Saturation (max - min)
+          const max = Math.max(r, g, b);
+          const min = Math.min(r, g, b);
+          const sat = max - min;
+
+          sumR += r;
+          sumG += g;
+          sumB += b;
+          sumSat += sat;
+          count++;
+        }
+      }
+
+      if (count === 0) return;
+
+      // Normalize histograms
+      const maxLuma = Math.max(...lumaHist, 1);
+      const maxRed = Math.max(...redHist, 1);
+      const maxGreen = Math.max(...greenHist, 1);
+      const maxBlue = Math.max(...blueHist, 1);
+
+      // Update Luma bars
+      document.querySelectorAll('.gvf-scope-luma [data-index]').forEach(bar => {
+        const idx = parseInt(bar.dataset.index);
+        const val = lumaHist[idx] || 0;
+        const pct = (val / maxLuma) * 36; // max height 36px
+        bar.style.height = Math.max(2, pct) + 'px';
+      });
+
+      // Update RGB bars
+      document.querySelectorAll('.gvf-scope-red [data-index]').forEach(bar => {
+        const idx = parseInt(bar.dataset.index);
+        const val = redHist[idx] || 0;
+        const pct = (val / maxRed) * 28; // max height 28px
+        bar.style.height = Math.max(2, pct) + 'px';
+      });
+
+      document.querySelectorAll('.gvf-scope-green [data-index]').forEach(bar => {
+        const idx = parseInt(bar.dataset.index);
+        const val = greenHist[idx] || 0;
+        const pct = (val / maxGreen) * 28;
+        bar.style.height = Math.max(2, pct) + 'px';
+      });
+
+      document.querySelectorAll('.gvf-scope-blue [data-index]').forEach(bar => {
+        const idx = parseInt(bar.dataset.index);
+        const val = blueHist[idx] || 0;
+        const pct = (val / maxBlue) * 28;
+        bar.style.height = Math.max(2, pct) + 'px';
+      });
+
+      // Update saturation meter
+      const avgSat = sumSat / count / 255; // normalize to 0-1
+      const satPct = Math.min(100, avgSat * 200); // scale for visibility
+      const satFill = document.querySelector('.gvf-scope-sat-fill');
+      const satValue = document.querySelector('.gvf-scope-sat-value');
+      if (satFill) satFill.style.width = satPct + '%';
+      if (satValue) satValue.textContent = avgSat.toFixed(2);
+
+      // Update averages
+      const avgY = (0.299 * (sumR/count) + 0.587 * (sumG/count) + 0.114 * (sumB/count)) / 255;
+      const avgR = (sumR/count) / 255;
+      const avgG = (sumG/count) / 255;
+      const avgB = (sumB/count) / 255;
+      const avgRGB = (avgR + avgG + avgB) / 3;
+
+      const avgYEl = document.querySelector('.gvf-scope-avg-y');
+      const avgRGBEl = document.querySelector('.gvf-scope-avg-rgb');
+      const avgSatEl = document.querySelector('.gvf-scope-avg-sat');
+
+      if (avgYEl) avgYEl.textContent = `Y: ${avgY.toFixed(2)}`;
+      if (avgRGBEl) avgRGBEl.textContent = `RGB: ${avgRGB.toFixed(2)}`;
+      if (avgSatEl) avgSatEl.textContent = `Sat: ${avgSat.toFixed(2)}`;
+
+    } catch (e) {
+      // Silently fail if DRM/cross-origin
+      if (debug) console.log('[GVF] Scopes update failed:', e);
+    }
+  }
+
+  function startScopesLoop() {
+    if (SCOPES.running) return;
+    SCOPES.running = true;
+
+    const loop = () => {
+      if (!SCOPES.running) return;
+      if (scopesHudShown) {
+        updateScopesData();
+      }
+      setTimeout(loop, SCOPES.updateInterval);
+    };
+
+    loop();
+  }
+
+  // -------------------------
   // Export/Import logic
   // -------------------------
   function exportSettings() {
     return {
       schema: 'gvf-settings',
-      ver: '1.1',
+      ver: '1.5',
       enabled: !!enabled,
       darkMoody: !!darkMoody,
       tealOrange: !!tealOrange,
@@ -1951,6 +2438,7 @@
       profile: String(profile),
 
       gradingHudShown: !!gradingHudShown,
+      scopesHudShown: !!scopesHudShown,
 
       autoOn: !!autoOn,
       autoStrength: nFix(autoStrength, 2),
@@ -1967,7 +2455,12 @@
         sharpen:    nFix(normU(u_sharp), 1),
         gamma:      nFix(normU(u_gamma), 1),
         grain:      nFix(normU(u_grain), 1),
-        hue:        nFix(normU(u_hue), 1)
+        hue:        nFix(normU(u_hue), 1),
+
+        // RGB Gain controls only
+        r_gain:     Math.round(normRGB(u_r_gain)),
+        g_gain:     Math.round(normRGB(u_g_gain)),
+        b_gain:     Math.round(normRGB(u_b_gain))
       }
     };
   }
@@ -1998,10 +2491,11 @@
 
       if ('profile' in obj) {
         const p = String(obj.profile).toLowerCase();
-        profile = (['off','film','anime','gaming','user'].includes(p) ? p : 'off');
+        profile = (['off','film','anime','gaming','eyecare','user'].includes(p) ? p : 'off');
       }
 
       if ('gradingHudShown' in obj) gradingHudShown = !!obj.gradingHudShown;
+      if ('scopesHudShown' in obj) scopesHudShown = !!obj.scopesHudShown;
 
       if ('autoOn' in obj) autoOn = !!obj.autoOn;
       if ('autoStrength' in obj) autoStrength = clamp(Number(obj.autoStrength), 0, 1);
@@ -2019,6 +2513,11 @@
       if ('grain'      in u) u_grain      = normU(u.grain);
       if ('hue'        in u) u_hue        = normU(u.hue);
 
+      // RGB Gain controls only
+      if ('r_gain'     in u) u_r_gain     = normRGB(u.r_gain);
+      if ('g_gain'     in u) u_g_gain     = normRGB(u.g_gain);
+      if ('b_gain'     in u) u_b_gain     = normRGB(u.b_gain);
+
       // normalize + write ALL GM keys (still in suspended mode)
       enabled = !!enabled; darkMoody = !!darkMoody; tealOrange = !!tealOrange; vibrantSat = !!vibrantSat; iconsShown = !!iconsShown;
 
@@ -2035,6 +2534,10 @@
       u_gamma      = normU(u_gamma);
       u_grain      = normU(u_grain);
       u_hue        = normU(u_hue);
+
+      u_r_gain     = normRGB(u_r_gain);
+      u_g_gain     = normRGB(u_g_gain);
+      u_b_gain     = normRGB(u_b_gain);
 
       gmSet(K.enabled, enabled);
       gmSet(K.moody, darkMoody);
@@ -2054,6 +2557,7 @@
       gmSet(K.PROF, profile);
       gmSet(K.G_HUD, gradingHudShown);
       gmSet(K.I_HUD, ioHudShown);
+      gmSet(K.S_HUD, scopesHudShown);
 
       gmSet(K.U_CONTRAST, u_contrast);
       gmSet(K.U_BLACK, u_black);
@@ -2066,6 +2570,10 @@
       gmSet(K.U_GAMMA, u_gamma);
       gmSet(K.U_GRAIN, u_grain);
       gmSet(K.U_HUE, u_hue);
+
+      gmSet(K.U_R_GAIN, u_r_gain);
+      gmSet(K.U_G_GAIN, u_g_gain);
+      gmSet(K.U_B_GAIN, u_b_gain);
 
       gmSet(K.AUTO_ON, autoOn);
       gmSet(K.AUTO_STRENGTH, autoStrength);
@@ -2152,6 +2660,7 @@
       if (t) t.textContent = Number(v).toFixed(1);
     };
 
+    // Standard controls
     setPair('U_CONTRAST',   normU(u_contrast));
     setPair('U_BLACK',      normU(u_black));
     setPair('U_WHITE',      normU(u_white));
@@ -2163,6 +2672,18 @@
     setPair('U_GAMMA',      normU(u_gamma));
     setPair('U_GRAIN',      normU(u_grain));
     setPair('U_HUE',        normU(u_hue));
+
+    // RGB Gain controls only (0-255, round to integer for display)
+    const setRGBPair = (name, v) => {
+      const r = overlay.querySelector(`[data-gvf-range="${cssEscape(name)}"]`);
+      const t = overlay.querySelector(`[data-gvf-val="${cssEscape(name)}"]`);
+      if (r) r.value = String(v);
+      if (t) t.textContent = String(Math.round(v));
+    };
+
+    setRGBPair('U_R_GAIN', normRGB(u_r_gain));
+    setRGBPair('U_G_GAIN', normRGB(u_g_gain));
+    setRGBPair('U_B_GAIN', normRGB(u_b_gain));
   }
 
   function updateIOOverlayState(overlay) {
@@ -2213,6 +2734,12 @@
     if (ta.dataset.dirty) return;
 
     ta.value = JSON.stringify(exportSettings(), null, 2);
+  }
+
+  function updateScopesOverlayState(overlay) {
+    if (!scopesHudShown) { overlay.style.display = 'none'; return; }
+    overlay.style.display = 'flex';
+    // Scopes data is updated in the background loop
   }
 
   // -------------------------
@@ -2302,6 +2829,8 @@
   function positionOverlayAt(video, overlay, dx, dy) {
     const fsEl = getFsEl();
     const container = getOverlayContainer(video);
+
+    // Ensure overlay is in the correct container
     if (overlay.parentNode !== container) container.appendChild(overlay);
 
     const isWrapFs = fsEl && container === fsEl && fsEl.classList && fsEl.classList.contains('gvf-fs-wrap');
@@ -2317,24 +2846,43 @@
       }
     }
 
-    if (isWrapFs) {
-      const cr = container.getBoundingClientRect();
-      overlay.style.top  = `${Math.round((r.top - cr.top) + dy)}px`;
-      overlay.style.left = `${Math.round((r.left - cr.left) + r.width - dx)}px`;
-      overlay.style.transform = 'translateX(-100%) translateZ(0)';
+    // Special positioning for Scopes HUD (left side)
+    if (overlay.classList.contains('gvf-video-overlay-scopes')) {
+      // Position at top-left inside video
+      if (isWrapFs) {
+        const cr = container.getBoundingClientRect();
+        overlay.style.top = `${Math.round((r.top - cr.top) + dy)}px`;
+        overlay.style.left = `${Math.round((r.left - cr.left) + dx)}px`;
+        overlay.style.transform = 'none';
+      } else {
+        overlay.style.top = `${Math.round(r.top + dy)}px`;
+        overlay.style.left = `${Math.round(r.left + dx)}px`;
+        overlay.style.transform = 'none';
+      }
     } else {
-      overlay.style.top  = `${Math.round(r.top + dy)}px`;
-      overlay.style.left = `${Math.round(r.left + r.width - dx)}px`;
-      overlay.style.transform = 'translateX(-100%) translateZ(0)';
+      // Position all other overlays at top-right
+      if (isWrapFs) {
+        const cr = container.getBoundingClientRect();
+        overlay.style.top = `${Math.round((r.top - cr.top) + dy)}px`;
+        overlay.style.left = `${Math.round((r.left - cr.left) + r.width - dx)}px`;
+        overlay.style.transform = 'translateX(-100%) translateZ(0)';
+      } else {
+        overlay.style.top = `${Math.round(r.top + dy)}px`;
+        overlay.style.left = `${Math.round(r.left + r.width - dx)}px`;
+        overlay.style.transform = 'translateX(-100%) translateZ(0)';
+      }
     }
   }
 
   function ensureOverlays() {
     document.querySelectorAll('video').forEach(v => {
       patchFullscreenRequest(v);
-      if (!overlaysMain.has(v))  overlaysMain.set(v, mkMainOverlay());
+
+      // Create overlays if they don't exist (they will be attached in positionOverlayAt)
+      if (!overlaysMain.has(v)) overlaysMain.set(v, mkMainOverlay());
       if (!overlaysGrade.has(v)) overlaysGrade.set(v, mkGradingOverlay());
-      if (!overlaysIO.has(v))    overlaysIO.set(v, mkIOOverlay());
+      if (!overlaysIO.has(v)) overlaysIO.set(v, mkIOOverlay());
+      if (!overlaysScopes.has(v)) overlaysScopes.set(v, mkScopesOverlay());
       if (debug && !overlaysAutoDot.has(v)) overlaysAutoDot.set(v, mkAutoDotOverlay());
     });
   }
@@ -2348,6 +2896,7 @@
       const oMain = overlaysMain.get(v);
       const oGr   = overlaysGrade.get(v);
       const oIO   = overlaysIO.get(v);
+      const oScopes = overlaysScopes.get(v);
       const oDot  = overlaysAutoDot.get(v);
 
       if (oMain) {
@@ -2361,6 +2910,10 @@
       if (oIO) {
         updateIOOverlayState(oIO);
         if (ioHudShown) positionOverlayAt(v, oIO, 10, 10 + 560);
+      }
+      if (oScopes) {
+        updateScopesOverlayState(oScopes);
+        if (scopesHudShown) positionOverlayAt(v, oScopes, 10, 10);
       }
 
       if (oDot) {
@@ -2396,7 +2949,7 @@
   }
 
   // -------------------------
-  // SVG filter build + apply
+  // SVG filter build + apply (with RGB Gain only)
   // -------------------------
   function mkGamma(ch, amp, exp, off) {
     const f = document.createElementNS(svgNS, ch);
@@ -2622,6 +3175,12 @@
         '0.00 1.04 0.00 0 -0.010 ' +
         '0.00 0.00 1.04 0 -0.010 ' +
         '0    0    0    1  0';
+    } else if (prof === 'eyecare') {
+      values =
+        '1.08 0.00 0.00 0 0.00 ' +
+        '0.15 1.05 0.00 0 0.00 ' +
+        '0.25 0.00 0.50 0 0.00 ' +
+        '0    0    0    1  0';
     } else {
       return null;
     }
@@ -2765,6 +3324,26 @@
       }
     }
 
+    // RGB Gain only
+    if (profile === 'user') {
+      const rGain = rgbGainToFactor(u_r_gain);
+      const gGain = rgbGainToFactor(u_g_gain);
+      const bGain = rgbGainToFactor(u_b_gain);
+
+      // Only add if not neutral
+      if (Math.abs(rGain - 1.0) > 0.01 || Math.abs(gGain - 1.0) > 0.01 || Math.abs(bGain - 1.0) > 0.01) {
+
+        const rgbMatrix = matRGBGain(rGain, gGain, bGain);
+        const rgbCM = document.createElementNS(svgNS, 'feColorMatrix');
+        rgbCM.setAttribute('type', 'matrix');
+        rgbCM.setAttribute('in', last);
+        rgbCM.setAttribute('result', 'r_rgb');
+        rgbCM.setAttribute('values', matToSvgValues(rgbMatrix));
+        filter.appendChild(rgbCM);
+        last = 'r_rgb';
+      }
+    }
+
     if (moody) {
       const ct = document.createElementNS(svgNS, 'feComponentTransfer');
       ct.setAttribute('in', last);
@@ -2829,7 +3408,7 @@
       last = 'r5';
     }
 
-    if (prof && (prof === 'film' || prof === 'anime' || prof === 'gaming')) {
+    if (prof && (prof === 'film' || prof === 'anime' || prof === 'gaming' || prof === 'eyecare')) {
       const pm = mkProfileMatrixCT(last, 'r_prof', prof);
       if (pm) {
         filter.appendChild(pm);
@@ -2842,6 +3421,7 @@
         if (prof === 'film')   sat.setAttribute('values', '1.08');
         if (prof === 'anime')  sat.setAttribute('values', '1.18');
         if (prof === 'gaming') sat.setAttribute('values', '1.06');
+        if (prof === 'eyecare') sat.setAttribute('values', '0.90');
         filter.appendChild(sat);
         last = 'r_prof_sat';
       }
@@ -2879,7 +3459,9 @@
 
     const uSig = [
       normU(u_contrast), normU(u_black), normU(u_white), normU(u_highlights), normU(u_shadows),
-      normU(u_sat), normU(u_vib), normU(u_sharp), normU(u_gamma), normU(u_grain), normU(u_hue)
+      normU(u_sat), normU(u_vib), normU(u_sharp), normU(u_gamma), normU(u_grain), normU(u_hue),
+      // Include RGB Gain values only
+      normRGB(u_r_gain), normRGB(u_g_gain), normRGB(u_b_gain)
     ].map(x => Number(x).toFixed(1)).join(',');
 
     const want = `${SL}|${SR}|${R}|${A}|${BS}|${BL}|${WL}|${DN}|${HDR}|${P}|U:${uSig}`;
@@ -2939,6 +3521,7 @@
     if (profile === 'film')   return ' brightness(1.01) contrast(1.08) saturate(1.08)';
     if (profile === 'anime')  return ' brightness(1.03) contrast(1.10) saturate(1.16)';
     if (profile === 'gaming') return ' brightness(1.01) contrast(1.12) saturate(1.06)';
+    if (profile === 'eyecare') return ' brightness(1.05) contrast(0.96) saturate(0.88) hue-rotate(-12deg)'; // Enhanced: much warmer
     return '';
   }
 
@@ -3057,10 +3640,11 @@
         hdr = Number(gmGet(K.HDR, hdr));
 
         profile = String(gmGet(K.PROF, profile)).toLowerCase();
-        if (!['off','film','anime','gaming','user'].includes(profile)) profile = 'off';
+        if (!['off','film','anime','gaming','eyecare','user'].includes(profile)) profile = 'off';
 
         gradingHudShown = !!gmGet(K.G_HUD, gradingHudShown);
         ioHudShown      = !!gmGet(K.I_HUD, ioHudShown);
+        scopesHudShown  = !!gmGet(K.S_HUD, scopesHudShown);
 
         u_contrast   = Number(gmGet(K.U_CONTRAST, u_contrast));
         u_black      = Number(gmGet(K.U_BLACK, u_black));
@@ -3073,6 +3657,10 @@
         u_gamma      = Number(gmGet(K.U_GAMMA, u_gamma));
         u_grain      = Number(gmGet(K.U_GRAIN, u_grain));
         u_hue        = Number(gmGet(K.U_HUE, u_hue));
+
+        u_r_gain     = Number(gmGet(K.U_R_GAIN, u_r_gain));
+        u_g_gain     = Number(gmGet(K.U_G_GAIN, u_g_gain));
+        u_b_gain     = Number(gmGet(K.U_B_GAIN, u_b_gain));
 
         autoOn       = !!gmGet(K.AUTO_ON, autoOn);
         autoStrength = clamp(Number(gmGet(K.AUTO_STRENGTH, autoStrength)), 0, 1);
@@ -3092,7 +3680,7 @@
   }
 
   function cycleProfile() {
-    const order = ['off', 'film', 'anime', 'gaming', 'user'];
+    const order = ['off', 'film', 'anime', 'gaming', 'eyecare', 'user'];
     const cur = order.indexOf(profile);
     profile = order[(cur < 0 ? 0 : (cur + 1)) % order.length];
     gmSet(K.PROF, profile);
@@ -3113,6 +3701,14 @@
     gmSet(K.I_HUD, ioHudShown);
     logToggle('IO HUD (Ctrl+Alt+I)', ioHudShown);
     scheduleOverlayUpdate();
+  }
+
+  function toggleScopesHud() {
+    scopesHudShown = !scopesHudShown;
+    gmSet(K.S_HUD, scopesHudShown);
+    logToggle('Scopes HUD (Ctrl+Alt+S)', scopesHudShown);
+    scheduleOverlayUpdate();
+    if (scopesHudShown) startScopesLoop();
   }
 
   // -------------------------
@@ -3139,10 +3735,15 @@
     u_grain      = normU(u_grain);      gmSet(K.U_GRAIN, u_grain);
     u_hue        = normU(u_hue);        gmSet(K.U_HUE, u_hue);
 
+    u_r_gain     = normRGB(u_r_gain);   gmSet(K.U_R_GAIN, u_r_gain);
+    u_g_gain     = normRGB(u_g_gain);   gmSet(K.U_G_GAIN, u_g_gain);
+    u_b_gain     = normRGB(u_b_gain);   gmSet(K.U_B_GAIN, u_b_gain);
+
     gmSet(K.G_HUD, gradingHudShown);
     gmSet(K.I_HUD, ioHudShown);
+    gmSet(K.S_HUD, scopesHudShown);
 
-    if (!['off','film','anime','gaming','user'].includes(profile)) profile = 'off';
+    if (!['off','film','anime','gaming','eyecare','user'].includes(profile)) profile = 'off';
     gmSet(K.PROF, profile);
 
     gmSet(K.AUTO_ON, autoOn);
@@ -3164,10 +3765,14 @@
     ensureAutoLoop();
     setAutoOn(autoOn);
 
+    if (scopesHudShown) startScopesLoop();
+
     log('Init complete.', {
       enabled, darkMoody, tealOrange, vibrantSat, iconsShown,
       hdr: normHDR(), profile,
       autoOn, autoStrength: Number(autoStrength.toFixed(2)), autoLockWB,
+      scopesHudShown,
+      rgb: { r_gain: u_r_gain, g_gain: u_g_gain, b_gain: u_b_gain },
       motionThresh: AUTO.motionThresh,
       motionMinFrames: AUTO.motionMinFrames,
       statsAlpha: AUTO.statsAlpha
@@ -3178,6 +3783,12 @@
       if (tag === 'input' || tag === 'textarea' || e.isComposing) return;
 
       const k = (e.key || '').toLowerCase();
+
+      if (e.ctrlKey && e.altKey && !e.shiftKey && k === SCOPES_KEY) {
+        e.preventDefault();
+        toggleScopesHud();
+        return;
+      }
 
       if (e.ctrlKey && e.altKey && !e.shiftKey && k === IO_HUD_KEY) {
         e.preventDefault();
