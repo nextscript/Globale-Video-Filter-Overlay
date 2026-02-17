@@ -3,9 +3,9 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.3.9
-// @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads. Features adaptive FPS scan (2-10fps) for optimal performance and branchless shader logic for smoother processing.
-// @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern. Mit adaptivem FPS-Scan (2-10fps) für optimale Performance und verzweigungsfreier Shader-Logik für flüssigere Verarbeitung.
+// @version      1.4.0
+// @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
+// @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
 // @run-at       document-idle
 // @grant        GM_getValue
@@ -119,36 +119,20 @@
   let _suspendSync = false;     // suppress GM_addValueChangeListener during bulk import/reset
 
   // -------------------------
-  // Lazy SVG Regeneration
+  // INSTANT SVG REGENERATION - NO DELAY!
   // -------------------------
-  let _svgRegenerationScheduled = false;
-  let _svgLastRegeneration = 0;
-  const SVG_REGENERATION_DELAY = 100; // ms - only regenerate if no changes for this long
-  const SVG_MIN_REGENERATION_INTERVAL = 250; // ms - minimum time between regenerations
+  let _svgNeedsRegeneration = false;
 
-  function scheduleSvgRegeneration() {
-    if (_svgRegenerationScheduled) return;
-    _svgRegenerationScheduled = true;
+  function regenerateSvgImmediately() {
+    if (_svgNeedsRegeneration) return;
+    _svgNeedsRegeneration = true;
 
-    const now = nowMs();
-    const timeSinceLast = now - _svgLastRegeneration;
-
-    // If we're within the minimum interval, schedule for later
-    if (timeSinceLast < SVG_MIN_REGENERATION_INTERVAL) {
-      setTimeout(() => {
-        _svgRegenerationScheduled = false;
-        _svgLastRegeneration = nowMs();
-        ensureSvgFilter(true); // Force regeneration
-      }, SVG_MIN_REGENERATION_INTERVAL - timeSinceLast + 10);
-      return;
-    }
-
-    // Otherwise use the standard delay
-    setTimeout(() => {
-      _svgRegenerationScheduled = false;
-      _svgLastRegeneration = nowMs();
-      ensureSvgFilter(true); // Force regeneration
-    }, SVG_REGENERATION_DELAY);
+    // Use microtask to batch multiple rapid changes but still execute ASAP
+    queueMicrotask(() => {
+      _svgNeedsRegeneration = false;
+      ensureSvgFilter(true); // Force regeneration immediately
+      applyFilter(); // Apply the filter right away
+    });
   }
 
   // -------------------------
@@ -1838,8 +1822,8 @@
         gmSet(gmKey, getVal());
         if (gmKey === K.HDR && getVal() !== 0) gmSet(K.HDR_LAST, getVal());
 
-        // Use lazy SVG regeneration
-        scheduleSvgRegeneration();
+        // INSTANT SVG regeneration - no delay!
+        regenerateSvgImmediately();
       });
 
       wrap.appendChild(lbl);
@@ -1926,8 +1910,8 @@
         val.textContent = Number(keyGet()).toFixed(1);
         gmSet(gmKey, keyGet());
 
-        // Use lazy SVG regeneration
-        scheduleSvgRegeneration();
+        // INSTANT SVG regeneration - no delay!
+        regenerateSvgImmediately();
         scheduleOverlayUpdate();
       });
 
@@ -1975,8 +1959,8 @@
         val.textContent = String(Math.round(keyGet()));
         gmSet(gmKey, keyGet());
 
-        // Use lazy SVG regeneration
-        scheduleSvgRegeneration();
+        // INSTANT SVG regeneration - no delay!
+        regenerateSvgImmediately();
         scheduleOverlayUpdate();
       });
 
@@ -2838,8 +2822,8 @@
       // apply ONCE at end (no mid-import races)
       setAutoOn(autoOn, { silent: true });
 
-      // Schedule SVG regeneration instead of immediate
-      scheduleSvgRegeneration();
+      // INSTANT SVG regeneration instead of lazy
+      regenerateSvgImmediately();
       scheduleOverlayUpdate();
 
       return true;
@@ -3703,7 +3687,7 @@
     svg.appendChild(filter);
   }
 
-  // Modified ensureSvgFilter with lazy regeneration support
+  // Modified ensureSvgFilter with instant regeneration
   function ensureSvgFilter(force = false) {
     const SL  = Number(normSL().toFixed(1));
     const SR  = Number(normSR().toFixed(1));
@@ -3807,9 +3791,9 @@
     const skipSvgIfPossible = !!opts.skipSvgIfPossible;
     const svgExists = !!document.getElementById(SVG_ID);
 
-    // Use lazy regeneration - only check if SVG needs update, don't force rebuild
+    // Use immediate regeneration for toggles
     if (!skipSvgIfPossible || !svgExists) {
-      ensureSvgFilter(false); // Don't force regeneration
+      ensureSvgFilter(true); // Force regeneration immediately for toggles
     }
 
     if (!style) {
@@ -3939,8 +3923,8 @@
 
         setAutoOn(autoOn);
 
-        // Schedule lazy regeneration instead of immediate
-        scheduleSvgRegeneration();
+        // INSTANT SVG regeneration instead of lazy
+        regenerateSvgImmediately();
         scheduleOverlayUpdate();
       } finally {
         _inSync = false;
@@ -3958,7 +3942,7 @@
     profile = order[(cur < 0 ? 0 : (cur + 1)) % order.length];
     gmSet(K.PROF, profile);
     log('Profile cycled:', profile);
-    scheduleSvgRegeneration();
+    regenerateSvgImmediately();
     scheduleOverlayUpdate();
   }
 
@@ -4059,8 +4043,8 @@
     AUTO.lastGoodMatrixStr = autoMatrixStr;
     AUTO.lastAppliedMs = 0;
 
-    // Initial filter application with lazy regeneration
-    scheduleSvgRegeneration();
+    // Initial filter application with instant regeneration
+    regenerateSvgImmediately();
     listenGlobalSync();
     watchIframes();
     primeAutoOnVideoActivity();
@@ -4071,7 +4055,7 @@
     // Start scopes loop if enabled
     if (scopesHudShown) startScopesLoop();
 
-    log('Init complete with adaptive FPS and branchless shader logic.', {
+    log('Init complete with adaptive FPS and branchless shader logic - INSTANT TOGGLE!', {
       enabled, darkMoody, tealOrange, vibrantSat, iconsShown,
       hdr: normHDR(), profile,
       autoOn, autoStrength: Number(autoStrength.toFixed(2)), autoLockWB,
@@ -4081,7 +4065,7 @@
       motionThresh: AUTO.motionThresh,
       motionMinFrames: AUTO.motionMinFrames,
       statsAlpha: AUTO.statsAlpha,
-      lazySvgRegeneration: true,
+      instantSvgRegeneration: true,
       branchlessShader: true
     });
 
@@ -4128,7 +4112,7 @@
           logToggle('HDR (Ctrl+Alt+P)', false);
         }
         gmSet(K.HDR, normHDR());
-        scheduleSvgRegeneration();
+        regenerateSvgImmediately();
         return;
       }
 
@@ -4140,10 +4124,10 @@
 
       if (!(e.ctrlKey && e.altKey) || e.shiftKey) return;
 
-      if (k === HK.base)  { enabled = !enabled;       gmSet(K.enabled, enabled);   e.preventDefault(); logToggle('Base (Ctrl+Alt+B)', enabled); scheduleSvgRegeneration(); return; }
-      if (k === HK.moody) { darkMoody = !darkMoody;   gmSet(K.moody, darkMoody);   e.preventDefault(); logToggle('Dark&Moody (Ctrl+Alt+D)', darkMoody); scheduleSvgRegeneration(); return; }
-      if (k === HK.teal)  { tealOrange = !tealOrange; gmSet(K.teal, tealOrange);   e.preventDefault(); logToggle('Teal&Orange (Ctrl+Alt+O)', tealOrange); scheduleSvgRegeneration(); return; }
-      if (k === HK.vib)   { vibrantSat = !vibrantSat; gmSet(K.vib, vibrantSat);    e.preventDefault(); logToggle('Vibrant (Ctrl+Alt+V)', vibrantSat); scheduleSvgRegeneration(); return; }
+      if (k === HK.base)  { enabled = !enabled;       gmSet(K.enabled, enabled);   e.preventDefault(); logToggle('Base (Ctrl+Alt+B)', enabled); regenerateSvgImmediately(); return; }
+      if (k === HK.moody) { darkMoody = !darkMoody;   gmSet(K.moody, darkMoody);   e.preventDefault(); logToggle('Dark&Moody (Ctrl+Alt+D)', darkMoody); regenerateSvgImmediately(); return; }
+      if (k === HK.teal)  { tealOrange = !tealOrange; gmSet(K.teal, tealOrange);   e.preventDefault(); logToggle('Teal&Orange (Ctrl+Alt+O)', tealOrange); regenerateSvgImmediately(); return; }
+      if (k === HK.vib)   { vibrantSat = !vibrantSat; gmSet(K.vib, vibrantSat);    e.preventDefault(); logToggle('Vibrant (Ctrl+Alt+V)', vibrantSat); regenerateSvgImmediately(); return; }
       if (k === HK.icons) { iconsShown = !iconsShown; gmSet(K.icons, iconsShown);  e.preventDefault(); logToggle('Overlay Icons (Ctrl+Alt+H)', iconsShown); scheduleOverlayUpdate(); return; }
     });
 
@@ -4155,7 +4139,7 @@
 
     new MutationObserver(() => {
       if (!document.getElementById(SVG_ID)) {
-        scheduleSvgRegeneration();
+        regenerateSvgImmediately();
       }
       scheduleOverlayUpdate();
     }).observe(document.documentElement, { childList: true, subtree: true });
