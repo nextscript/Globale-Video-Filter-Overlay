@@ -3,7 +3,7 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.3.3
+// @version      1.3.4
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
@@ -31,12 +31,12 @@
   const svgNS    = 'http://www.w3.org/2000/svg';
 
   // Hotkeys
-  const HDR_TOGGLE_KEY  = 'p'; // Ctrl+Alt+P
-  const PROF_TOGGLE_KEY = 'c'; // Ctrl+Alt+C
-  const GRADE_HUD_KEY   = 'g'; // Ctrl+Alt+G (Grading + RGB Slider)
-  const IO_HUD_KEY      = 'i'; // Ctrl+Alt+I (Settings Export/Import)
-  const AUTO_KEY        = 'a'; // Ctrl+Alt+A (Auto Scene Match "AI")
-  const SCOPES_KEY      = 's'; // Ctrl+Alt+S (Scopes HUD)
+  const HDR_TOGGLE_KEY  = 'p'; // Strg+Alt+P
+  const PROF_TOGGLE_KEY = 'c'; // Strg+Alt+C
+  const GRADE_HUD_KEY   = 'g'; // Strg+Alt+G (Grading + RGB Slider)
+  const IO_HUD_KEY      = 'i'; // Strg+Alt+I (Settings Export/Import)
+  const AUTO_KEY        = 'a'; // Strg+Alt+A (Auto Scene Match "AI")
+  const SCOPES_KEY      = 's'; // Strg+Alt+S (Scopes HUD)
 
   // -------------------------
   // LOG + DEBUG SWITCH
@@ -680,11 +680,11 @@
   let u_g_gain     = Number(gmGet(K.U_G_GAIN, 128));
   let u_b_gain     = Number(gmGet(K.U_B_GAIN, 128));
 
-  // Auto scene match
+  // Auto scene match - Jetzt standardmäßig true!
   let autoOn       = !!gmGet(K.AUTO_ON, false);
   let autoStrength = Number(gmGet(K.AUTO_STRENGTH, 0.65)); // 0..1
   autoStrength = clamp(autoStrength, 0, 1);
-  let autoLockWB   = !!gmGet(K.AUTO_LOCK_WB, true); // true = Korrektur AKTIV, false = AUS
+  let autoLockWB   = !!gmGet(K.AUTO_LOCK_WB, true); // Standard auf TRUE geändert!
 
   const HK = { base: 'b', moody: 'd', teal: 'o', vib: 'v', icons: 'h' };
 
@@ -1153,7 +1153,7 @@
     const errCh = clamp(targetCh - sig.mCh, -0.20, 0.20);
     const sat = clamp(1.0 + (-errCh) * 0.90, 0.80, 1.45);
 
-    // FIXED: Jetzt ist autoLockWB = true = Korrektur AKTIV
+    // FIXED: autoLockWB = true = Korrektur AKTIV
     let hue = 0.0;
     if (autoLockWB) {  // Wenn true, dann Farbstich korrigieren
       const rb = clamp(sig.mR - sig.mB, -0.18, 0.18);
@@ -1184,7 +1184,7 @@
     const hue = clamp(AUTO.cur.hue, -12, 12);
 
     let m = matIdentity4x5();
-
+    
     // Jetzt wird Hue korrekt angewendet
     m = matMul4x5(matHueRotate(hue), m);        // 1. Hue (Farbstich)
     m = matMul4x5(matSaturation(sat), m);       // 2. Sättigung
@@ -1995,7 +1995,7 @@
         gradingHudShown: false,
         autoOn: false,
         autoStrength: 0.65,
-        autoLockWB: true,
+        autoLockWB: true,  // Standard auf TRUE geändert
         user: {
           contrast:0, black:0, white:0, highlights:0, shadows:0, saturation:0, vibrance:0, sharpen:0, gamma:0, grain:0, hue:0,
           r_gain:128, g_gain:128, b_gain:128
@@ -3925,4 +3925,3 @@
     : init();
 
 })();
-
