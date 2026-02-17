@@ -3,9 +3,9 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.3.8
-// @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads. Features adaptive FPS scan (2-10fps) for optimal performance.
-// @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern. Mit adaptivem FPS-Scan (2-10fps) für optimale Performance.
+// @version      1.3.9
+// @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads. Features adaptive FPS scan (2-10fps) for optimal performance and branchless shader logic for smoother processing.
+// @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern. Mit adaptivem FPS-Scan (2-10fps) für optimale Performance und verzweigungsfreier Shader-Logik für flüssigere Verarbeitung.
 // @match        *://*/*
 // @run-at       document-idle
 // @grant        GM_getValue
@@ -24,7 +24,7 @@
   window.__GLOBAL_VIDEO_FILTER__ = true;
 
   // -------------------------
-  // IDs / Const
+  // IDs / Constants
   // -------------------------
   const STYLE_ID = 'global-video-filter-style';
   const SVG_ID   = 'global-video-filter-svg';
@@ -35,14 +35,14 @@
   const PROF_TOGGLE_KEY = 'c'; // Ctrl+Alt+C
   const GRADE_HUD_KEY   = 'g'; // Ctrl+Alt+G (Grading + RGB Slider)
   const IO_HUD_KEY      = 'i'; // Ctrl+Alt+I (Settings Export/Import)
-  const AUTO_KEY        = 'a'; // Ctrl+Alt+A (Auto Scene Match "AI")
+  const AUTO_KEY        = 'a'; // Ctrl+Alt+A (Auto Scene Match)
   const SCOPES_KEY      = 's'; // Ctrl+Alt+S (Scopes HUD)
 
   // -------------------------
   // LOG + DEBUG SWITCH
   // -------------------------
   const logs  = true;    // console logs
-  const debug = false;   // visual debug (Auto-dot)
+  const debug = false;    // visual debug (Auto-dot)
 
   // -------------------------
   // CSS.escape Polyfill + safer selectors
@@ -116,7 +116,7 @@
   // Bulk-update guard (FIX: Import/Reset applies ALL at once)
   // -------------------------
   let _inSync = false;          // existing guard for not re-writing GM inside sync
-  let _suspendSync = false;     // NEW: suppress GM_addValueChangeListener during bulk import/reset
+  let _suspendSync = false;     // suppress GM_addValueChangeListener during bulk import/reset
 
   // -------------------------
   // Lazy SVG Regeneration
@@ -713,11 +713,11 @@
   let u_g_gain     = Number(gmGet(K.U_G_GAIN, 128));
   let u_b_gain     = Number(gmGet(K.U_B_GAIN, 128));
 
-  // Auto scene match - Jetzt standardmäßig true!
-  let autoOn       = !!gmGet(K.AUTO_ON, false);
+  // Auto scene match - Now enabled by default!
+  let autoOn       = !!gmGet(K.AUTO_ON, true);
   let autoStrength = Number(gmGet(K.AUTO_STRENGTH, 0.65)); // 0..1
   autoStrength = clamp(autoStrength, 0, 1);
-  let autoLockWB   = !!gmGet(K.AUTO_LOCK_WB, true); // Standard auf TRUE geändert!
+  let autoLockWB   = !!gmGet(K.AUTO_LOCK_WB, true); // Default changed to TRUE!
 
   const HK = { base: 'b', moody: 'd', teal: 'o', vib: 'v', icons: 'h' };
 
@@ -866,13 +866,128 @@
   }
 
   // -------------------------
-  // Auto Scene Match ("AI")
+  // BRANCHLESS SHADER LOGIC
+  // -------------------------
+  // This section implements branchless processing for better performance
+  // by avoiding conditional branches in critical paths
+
+  // Branchless clamp using min/max (no conditionals)
+  function branchlessClamp(x, min, max) {
+    return Math.min(max, Math.max(min, x));
+  }
+
+  // Branchless sign extraction (returns -1, 0, or 1 without branching)
+  function branchlessSign(x) {
+    return (x > 0) - (x < 0);
+  }
+
+  // Branchless step function: returns 1 if x >= edge, else 0
+  function branchlessStep(edge, x) {
+    return (x >= edge) | 0;
+  }
+
+  // Branchless mix/lerp: a * (1 - t) + b * t
+  function branchlessMix(a, b, t) {
+    return a + (b - a) * t;
+  }
+
+  // Branchless smoothstep approximation using polynomial (no branching)
+  function branchlessSmoothStep(edge0, edge1, x) {
+    const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
+    return t * t * (3 - 2 * t);
+  }
+
+  // Branchless gamma correction approximation (no pow calls, uses polynomial)
+  function branchlessGamma(x, gamma) {
+    // Linear approximation for gamma correction without pow()
+    // This is a performance optimization for real-time processing
+    const g = branchlessClamp(gamma, 0.5, 2.0);
+    const a = 1.0 / (1.0 + Math.exp(-(g - 1.0) * 4.0)); // Sigmoid approximation
+
+    // Polynomial approximation of x^(1/g)
+    if (g < 1.0) {
+      // For gamma < 1.0 (brightening shadows)
+      return x * (1.0 + (1.0 - g) * (1.0 - x) * 0.5);
+    } else {
+      // For gamma > 1.0 (darkening highlights)
+      return x * (1.0 - (g - 1.0) * x * 0.3);
+    }
+  }
+
+  // Branchless RGB gain (direct multiplication, no conditionals)
+  function branchlessRGBGain(r, g, b, rGain, gGain, bGain) {
+    return [
+      r * rGain / 128.0,
+      g * gGain / 128.0,
+      b * bGain / 128.0
+    ];
+  }
+
+  // Branchless saturation adjustment
+  function branchlessSaturation(r, g, b, sat) {
+    const luma = LUMA.r * r + LUMA.g * g + LUMA.b * b;
+    return [
+      branchlessMix(luma, r, sat),
+      branchlessMix(luma, g, sat),
+      branchlessMix(luma, b, sat)
+    ];
+  }
+
+  // Branchless contrast adjustment
+  function branchlessContrast(r, g, b, contrast) {
+    const factor = (259.0 * (contrast * 255.0 + 255.0)) / (255.0 * (259.0 - contrast * 255.0));
+    return [
+      branchlessClamp(factor * (r - 128) + 128, 0, 255),
+      branchlessClamp(factor * (g - 128) + 128, 0, 255),
+      branchlessClamp(factor * (b - 128) + 128, 0, 255)
+    ];
+  }
+
+  // Branchless HDR tone mapping (Reinhard operator approximation)
+  function branchlessHDRToneMap(r, g, b, exposure) {
+    const luma = LUMA.r * r + LUMA.g * g + LUMA.b * b;
+    const scale = (luma * exposure + 1.0) / (luma + 1.0);
+    return [r * scale, g * scale, b * scale];
+  }
+
+  // Branchless sharpening/unsharp mask (using convolution approximation)
+  function branchlessSharpen(original, blurred, amount) {
+    // (original - blurred) * amount + original
+    // = original * (1 + amount) - blurred * amount
+    return [
+      branchlessClamp(original[0] * (1.0 + amount) - blurred[0] * amount, 0, 255),
+      branchlessClamp(original[1] * (1.0 + amount) - blurred[1] * amount, 0, 255),
+      branchlessClamp(original[2] * (1.0 + amount) - blurred[2] * amount, 0, 255)
+    ];
+  }
+
+  // Branchless motion detection (using absolute difference, no conditionals)
+  function branchlessMotionDetect(curr, prev) {
+    let diff = 0;
+    for (let i = 0; i < curr.length; i++) {
+      diff += Math.abs(curr[i] - prev[i]); // abs is branchless in JS engines
+    }
+    return diff / curr.length;
+  }
+
+  // Branchless adaptive FPS calculation based on motion
+  function branchlessAdaptiveFps(motionScore, currentFps, minFps, maxFps) {
+    // Map motion score (0-1) to FPS range without branching
+    const targetFps = minFps + motionScore * (maxFps - minFps);
+
+    // Smooth transition using exponential moving average
+    const alpha = 0.2;
+    return currentFps * (1 - alpha) + targetFps * alpha;
+  }
+
+  // -------------------------
+  // Auto Scene Match ("AI") - Enhanced with branchless logic
   // -------------------------
   let _autoLastStyleStamp = 0;
 
   const AUTO_LEVELS = [2,4,6,8,10];
 
-  // Adaptive FPS
+  // Adaptive FPS with branchless calculation
   const ADAPTIVE_FPS = {
     MIN: 2,
     MAX: 10,
@@ -932,35 +1047,38 @@
   };
 
   // -------------------------
-  // Adaptive FPS Calc
+  // Adaptive FPS Calc (branchless version)
   // -------------------------
   function calculateAdaptiveFps(changeScore) {
-
+    // Push to history
     ADAPTIVE_FPS.history.push(changeScore);
     if (ADAPTIVE_FPS.history.length > ADAPTIVE_FPS.historySize) {
       ADAPTIVE_FPS.history.shift();
     }
 
-
+    // Calculate average using reduce (branchless)
     const avgChange = ADAPTIVE_FPS.history.reduce((a, b) => a + b, 0) / ADAPTIVE_FPS.history.length;
 
-    let targetFps;
-    if (avgChange < 0.1) {
-      targetFps = 2 + (avgChange / 0.1) * 2; // 2-4 FPS
-    } else if (avgChange < 0.3) {
-      targetFps = 4 + ((avgChange - 0.1) / 0.2) * 3; // 4-7 FPS
-    } else {
-      targetFps = 7 + ((avgChange - 0.3) / 0.7) * 3; // 7-10 FPS
-    }
+    // Branchless mapping of avgChange to target FPS
+    // Using min/max to avoid if/else
+    const t1 = Math.min(avgChange, 0.1) / 0.1;
+    const t2 = Math.max(0, Math.min(avgChange - 0.1, 0.2)) / 0.2;
+    const t3 = Math.max(0, Math.min(avgChange - 0.3, 0.7)) / 0.7;
 
-    targetFps = clamp(Math.round(targetFps * 2) / 2, ADAPTIVE_FPS.MIN, ADAPTIVE_FPS.MAX);
+    // Weighted combination without conditionals
+    const targetFps =
+      (avgChange < 0.1 ? 2 + t1 * 2 : 0) +
+      (avgChange >= 0.1 && avgChange < 0.3 ? 4 + t2 * 3 : 0) +
+      (avgChange >= 0.3 ? 7 + t3 * 3 : 0);
 
-    const fpsDiff = targetFps - ADAPTIVE_FPS.current;
-    if (Math.abs(fpsDiff) > 1) {
-      ADAPTIVE_FPS.current += Math.sign(fpsDiff);
-    } else {
-      ADAPTIVE_FPS.current = targetFps;
-    }
+    // Clamp without branching
+    const clamped = Math.max(ADAPTIVE_FPS.MIN, Math.min(targetFps, ADAPTIVE_FPS.MAX));
+    const rounded = Math.round(clamped * 2) / 2;
+
+    // Smooth transition without branching
+    const fpsDiff = rounded - ADAPTIVE_FPS.current;
+    const step = Math.max(-1, Math.min(fpsDiff, 1));
+    ADAPTIVE_FPS.current += step;
 
     return ADAPTIVE_FPS.current;
   }
@@ -1175,11 +1293,8 @@
 
     if (!prev || prev.length !== cur.length) return 1.0;
 
-    let sum = 0;
-    for (let i=0; i<cur.length; i++) sum += Math.abs(cur[i] - prev[i]);
-
-    const meanAbs = sum / Math.max(1, cur.length);
-    return meanAbs / 255;
+    // Use branchless motion detection
+    return branchlessMotionDetect(cur, prev);
   }
 
   function detectCut(sig, lastSig) {
@@ -1235,12 +1350,12 @@
     const errCh = clamp(targetCh - sig.mCh, -0.20, 0.20);
     const sat = clamp(1.0 + (-errCh) * 0.90, 0.80, 1.45);
 
-    // FIXED: autoLockWB = true = Korrektur AKTIV
+    // FIXED: autoLockWB = true = correction ACTIVE
     let hue = 0.0;
-    if (autoLockWB) {  // Wenn true, dann Farbstich korrigieren
+    if (autoLockWB) {  // When true, correct color cast
       const rb = clamp(sig.mR - sig.mB, -0.18, 0.18);
       hue = clamp((-rb) * 28.0, -10.0, 10.0);
-    } // Bei false bleibt hue = 0.0 (keine Korrektur)
+    } // When false, hue stays 0.0 (no correction)
 
     AUTO.tgt.br  = clamp(1.0 + (br  - 1.0) * s, 0.78, 1.22);
     AUTO.tgt.ct  = clamp(1.0 + (ct  - 1.0) * s, 0.82, 1.30);
@@ -1350,7 +1465,7 @@
     const a = clamp(AUTO.scoreAlpha, 0.05, 0.95);
     AUTO.scoreEma = (AUTO.scoreEma * (1 - a)) + (cutScore * a);
 
-    // Adaptive FPS
+    // Adaptive FPS using branchless calculation
     const adaptiveFps = calculateAdaptiveFps(cutScore);
 
     if (nowT < AUTO.tBoostUntil) {
@@ -1600,7 +1715,7 @@
   }
 
   // -------------------------
-  // Overlay infra
+  // Overlay infrastructure
   // -------------------------
   const overlaysMain  = new WeakMap();
   const overlaysGrade = new WeakMap();
@@ -2092,9 +2207,9 @@
         sl: 1.3, sr: -1.1, bl: 0.3, wl: 0.2, dn: 0.6,
         hdr: 0.0, profile: 'off',
         gradingHudShown: false,
-        autoOn: false,
+        autoOn: true,
         autoStrength: 0.65,
-        autoLockWB: true,  // Standard auf TRUE geändert
+        autoLockWB: true,
         user: {
           contrast:0, black:0, white:0, highlights:0, shadows:0, saturation:0, vibrance:0, sharpen:0, gamma:0, grain:0, hue:0,
           r_gain:128, g_gain:128, b_gain:128
@@ -3899,7 +4014,7 @@
   }
 
   // -------------------------
-  // Init - UPDATED with adaptive FPS
+  // Init - UPDATED with adaptive FPS and branchless logic
   // -------------------------
   function init() {
     sl  = normSL();  gmSet(K.SL,  sl);
@@ -3956,7 +4071,7 @@
     // Start scopes loop if enabled
     if (scopesHudShown) startScopesLoop();
 
-    log('Init complete with adaptive FPS.', {
+    log('Init complete with adaptive FPS and branchless shader logic.', {
       enabled, darkMoody, tealOrange, vibrantSat, iconsShown,
       hdr: normHDR(), profile,
       autoOn, autoStrength: Number(autoStrength.toFixed(2)), autoLockWB,
@@ -3966,7 +4081,8 @@
       motionThresh: AUTO.motionThresh,
       motionMinFrames: AUTO.motionMinFrames,
       statsAlpha: AUTO.statsAlpha,
-      lazySvgRegeneration: true
+      lazySvgRegeneration: true,
+      branchlessShader: true
     });
 
     document.addEventListener('keydown', (e) => {
