@@ -3,9 +3,9 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.3.7
-// @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads. Features advanced performance optimizations: Lazy Init, Shader Cache, Object Pooling, Motion Vector Buffer, Dirty Flag Rendering.
-// @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern. Mit erweiterten Performance-Optimierungen: Lazy Init, Shader Cache, Object Pooling, Motion Vector Buffer, Dirty Flag Rendering.
+// @version      1.3.8
+// @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads. Features adaptive FPS scan (2-10fps) for optimal performance.
+// @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern. Mit adaptivem FPS-Scan (2-10fps) für optimale Performance.
 // @match        *://*/*
 // @run-at       document-idle
 // @grant        GM_getValue
@@ -97,7 +97,7 @@
     // Auto scene match
     AUTO_ON:       'gvf_auto_on',
     AUTO_STRENGTH: 'gvf_auto_strength',
-    AUTO_LOCK_WB:  'gvf_auto_lock_wb'  // true = Korrektur AKTIV, false = AUS
+    AUTO_LOCK_WB:  'gvf_auto_lock_wb'
   };
 
   // -------------------------
@@ -117,6 +117,39 @@
   // -------------------------
   let _inSync = false;          // existing guard for not re-writing GM inside sync
   let _suspendSync = false;     // NEW: suppress GM_addValueChangeListener during bulk import/reset
+
+  // -------------------------
+  // Lazy SVG Regeneration
+  // -------------------------
+  let _svgRegenerationScheduled = false;
+  let _svgLastRegeneration = 0;
+  const SVG_REGENERATION_DELAY = 100; // ms - only regenerate if no changes for this long
+  const SVG_MIN_REGENERATION_INTERVAL = 250; // ms - minimum time between regenerations
+
+  function scheduleSvgRegeneration() {
+    if (_svgRegenerationScheduled) return;
+    _svgRegenerationScheduled = true;
+
+    const now = nowMs();
+    const timeSinceLast = now - _svgLastRegeneration;
+
+    // If we're within the minimum interval, schedule for later
+    if (timeSinceLast < SVG_MIN_REGENERATION_INTERVAL) {
+      setTimeout(() => {
+        _svgRegenerationScheduled = false;
+        _svgLastRegeneration = nowMs();
+        ensureSvgFilter(true); // Force regeneration
+      }, SVG_MIN_REGENERATION_INTERVAL - timeSinceLast + 10);
+      return;
+    }
+
+    // Otherwise use the standard delay
+    setTimeout(() => {
+      _svgRegenerationScheduled = false;
+      _svgLastRegeneration = nowMs();
+      ensureSvgFilter(true); // Force regeneration
+    }, SVG_REGENERATION_DELAY);
+  }
 
   // -------------------------
   // Screenshot / Recording helpers
@@ -839,6 +872,16 @@
 
   const AUTO_LEVELS = [2,4,6,8,10];
 
+  // Adaptive FPS
+  const ADAPTIVE_FPS = {
+    MIN: 2,
+    MAX: 10,
+    current: 2,
+    lastAdjust: 0,
+    history: [],
+    historySize: 5
+  };
+
   const AUTO = {
     baseFps: 2,
     boostMs: 1200,
@@ -880,8 +923,47 @@
     // ---- DRM / taint fallback ----
     drmBlocked: false,
     blockUntilMs: 0,
-    lastGoodMatrixStr: autoMatrixStr
+    lastGoodMatrixStr: autoMatrixStr,
+
+    // Adaptive FPS tracking
+    lastFrameTime: 0,
+    frameIntervals: [],
+    maxFrameIntervals: 10
   };
+
+  // -------------------------
+  // Adaptive FPS Calc
+  // -------------------------
+  function calculateAdaptiveFps(changeScore) {
+
+    ADAPTIVE_FPS.history.push(changeScore);
+    if (ADAPTIVE_FPS.history.length > ADAPTIVE_FPS.historySize) {
+      ADAPTIVE_FPS.history.shift();
+    }
+
+
+    const avgChange = ADAPTIVE_FPS.history.reduce((a, b) => a + b, 0) / ADAPTIVE_FPS.history.length;
+
+    let targetFps;
+    if (avgChange < 0.1) {
+      targetFps = 2 + (avgChange / 0.1) * 2; // 2-4 FPS
+    } else if (avgChange < 0.3) {
+      targetFps = 4 + ((avgChange - 0.1) / 0.2) * 3; // 4-7 FPS
+    } else {
+      targetFps = 7 + ((avgChange - 0.3) / 0.7) * 3; // 7-10 FPS
+    }
+
+    targetFps = clamp(Math.round(targetFps * 2) / 2, ADAPTIVE_FPS.MIN, ADAPTIVE_FPS.MAX);
+
+    const fpsDiff = targetFps - ADAPTIVE_FPS.current;
+    if (Math.abs(fpsDiff) > 1) {
+      ADAPTIVE_FPS.current += Math.sign(fpsDiff);
+    } else {
+      ADAPTIVE_FPS.current = targetFps;
+    }
+
+    return ADAPTIVE_FPS.current;
+  }
 
   // -------------------------
   // Auto debug-dot (IN VIDEO FRAME)
@@ -894,8 +976,8 @@
     d.className = 'gvf-auto-dot';
     d.style.cssText = `
       position: fixed;
-      width: 10px;
-      height: 10px;
+      width: 8px;
+      height: 8px;
       border-radius: 999px;
       z-index: 2147483647;
       pointer-events: none;
@@ -1184,11 +1266,11 @@
     const hue = clamp(AUTO.cur.hue, -12, 12);
 
     let m = matIdentity4x5();
-    
-    // Jetzt wird Hue korrekt angewendet
-    m = matMul4x5(matHueRotate(hue), m);        // 1. Hue (Farbstich)
-    m = matMul4x5(matSaturation(sat), m);       // 2. Sättigung
-    m = matMul4x5(matBrightnessContrast(br, ct), m); // 3. Helligkeit/Kontrast
+
+    // Hue
+    m = matMul4x5(matHueRotate(hue), m);
+    m = matMul4x5(matSaturation(sat), m);
+    m = matMul4x5(matBrightnessContrast(br, ct), m);
 
     return m;
   }
@@ -1234,6 +1316,8 @@
         AUTO.tBoostUntil = AUTO.tBoostStart + AUTO.boostMs;
         AUTO.drmBlocked = false;
         AUTO.blockUntilMs = 0;
+        ADAPTIVE_FPS.current = ADAPTIVE_FPS.MIN;
+        ADAPTIVE_FPS.history = [];
       };
 
       document.addEventListener('play', resetAuto, true);
@@ -1248,6 +1332,8 @@
         AUTO.statsEma = null;
         AUTO.drmBlocked = false;
         AUTO.blockUntilMs = 0;
+        ADAPTIVE_FPS.current = ADAPTIVE_FPS.MIN;
+        ADAPTIVE_FPS.history = [];
       }, true);
     } catch (_) {}
   }
@@ -1264,20 +1350,21 @@
     const a = clamp(AUTO.scoreAlpha, 0.05, 0.95);
     AUTO.scoreEma = (AUTO.scoreEma * (1 - a)) + (cutScore * a);
 
-    let idx = scoreToIdx(AUTO.scoreEma);
+    // Adaptive FPS
+    const adaptiveFps = calculateAdaptiveFps(cutScore);
 
     if (nowT < AUTO.tBoostUntil) {
       const age = nowT - (AUTO.tBoostStart || nowT);
       const early = age >= 0 && age < AUTO.minBoostEarlyMs;
-      const minIdx = early ? AUTO.minBoostEarlyIdx : AUTO.minBoostIdx;
-      idx = Math.max(idx, clamp(minIdx, 0, AUTO_LEVELS.length - 1));
+      const boostFps = early ? 10 : 8;
+      return Math.max(adaptiveFps, boostFps);
     }
 
-    return AUTO_LEVELS[clamp(idx, 0, AUTO_LEVELS.length - 1)];
+    return adaptiveFps;
   }
 
   // -------------------------
-  // Auto loop (STRICT motion-gated) + DRM fallback
+  // Auto loop (STRICT motion-gated) + DRM fallback + ADAPTIVE FPS
   // -------------------------
   function ensureAutoLoop() {
     if (AUTO.running) return;
@@ -1310,7 +1397,7 @@
         AUTO.blockUntilMs = 0;
         AUTO.lastAppliedMs = 0; // reset stale timer
         setAutoDotState('off');
-        scheduleNext(AUTO.baseFps);
+        scheduleNext(ADAPTIVE_FPS.MIN);
         return;
       }
 
@@ -1318,7 +1405,7 @@
       const tNow = nowMs();
       if (AUTO.drmBlocked && tNow < (AUTO.blockUntilMs || 0)) {
         setAutoDotState('idle');
-        scheduleNext(AUTO.baseFps);
+        scheduleNext(ADAPTIVE_FPS.MIN);
         return;
       }
 
@@ -1336,14 +1423,14 @@
           LOG.lastTickMs = t;
           log('Auto(A) running: no playable video found.');
         }
-        scheduleNext(AUTO.baseFps);
+        scheduleNext(ADAPTIVE_FPS.MIN);
         return;
       }
 
       if (v.paused || v.seeking) {
         AUTO.motionFrames = 0;
         setAutoDotState('idle');
-        scheduleNext(AUTO.baseFps);
+        scheduleNext(ADAPTIVE_FPS.MIN);
         return;
       }
 
@@ -1380,8 +1467,11 @@
         const hasMotion = (AUTO.motionFrames >= AUTO.motionMinFrames);
         const allowUpdate = isCut || hasMotion;
 
-        let fps = AUTO.baseFps;
-        if (allowUpdate) fps = pickAutoFps(t, rawScore);
+        // Adaptive FPS
+        let fps = ADAPTIVE_FPS.current;
+        if (allowUpdate) {
+          fps = pickAutoFps(t, rawScore);
+        }
 
         if (allowUpdate) {
           updateAutoTargetsFromStats(sig);
@@ -1397,7 +1487,8 @@
         if (LOG.on && (t - LOG.lastTickMs) >= LOG.tickEveryMs) {
           LOG.lastTickMs = t;
           log(
-            `Auto(A) tick @${fps}fps`,
+            `Auto(A) tick @${fps.toFixed(1)}fps`,
+            `adaptive=${ADAPTIVE_FPS.current.toFixed(1)}fps`,
             `update=${allowUpdate ? 'YES' : 'NO'}`,
             `motion=${motion.toFixed(4)} ema=${AUTO.motionEma.toFixed(4)} thr=${AUTO.motionThresh.toFixed(3)} frames=${AUTO.motionFrames}/${AUTO.motionMinFrames}`,
             `raw=${rawScore.toFixed(3)} emaScore=${AUTO.scoreEma.toFixed(3)}`,
@@ -1431,12 +1522,12 @@
           logW('Auto(A) DRM/cross-origin: pixels blocked. Using last AutoMatrix (static) + backoff.', e && e.message ? e.message : e);
         }
 
-        scheduleNext(AUTO.baseFps);
+        scheduleNext(ADAPTIVE_FPS.MIN);
       }
     };
 
-    log(`Auto analyzer loop created. levels=${AUTO_LEVELS.join(',')} canvas=${AUTO.canvasW}x${AUTO.canvasH} motionThresh=${AUTO.motionThresh}`);
-    scheduleNext(AUTO.baseFps);
+    log(`Auto analyzer loop created with ADAPTIVE FPS (2-10fps). levels=${AUTO_LEVELS.join(',')} canvas=${AUTO.canvasW}x${AUTO.canvasH} motionThresh=${AUTO.motionThresh}`);
+    scheduleNext(ADAPTIVE_FPS.MIN);
   }
 
   // -------------------------
@@ -1457,7 +1548,7 @@
     autoOn = next;
     if (!_inSync) gmSet(K.AUTO_ON, autoOn);
 
-    logToggle('Auto Scene Match (Ctrl+Alt+A)', autoOn, `(strength=${autoStrength.toFixed(2)}, lockWB=${autoLockWB ? 'yes' : 'no'})`);
+    logToggle('Auto Scene Match (Ctrl+Alt+A)', autoOn, `(strength=${autoStrength.toFixed(2)}, lockWB=${autoLockWB ? 'yes' : 'no'}, adaptive FPS 2-10)`);
 
     if (!autoOn) {
       AUTO.lastSig = null;
@@ -1489,6 +1580,8 @@
 
     // start fresh; red-dot starts only after a real change occurs
     AUTO.lastAppliedMs = 0;
+    ADAPTIVE_FPS.current = ADAPTIVE_FPS.MIN;
+    ADAPTIVE_FPS.history = [];
 
     setAutoDotState('idle');
     ensureAutoLoop();
@@ -1544,6 +1637,7 @@
       display: none;
       flex-direction: column;
       gap: 6px;
+      margin-top: 15px;
       z-index: 2147483647;
       pointer-events: auto;
       opacity: 0.92;
@@ -1629,7 +1723,8 @@
         gmSet(gmKey, getVal());
         if (gmKey === K.HDR && getVal() !== 0) gmSet(K.HDR_LAST, getVal());
 
-        applyFilter();
+        // Use lazy SVG regeneration
+        scheduleSvgRegeneration();
       });
 
       wrap.appendChild(lbl);
@@ -1715,7 +1810,9 @@
         rng.value = String(keyGet());
         val.textContent = Number(keyGet()).toFixed(1);
         gmSet(gmKey, keyGet());
-        applyFilter();
+
+        // Use lazy SVG regeneration
+        scheduleSvgRegeneration();
         scheduleOverlayUpdate();
       });
 
@@ -1762,7 +1859,9 @@
         rng.value = String(keyGet());
         val.textContent = String(Math.round(keyGet()));
         gmSet(gmKey, keyGet());
-        applyFilter();
+
+        // Use lazy SVG regeneration
+        scheduleSvgRegeneration();
         scheduleOverlayUpdate();
       });
 
@@ -2457,7 +2556,7 @@
   function exportSettings() {
     return {
       schema: 'gvf-settings',
-      ver: '1.5',
+      ver: '1.8',
       enabled: !!enabled,
       darkMoody: !!darkMoody,
       tealOrange: !!tealOrange,
@@ -2479,6 +2578,12 @@
       autoOn: !!autoOn,
       autoStrength: nFix(autoStrength, 2),
       autoLockWB: !!autoLockWB,
+
+      adaptiveFps: {
+        min: ADAPTIVE_FPS.MIN,
+        max: ADAPTIVE_FPS.MAX,
+        current: ADAPTIVE_FPS.current
+      },
 
       user: {
         contrast:   nFix(normU(u_contrast), 1),
@@ -2618,7 +2723,8 @@
       // apply ONCE at end (no mid-import races)
       setAutoOn(autoOn, { silent: true });
 
-      applyFilter({ skipSvgIfPossible: false });
+      // Schedule SVG regeneration instead of immediate
+      scheduleSvgRegeneration();
       scheduleOverlayUpdate();
 
       return true;
@@ -2985,7 +3091,7 @@
   }
 
   // -------------------------
-  // SVG filter build + apply (with RGB Gain only)
+  // SVG filter build + apply (UPDATED with Lazy Regeneration)
   // -------------------------
   function mkGamma(ch, amp, exp, off) {
     const f = document.createElementNS(svgNS, ch);
@@ -3260,6 +3366,7 @@
 
     let last = 'SourceGraphic';
 
+    // Original pipeline - separate operations
     if (blurSigma > 0) {
       const b = document.createElementNS(svgNS, 'feGaussianBlur');
       b.setAttribute('in', last);
@@ -3481,7 +3588,8 @@
     svg.appendChild(filter);
   }
 
-  function ensureSvgFilter() {
+  // Modified ensureSvgFilter with lazy regeneration support
+  function ensureSvgFilter(force = false) {
     const SL  = Number(normSL().toFixed(1));
     const SR  = Number(normSR().toFixed(1));
     const R   = Number(getRadius().toFixed(1));
@@ -3509,6 +3617,14 @@
         updateAutoMatrixInSvg(autoMatrixStr);
         return;
       }
+
+      // If not forcing regeneration, just update the auto matrix
+      if (!force) {
+        updateAutoMatrixInSvg(autoMatrixStr);
+        return;
+      }
+
+      // Force regeneration - remove existing
       existing.remove();
     }
 
@@ -3575,7 +3691,11 @@
 
     const skipSvgIfPossible = !!opts.skipSvgIfPossible;
     const svgExists = !!document.getElementById(SVG_ID);
-    if (!skipSvgIfPossible || !svgExists) ensureSvgFilter();
+
+    // Use lazy regeneration - only check if SVG needs update, don't force rebuild
+    if (!skipSvgIfPossible || !svgExists) {
+      ensureSvgFilter(false); // Don't force regeneration
+    }
 
     if (!style) {
       style = document.createElement('style');
@@ -3703,7 +3823,9 @@
         autoLockWB   = !!gmGet(K.AUTO_LOCK_WB, autoLockWB);
 
         setAutoOn(autoOn);
-        applyFilter();
+
+        // Schedule lazy regeneration instead of immediate
+        scheduleSvgRegeneration();
         scheduleOverlayUpdate();
       } finally {
         _inSync = false;
@@ -3721,7 +3843,7 @@
     profile = order[(cur < 0 ? 0 : (cur + 1)) % order.length];
     gmSet(K.PROF, profile);
     log('Profile cycled:', profile);
-    applyFilter();
+    scheduleSvgRegeneration();
     scheduleOverlayUpdate();
   }
 
@@ -3777,7 +3899,7 @@
   }
 
   // -------------------------
-  // Init
+  // Init - UPDATED with adaptive FPS
   // -------------------------
   function init() {
     sl  = normSL();  gmSet(K.SL,  sl);
@@ -3822,7 +3944,8 @@
     AUTO.lastGoodMatrixStr = autoMatrixStr;
     AUTO.lastAppliedMs = 0;
 
-    applyFilter();
+    // Initial filter application with lazy regeneration
+    scheduleSvgRegeneration();
     listenGlobalSync();
     watchIframes();
     primeAutoOnVideoActivity();
@@ -3833,15 +3956,17 @@
     // Start scopes loop if enabled
     if (scopesHudShown) startScopesLoop();
 
-    log('Init complete.', {
+    log('Init complete with adaptive FPS.', {
       enabled, darkMoody, tealOrange, vibrantSat, iconsShown,
       hdr: normHDR(), profile,
       autoOn, autoStrength: Number(autoStrength.toFixed(2)), autoLockWB,
       scopesHudShown,
       rgb: { r_gain: u_r_gain, g_gain: u_g_gain, b_gain: u_b_gain },
+      adaptiveFps: { min: ADAPTIVE_FPS.MIN, max: ADAPTIVE_FPS.MAX, current: ADAPTIVE_FPS.current },
       motionThresh: AUTO.motionThresh,
       motionMinFrames: AUTO.motionMinFrames,
-      statsAlpha: AUTO.statsAlpha
+      statsAlpha: AUTO.statsAlpha,
+      lazySvgRegeneration: true
     });
 
     document.addEventListener('keydown', (e) => {
@@ -3887,7 +4012,7 @@
           logToggle('HDR (Ctrl+Alt+P)', false);
         }
         gmSet(K.HDR, normHDR());
-        applyFilter();
+        scheduleSvgRegeneration();
         return;
       }
 
@@ -3899,10 +4024,10 @@
 
       if (!(e.ctrlKey && e.altKey) || e.shiftKey) return;
 
-      if (k === HK.base)  { enabled = !enabled;       gmSet(K.enabled, enabled);   e.preventDefault(); logToggle('Base (Ctrl+Alt+B)', enabled); applyFilter(); return; }
-      if (k === HK.moody) { darkMoody = !darkMoody;   gmSet(K.moody, darkMoody);   e.preventDefault(); logToggle('Dark&Moody (Ctrl+Alt+D)', darkMoody); applyFilter(); return; }
-      if (k === HK.teal)  { tealOrange = !tealOrange; gmSet(K.teal, tealOrange);   e.preventDefault(); logToggle('Teal&Orange (Ctrl+Alt+O)', tealOrange); applyFilter(); return; }
-      if (k === HK.vib)   { vibrantSat = !vibrantSat; gmSet(K.vib, vibrantSat);    e.preventDefault(); logToggle('Vibrant (Ctrl+Alt+V)', vibrantSat); applyFilter(); return; }
+      if (k === HK.base)  { enabled = !enabled;       gmSet(K.enabled, enabled);   e.preventDefault(); logToggle('Base (Ctrl+Alt+B)', enabled); scheduleSvgRegeneration(); return; }
+      if (k === HK.moody) { darkMoody = !darkMoody;   gmSet(K.moody, darkMoody);   e.preventDefault(); logToggle('Dark&Moody (Ctrl+Alt+D)', darkMoody); scheduleSvgRegeneration(); return; }
+      if (k === HK.teal)  { tealOrange = !tealOrange; gmSet(K.teal, tealOrange);   e.preventDefault(); logToggle('Teal&Orange (Ctrl+Alt+O)', tealOrange); scheduleSvgRegeneration(); return; }
+      if (k === HK.vib)   { vibrantSat = !vibrantSat; gmSet(K.vib, vibrantSat);    e.preventDefault(); logToggle('Vibrant (Ctrl+Alt+V)', vibrantSat); scheduleSvgRegeneration(); return; }
       if (k === HK.icons) { iconsShown = !iconsShown; gmSet(K.icons, iconsShown);  e.preventDefault(); logToggle('Overlay Icons (Ctrl+Alt+H)', iconsShown); scheduleOverlayUpdate(); return; }
     });
 
@@ -3913,7 +4038,9 @@
     document.addEventListener('webkitfullscreenchange', onFsChange);
 
     new MutationObserver(() => {
-      if (!document.getElementById(SVG_ID)) ensureSvgFilter();
+      if (!document.getElementById(SVG_ID)) {
+        scheduleSvgRegeneration();
+      }
       scheduleOverlayUpdate();
     }).observe(document.documentElement, { childList: true, subtree: true });
 
