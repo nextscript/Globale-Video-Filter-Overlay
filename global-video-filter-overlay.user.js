@@ -42,7 +42,7 @@
   // LOG + DEBUG SWITCH
   // -------------------------
   const logs  = true;    // console logs
-  const debug = true;   // visual debug (Auto-dot)
+  const debug = false;   // visual debug (Auto-dot)
 
   // -------------------------
   // CSS.escape Polyfill + safer selectors
@@ -3925,3 +3925,4 @@
     : init();
 
 })();
+
