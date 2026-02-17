@@ -3,7 +3,7 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.3.4
+// @version      1.3.5
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
@@ -42,7 +42,7 @@
   // LOG + DEBUG SWITCH
   // -------------------------
   const logs  = true;    // console logs
-  const debug = false;   // visual debug (Auto-dot)
+  const debug = false;   // visual debug (Auto-dot)  set to TRUE for debugging!
 
   // -------------------------
   // CSS.escape Polyfill + safer selectors
@@ -117,6 +117,39 @@
   // -------------------------
   let _inSync = false;          // existing guard for not re-writing GM inside sync
   let _suspendSync = false;     // NEW: suppress GM_addValueChangeListener during bulk import/reset
+
+  // -------------------------
+  // Lazy SVG Regeneration
+  // -------------------------
+  let _svgRegenerationScheduled = false;
+  let _svgLastRegeneration = 0;
+  const SVG_REGENERATION_DELAY = 100; // ms - only regenerate if no changes for this long
+  const SVG_MIN_REGENERATION_INTERVAL = 250; // ms - minimum time between regenerations
+
+  function scheduleSvgRegeneration() {
+    if (_svgRegenerationScheduled) return;
+    _svgRegenerationScheduled = true;
+
+    const now = nowMs();
+    const timeSinceLast = now - _svgLastRegeneration;
+
+    // If we're within the minimum interval, schedule for later
+    if (timeSinceLast < SVG_MIN_REGENERATION_INTERVAL) {
+      setTimeout(() => {
+        _svgRegenerationScheduled = false;
+        _svgLastRegeneration = nowMs();
+        ensureSvgFilter(true); // Force regeneration
+      }, SVG_MIN_REGENERATION_INTERVAL - timeSinceLast + 10);
+      return;
+    }
+
+    // Otherwise use the standard delay
+    setTimeout(() => {
+      _svgRegenerationScheduled = false;
+      _svgLastRegeneration = nowMs();
+      ensureSvgFilter(true); // Force regeneration
+    }, SVG_REGENERATION_DELAY);
+  }
 
   // -------------------------
   // Screenshot / Recording helpers
@@ -894,8 +927,8 @@
     d.className = 'gvf-auto-dot';
     d.style.cssText = `
       position: fixed;
-      width: 10px;
-      height: 10px;
+      width: 8px;
+      height: 8px;
       border-radius: 999px;
       z-index: 2147483647;
       pointer-events: none;
@@ -1184,7 +1217,7 @@
     const hue = clamp(AUTO.cur.hue, -12, 12);
 
     let m = matIdentity4x5();
-    
+
     // Jetzt wird Hue korrekt angewendet
     m = matMul4x5(matHueRotate(hue), m);        // 1. Hue (Farbstich)
     m = matMul4x5(matSaturation(sat), m);       // 2. Sättigung
@@ -1544,6 +1577,7 @@
       display: none;
       flex-direction: column;
       gap: 6px;
+      margin-top: 15px;
       z-index: 2147483647;
       pointer-events: auto;
       opacity: 0.92;
@@ -1629,7 +1663,8 @@
         gmSet(gmKey, getVal());
         if (gmKey === K.HDR && getVal() !== 0) gmSet(K.HDR_LAST, getVal());
 
-        applyFilter();
+        // Use lazy SVG regeneration
+        scheduleSvgRegeneration();
       });
 
       wrap.appendChild(lbl);
@@ -1715,7 +1750,9 @@
         rng.value = String(keyGet());
         val.textContent = Number(keyGet()).toFixed(1);
         gmSet(gmKey, keyGet());
-        applyFilter();
+
+        // Use lazy SVG regeneration
+        scheduleSvgRegeneration();
         scheduleOverlayUpdate();
       });
 
@@ -1762,7 +1799,9 @@
         rng.value = String(keyGet());
         val.textContent = String(Math.round(keyGet()));
         gmSet(gmKey, keyGet());
-        applyFilter();
+
+        // Use lazy SVG regeneration
+        scheduleSvgRegeneration();
         scheduleOverlayUpdate();
       });
 
@@ -2457,7 +2496,7 @@
   function exportSettings() {
     return {
       schema: 'gvf-settings',
-      ver: '1.5',
+      ver: '1.7',
       enabled: !!enabled,
       darkMoody: !!darkMoody,
       tealOrange: !!tealOrange,
@@ -2618,7 +2657,8 @@
       // apply ONCE at end (no mid-import races)
       setAutoOn(autoOn, { silent: true });
 
-      applyFilter({ skipSvgIfPossible: false });
+      // Schedule SVG regeneration instead of immediate
+      scheduleSvgRegeneration();
       scheduleOverlayUpdate();
 
       return true;
@@ -2985,7 +3025,7 @@
   }
 
   // -------------------------
-  // SVG filter build + apply (with RGB Gain only)
+  // SVG filter build + apply (UPDATED with Lazy Regeneration)
   // -------------------------
   function mkGamma(ch, amp, exp, off) {
     const f = document.createElementNS(svgNS, ch);
@@ -3260,6 +3300,7 @@
 
     let last = 'SourceGraphic';
 
+    // Original pipeline - separate operations
     if (blurSigma > 0) {
       const b = document.createElementNS(svgNS, 'feGaussianBlur');
       b.setAttribute('in', last);
@@ -3481,7 +3522,8 @@
     svg.appendChild(filter);
   }
 
-  function ensureSvgFilter() {
+  // Modified ensureSvgFilter with lazy regeneration support
+  function ensureSvgFilter(force = false) {
     const SL  = Number(normSL().toFixed(1));
     const SR  = Number(normSR().toFixed(1));
     const R   = Number(getRadius().toFixed(1));
@@ -3509,6 +3551,14 @@
         updateAutoMatrixInSvg(autoMatrixStr);
         return;
       }
+
+      // If not forcing regeneration, just update the auto matrix
+      if (!force) {
+        updateAutoMatrixInSvg(autoMatrixStr);
+        return;
+      }
+
+      // Force regeneration - remove existing
       existing.remove();
     }
 
@@ -3575,7 +3625,11 @@
 
     const skipSvgIfPossible = !!opts.skipSvgIfPossible;
     const svgExists = !!document.getElementById(SVG_ID);
-    if (!skipSvgIfPossible || !svgExists) ensureSvgFilter();
+
+    // Use lazy regeneration - only check if SVG needs update, don't force rebuild
+    if (!skipSvgIfPossible || !svgExists) {
+      ensureSvgFilter(false); // Don't force regeneration
+    }
 
     if (!style) {
       style = document.createElement('style');
@@ -3703,7 +3757,9 @@
         autoLockWB   = !!gmGet(K.AUTO_LOCK_WB, autoLockWB);
 
         setAutoOn(autoOn);
-        applyFilter();
+
+        // Schedule lazy regeneration instead of immediate
+        scheduleSvgRegeneration();
         scheduleOverlayUpdate();
       } finally {
         _inSync = false;
@@ -3721,7 +3777,7 @@
     profile = order[(cur < 0 ? 0 : (cur + 1)) % order.length];
     gmSet(K.PROF, profile);
     log('Profile cycled:', profile);
-    applyFilter();
+    scheduleSvgRegeneration();
     scheduleOverlayUpdate();
   }
 
@@ -3777,7 +3833,7 @@
   }
 
   // -------------------------
-  // Init
+  // Init - UPDATED with lazy regeneration
   // -------------------------
   function init() {
     sl  = normSL();  gmSet(K.SL,  sl);
@@ -3822,7 +3878,8 @@
     AUTO.lastGoodMatrixStr = autoMatrixStr;
     AUTO.lastAppliedMs = 0;
 
-    applyFilter();
+    // Initial filter application with lazy regeneration
+    scheduleSvgRegeneration();
     listenGlobalSync();
     watchIframes();
     primeAutoOnVideoActivity();
@@ -3841,7 +3898,8 @@
       rgb: { r_gain: u_r_gain, g_gain: u_g_gain, b_gain: u_b_gain },
       motionThresh: AUTO.motionThresh,
       motionMinFrames: AUTO.motionMinFrames,
-      statsAlpha: AUTO.statsAlpha
+      statsAlpha: AUTO.statsAlpha,
+      lazySvgRegeneration: true
     });
 
     document.addEventListener('keydown', (e) => {
@@ -3887,7 +3945,7 @@
           logToggle('HDR (Ctrl+Alt+P)', false);
         }
         gmSet(K.HDR, normHDR());
-        applyFilter();
+        scheduleSvgRegeneration();
         return;
       }
 
@@ -3899,10 +3957,10 @@
 
       if (!(e.ctrlKey && e.altKey) || e.shiftKey) return;
 
-      if (k === HK.base)  { enabled = !enabled;       gmSet(K.enabled, enabled);   e.preventDefault(); logToggle('Base (Ctrl+Alt+B)', enabled); applyFilter(); return; }
-      if (k === HK.moody) { darkMoody = !darkMoody;   gmSet(K.moody, darkMoody);   e.preventDefault(); logToggle('Dark&Moody (Ctrl+Alt+D)', darkMoody); applyFilter(); return; }
-      if (k === HK.teal)  { tealOrange = !tealOrange; gmSet(K.teal, tealOrange);   e.preventDefault(); logToggle('Teal&Orange (Ctrl+Alt+O)', tealOrange); applyFilter(); return; }
-      if (k === HK.vib)   { vibrantSat = !vibrantSat; gmSet(K.vib, vibrantSat);    e.preventDefault(); logToggle('Vibrant (Ctrl+Alt+V)', vibrantSat); applyFilter(); return; }
+      if (k === HK.base)  { enabled = !enabled;       gmSet(K.enabled, enabled);   e.preventDefault(); logToggle('Base (Ctrl+Alt+B)', enabled); scheduleSvgRegeneration(); return; }
+      if (k === HK.moody) { darkMoody = !darkMoody;   gmSet(K.moody, darkMoody);   e.preventDefault(); logToggle('Dark&Moody (Ctrl+Alt+D)', darkMoody); scheduleSvgRegeneration(); return; }
+      if (k === HK.teal)  { tealOrange = !tealOrange; gmSet(K.teal, tealOrange);   e.preventDefault(); logToggle('Teal&Orange (Ctrl+Alt+O)', tealOrange); scheduleSvgRegeneration(); return; }
+      if (k === HK.vib)   { vibrantSat = !vibrantSat; gmSet(K.vib, vibrantSat);    e.preventDefault(); logToggle('Vibrant (Ctrl+Alt+V)', vibrantSat); scheduleSvgRegeneration(); return; }
       if (k === HK.icons) { iconsShown = !iconsShown; gmSet(K.icons, iconsShown);  e.preventDefault(); logToggle('Overlay Icons (Ctrl+Alt+H)', iconsShown); scheduleOverlayUpdate(); return; }
     });
 
@@ -3913,7 +3971,9 @@
     document.addEventListener('webkitfullscreenchange', onFsChange);
 
     new MutationObserver(() => {
-      if (!document.getElementById(SVG_ID)) ensureSvgFilter();
+      if (!document.getElementById(SVG_ID)) {
+        scheduleSvgRegeneration();
+      }
       scheduleOverlayUpdate();
     }).observe(document.documentElement, { childList: true, subtree: true });
 
@@ -3925,4 +3985,3 @@
     : init();
 
 })();
-
