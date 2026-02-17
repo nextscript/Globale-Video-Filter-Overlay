@@ -31,12 +31,12 @@
   const svgNS    = 'http://www.w3.org/2000/svg';
 
   // Hotkeys
-  const HDR_TOGGLE_KEY  = 'p'; // Strg+Alt+P
-  const PROF_TOGGLE_KEY = 'c'; // Strg+Alt+C
-  const GRADE_HUD_KEY   = 'g'; // Strg+Alt+G (Grading + RGB Slider)
-  const IO_HUD_KEY      = 'i'; // Strg+Alt+I (Settings Export/Import)
-  const AUTO_KEY        = 'a'; // Strg+Alt+A (Auto Scene Match "AI")
-  const SCOPES_KEY      = 's'; // Strg+Alt+S (Scopes HUD)
+  const HDR_TOGGLE_KEY  = 'p'; // Ctrl+Alt+P
+  const PROF_TOGGLE_KEY = 'c'; // Ctrl+Alt+C
+  const GRADE_HUD_KEY   = 'g'; // Ctrl+Alt+G (Grading + RGB Slider)
+  const IO_HUD_KEY      = 'i'; // Ctrl+Alt+I (Settings Export/Import)
+  const AUTO_KEY        = 'a'; // Ctrl+Alt+A (Auto Scene Match "AI")
+  const SCOPES_KEY      = 's'; // Ctrl+Alt+S (Scopes HUD)
 
   // -------------------------
   // LOG + DEBUG SWITCH
@@ -3925,3 +3925,4 @@
     : init();
 
 })();
+
