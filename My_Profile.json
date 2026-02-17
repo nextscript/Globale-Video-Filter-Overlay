@@ -1,6 +1,6 @@
 {
   "schema": "gvf-settings",
-  "ver": "1.1",
+  "ver": "1.5",
   "enabled": false,
   "darkMoody": true,
   "tealOrange": false,
@@ -14,6 +14,7 @@
   "hdr": 0,
   "profile": "user",
   "gradingHudShown": false,
+  "scopesHudShown": false,
   "autoOn": true,
   "autoStrength": 0.65,
   "autoLockWB": false,
@@ -28,6 +29,9 @@
     "sharpen": -0.6,
     "gamma": 0.6,
     "grain": 1.2,
-    "hue": -0.3
+    "hue": -0.3,
+    "r_gain": 128,
+    "g_gain": 128,
+    "b_gain": 128
   }
 }
