@@ -97,7 +97,7 @@
     // Auto scene match
     AUTO_ON:       'gvf_auto_on',
     AUTO_STRENGTH: 'gvf_auto_strength',
-    AUTO_LOCK_WB:  'gvf_auto_lock_wb'
+    AUTO_LOCK_WB:  'gvf_auto_lock_wb'  // true = Korrektur AKTIV, false = AUS
   };
 
   // -------------------------
@@ -117,440 +117,6 @@
   // -------------------------
   let _inSync = false;          // existing guard for not re-writing GM inside sync
   let _suspendSync = false;     // NEW: suppress GM_addValueChangeListener during bulk import/reset
-
-  // ========================
-  // PERFORMANCE OPTIMIZATIONS
-  // ========================
-
-  // -------------------------
-  // 1. Lazy Init Modules
-  // -------------------------
-  const LAZY_MODULES = {
-    initialized: false,
-    modules: new Map(),
-
-    // Module definitions
-    definitions: {
-      svgFilter: { init: null, deps: [] },
-      autoAnalyzer: { init: null, deps: ['svgFilter'] },
-      scopes: { init: null, deps: [] },
-      overlays: { init: null, deps: ['svgFilter'] },
-      recorder: { init: null, deps: [] }
-    },
-
-    // Initialize module (only if necessary)
-    get(moduleName) {
-      if (!this.definitions[moduleName]) return null;
-
-      const module = this.modules.get(moduleName);
-      if (module) return module;
-
-      // Not initialized yet - initialize now
-      log(`Lazy init module: ${moduleName}`);
-      const def = this.definitions[moduleName];
-
-      // Abhängigkeiten prüfen
-      if (def.deps) {
-        for (const dep of def.deps) {
-          this.get(dep); // Initialize dependencies recursively
-        }
-      }
-
-      // Modul initialize
-      let instance = null;
-      switch(moduleName) {
-        case 'svgFilter':
-          instance = { ensure: (force) => ensureSvgFilter(force) };
-          break;
-        case 'autoAnalyzer':
-          instance = { ensure: () => ensureAutoLoop() };
-          break;
-        case 'scopes':
-          instance = { start: () => startScopesLoop() };
-          break;
-        case 'overlays':
-          instance = { update: () => scheduleOverlayUpdate() };
-          break;
-        case 'recorder':
-          instance = {
-            canRecord: (v) => canBakeToCanvas(v),
-            start: (v, s) => startCanvasRecorderPipeline(v, s),
-            stop: () => stopCanvasRecorderPipeline()
-          };
-          break;
-      }
-
-      this.modules.set(moduleName, instance);
-      return instance;
-    },
-
-    // Check whether module has already been initialized
-    isInitialized(moduleName) {
-      return this.modules.has(moduleName);
-    }
-  };
-
-  // -------------------------
-  // 2. Clamp Shader Inputs (Pre-calculated Values)
-  // -------------------------
-  const SHADER_INPUTS = {
-    // Cached, pre-clamped values for shaders
-    cache: new Map(),
-
-    get(key, calculator, min, max) {
-      let cached = this.cache.get(key);
-      if (!cached) {
-        cached = {
-          value: clamp(calculator(), min, max),
-          timestamp: nowMs()
-        };
-        this.cache.set(key, cached);
-      }
-      return cached.value;
-    },
-
-    update(key, value) {
-      const cached = this.cache.get(key);
-      if (cached) {
-        cached.value = value;
-        cached.timestamp = nowMs();
-      }
-    },
-
-    // For fast matrix calculations
-    getMatrix(profile, values) {
-      const key = `matrix_${profile}_${values.join('_')}`;
-      let cached = this.cache.get(key);
-      if (!cached) {
-        cached = {
-          value: this._computeMatrix(profile, values),
-          timestamp: nowMs()
-        };
-        this.cache.set(key, cached);
-      }
-      return cached.value;
-    },
-
-    _computeMatrix(profile, values) {
-      // Matrix calculation logic (simplified)
-      return matIdentity4x5();
-    }
-  };
-
-  // -------------------------
-  // 3. Precompiled Shader Cache
-  // -------------------------
-  const SHADER_CACHE = {
-    programs: new Map(),
-    lastUsed: new Map(),
-    maxSize: 32, // Maximum number of cached shaders
-
-    get(key, factory) {
-      let program = this.programs.get(key);
-      if (!program) {
-        // Cache too full? Remove oldest items
-        if (this.programs.size >= this.maxSize) {
-          this._evictOldest();
-        }
-
-        program = factory();
-        this.programs.set(key, program);
-        log(`Shader cache: new program ${key}`);
-      }
-
-      // Last Used timestamp update
-      this.lastUsed.set(key, nowMs());
-      return program;
-    },
-
-    _evictOldest() {
-      let oldestKey = null;
-      let oldestTime = Infinity;
-
-      for (const [key, time] of this.lastUsed.entries()) {
-        if (time < oldestTime) {
-          oldestTime = time;
-          oldestKey = key;
-        }
-      }
-
-      if (oldestKey) {
-        this.programs.delete(oldestKey);
-        this.lastUsed.delete(oldestKey);
-        log(`Shader cache: evicted ${oldestKey}`);
-      }
-    },
-
-    clear() {
-      this.programs.clear();
-      this.lastUsed.clear();
-    }
-  };
-
-  // -------------------------
-  // 4. Branchless Shader Logic (Matrix Pre-Multiply)
-  // -------------------------
-  const BRANCHLESS_MATRIX = {
-    // Precalculated matrices for all combinations
-    moodyMatrix: [
-      [0.96, 0,    0,    0, -0.015],
-      [0,    0.96, 0,    0, -0.015],
-      [0,    0,    0.97, 0, -0.015],
-      [0,    0,    0,    1, 0]
-    ],
-
-    tealMatrix: [
-      [0.96, 0.02, 0.00, 0, 0],
-      [0.02, 1.02, 0.02, 0, 0],
-      [0.00, 0.04, 1.06, 0, 0],
-      [0,    0,    0,    1, 0]
-    ],
-
-    orangeMatrix: [
-      [1.10, 0.02, 0.00, 0, 0],
-      [0.02, 1.00, 0.00, 0, 0],
-      [0.00, 0.00, 0.90, 0, 0],
-      [0,    0,    0,    1, 0]
-    ],
-
-    // Branchless combination (always multiply everything, but with neutral values)
-    combine(flags, baseMatrix) {
-      let m = baseMatrix || matIdentity4x5();
-
-      // Instead of if queries: Always multiply, but with neutral values for false
-      m = matMul4x5(flags.moody ? this.moodyMatrix : matIdentity4x5(), m);
-      m = matMul4x5(flags.teal ? this.tealMatrix : matIdentity4x5(), m);
-      m = matMul4x5(flags.orange ? this.orangeMatrix : matIdentity4x5(), m);
-
-      return m;
-    }
-  };
-
-  // -------------------------
-  // 5. Cache Shader Locations
-  // -------------------------
-  const SHADER_LOCATIONS = {
-    elements: new WeakMap(), // Video -> Filter-Element
-    ids: new Map(), // Combination -> SVG ID
-
-    getFilterId(combo) {
-      let id = this.ids.get(combo);
-      if (!id) {
-        id = `gvf_filter_${combo}`;
-        this.ids.set(combo, id);
-      }
-      return id;
-    },
-
-    getElement(video) {
-      return this.elements.get(video);
-    },
-
-    setElement(video, element) {
-      this.elements.set(video, element);
-    }
-  };
-
-  // -------------------------
-  // 6. Object pooling for analysis frames
-  // -------------------------
-  const FRAME_POOL = {
-    pool: [],
-    maxSize: 5,
-    canvasPool: [],
-    ctxPool: [],
-
-    getCanvas(width = 96, height = 54) {
-      // Retrieve canvas from pool or create new one
-      let canvas = this.canvasPool.pop();
-      if (!canvas) {
-        canvas = document.createElement('canvas');
-      }
-      canvas.width = width;
-      canvas.height = height;
-      return canvas;
-    },
-
-    releaseCanvas(canvas) {
-      if (this.canvasPool.length < this.maxSize) {
-        this.canvasPool.push(canvas);
-      }
-    },
-
-    getContext(canvas) {
-      let ctx = this.ctxPool.pop();
-      if (!ctx) {
-        ctx = canvas.getContext('2d', { willReadFrequently: true });
-      }
-      return ctx;
-    },
-
-    releaseContext(ctx) {
-      if (this.ctxPool.length < this.maxSize) {
-        this.ctxPool.push(ctx);
-      }
-    },
-
-    getFrame() {
-      if (this.pool.length > 0) {
-        return this.pool.pop();
-      }
-      return { data: null, width: 0, height: 0 };
-    },
-
-    releaseFrame(frame) {
-      if (this.pool.length < this.maxSize && frame) {
-        this.pool.push(frame);
-      }
-    }
-  };
-
-  // -------------------------
-  // 7. Motion Vector Approximation Buffer
-  // -------------------------
-  const MOTION_BUFFER = {
-    vectors: [],
-    maxSize: 10,
-    lastFrame: null,
-
-    add(vector) {
-      this.vectors.push(vector);
-      if (this.vectors.length > this.maxSize) {
-        this.vectors.shift();
-      }
-    },
-
-    getAverage() {
-      if (this.vectors.length === 0) return 0;
-      const sum = this.vectors.reduce((a, b) => a + b, 0);
-      return sum / this.vectors.length;
-    },
-
-    // Approximated motion without frame difference
-    approximate(currentLuma, threshold = 0.0045) {
-      if (!this.lastFrame) {
-        this.lastFrame = currentLuma;
-        return 0;
-      }
-
-      // Only sample comparison instead of complete frame difference
-      const sampleSize = Math.min(10, currentLuma.length);
-      let diff = 0;
-
-      for (let i = 0; i < sampleSize; i++) {
-        const idx = Math.floor(Math.random() * currentLuma.length);
-        diff += Math.abs(currentLuma[idx] - this.lastFrame[idx]);
-      }
-
-      const avgDiff = diff / sampleSize / 255;
-      this.lastFrame = currentLuma;
-
-      return avgDiff;
-    }
-  };
-
-  // -------------------------
-  // 8. Dirty Flag Rendering
-  // -------------------------
-  const DIRTY_FLAGS = {
-    svg: false,
-    style: false,
-    autoMatrix: false,
-    overlays: false,
-
-    // Last known values for comparison
-    lastValues: {
-      sl: 0, sr: 0, bl: 0, wl: 0, dn: 0, hdr: 0,
-      profile: 'off',
-      moody: false,
-      teal: false,
-      vib: false,
-      enabled: true,
-      autoOn: false
-    },
-
-    checkAndSet(current) {
-      let changed = false;
-
-      for (const [key, value] of Object.entries(current)) {
-        if (this.lastValues[key] !== value) {
-          this.lastValues[key] = value;
-          changed = true;
-
-          // Set specific flags
-          if (key === 'autoOn') this.autoMatrix = true;
-          if (key === 'profile' || key === 'enabled' || key === 'moody' || key === 'teal' || key === 'vib') {
-            this.svg = true;
-            this.style = true;
-          }
-          if (key.startsWith('u_') || key.startsWith('U_')) {
-            this.svg = true;
-          }
-          if (key === 'iconsShown') {
-            this.overlays = true;
-          }
-        }
-      }
-
-      return changed;
-    },
-
-    reset() {
-      this.svg = false;
-      this.style = false;
-      this.autoMatrix = false;
-      this.overlays = false;
-    },
-
-    needsSvgRebuild() {
-      return this.svg;
-    },
-
-    needsStyleUpdate() {
-      return this.style || this.svg;
-    },
-
-    needsAutoMatrixUpdate() {
-      return this.autoMatrix;
-    },
-
-    needsOverlayUpdate() {
-      return this.overlays;
-    }
-  };
-
-  // -------------------------
-  // Lazy SVG regeneration (optimized with dirty flags)
-  // -------------------------
-  let _svgRegenerationScheduled = false;
-  let _svgLastRegeneration = 0;
-  const SVG_REGENERATION_DELAY = 100; // ms - only regenerate if no changes for this long
-  const SVG_MIN_REGENERATION_INTERVAL = 250; // ms - minimum time between regenerations
-
-  function scheduleSvgRegeneration() {
-    if (_svgRegenerationScheduled) return;
-    _svgRegenerationScheduled = true;
-
-    const now = nowMs();
-    const timeSinceLast = now - _svgLastRegeneration;
-
-    // If we're within the minimum interval, schedule for later
-    if (timeSinceLast < SVG_MIN_REGENERATION_INTERVAL) {
-      setTimeout(() => {
-        _svgRegenerationScheduled = false;
-        _svgLastRegeneration = nowMs();
-        ensureSvgFilter(true); // Force regeneration
-      }, SVG_MIN_REGENERATION_INTERVAL - timeSinceLast + 10);
-      return;
-    }
-
-    // Otherwise use the standard delay
-    setTimeout(() => {
-      _svgRegenerationScheduled = false;
-      _svgLastRegeneration = nowMs();
-      ensureSvgFilter(true); // Force regeneration
-    }, SVG_REGENERATION_DELAY);
-  }
 
   // -------------------------
   // Screenshot / Recording helpers
@@ -664,7 +230,7 @@
     } catch (_) {}
   }
 
-  // ---------- Canvas pipeline for recording (mit Object Pooling) ----------
+  // ---------- Canvas pipeline for recording ----------
   const REC_PIPE = {
     active: false,
     v: null,
@@ -697,14 +263,6 @@
       }
     } catch (_) {}
 
-    // Return canvas and context to pool
-    if (REC_PIPE.canvas) {
-      FRAME_POOL.releaseCanvas(REC_PIPE.canvas);
-    }
-    if (REC_PIPE.ctx) {
-      FRAME_POOL.releaseContext(REC_PIPE.ctx);
-    }
-
     REC_PIPE.active = false;
     REC_PIPE.v = null;
     REC_PIPE.stream = null;
@@ -719,8 +277,9 @@
     const h = Math.max(2, video.videoHeight || 0);
     if (!w || !h) return null;
 
-    // Get canvas from pool
-    const c = FRAME_POOL.getCanvas(w, h);
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
 
     const ctx = c.getContext('2d', { alpha: false, desynchronized: true });
     if (!ctx) return null;
@@ -873,7 +432,9 @@
     const chk = canBakeToCanvas(v);
     if (!chk.ok) { if (statusEl) statusEl.textContent = `Screenshot blocked: ${chk.reason}`; return; }
 
-    const c = FRAME_POOL.getCanvas(w, h);
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
     const ctx = c.getContext('2d', { alpha: false, desynchronized: true });
     if (!ctx) { if (statusEl) statusEl.textContent = 'Canvas unavailable.'; return; }
 
@@ -889,7 +450,6 @@
       ctx.getImageData(0, 0, 1, 1);
     } catch (_) {
       if (statusEl) statusEl.textContent = 'Screenshot blocked (cross-origin/DRM).';
-      FRAME_POOL.releaseCanvas(c);
       return;
     }
 
@@ -898,7 +458,6 @@
       const name = tsName('gvf_screenshot', 'png');
       dlBlob(blob, name);
       if (statusEl) statusEl.textContent = `Screenshot saved: ${name}`;
-      FRAME_POOL.releaseCanvas(c);
     }, 'image/png');
   }
 
@@ -1274,19 +833,9 @@
   }
 
   // -------------------------
-  // Auto Scene Match (“AI”) - with adaptive FPS scan and motion buffer
+  // Auto Scene Match ("AI")
   // -------------------------
   let _autoLastStyleStamp = 0;
-
-  // Adaptive FPS Einstellungen
-  const ADAPTIVE_FPS = {
-    MIN: 2,      // Minimum FPS with little change
-    MAX: 10,     // Maximum FPS with lots of changes
-    current: 2,  // Current FPS
-    lastAdjust: 0,
-    history: [], // Last change values for moving average
-    historySize: 5
-  };
 
   const AUTO_LEVELS = [2,4,6,8,10];
 
@@ -1331,53 +880,8 @@
     // ---- DRM / taint fallback ----
     drmBlocked: false,
     blockUntilMs: 0,
-    lastGoodMatrixStr: autoMatrixStr,
-
-    // Adaptive FPS tracking
-    lastFrameTime: 0,
-    frameIntervals: [],
-    maxFrameIntervals: 10
+    lastGoodMatrixStr: autoMatrixStr
   };
-
-  // -------------------------
-  // Adaptive FPS calculation
-  // -------------------------
-  function calculateAdaptiveFps(changeScore) {
-    // Änderungswert zur Historie hinzufügen
-    ADAPTIVE_FPS.history.push(changeScore);
-    if (ADAPTIVE_FPS.history.length > ADAPTIVE_FPS.historySize) {
-      ADAPTIVE_FPS.history.shift();
-    }
-
-    // Calculate moving average
-    const avgChange = ADAPTIVE_FPS.history.reduce((a, b) => a + b, 0) / ADAPTIVE_FPS.history.length;
-
-    // Calculate FPS based on average change
-    // For small changes (0.0-0.1) → 2-4 FPS
-    // For medium changes (0.1-0.3) → 4-7 FPS
-    // For large changes (0.3-1.0) → 7-10 FPS
-    let targetFps;
-    if (avgChange < 0.1) {
-      targetFps = 2 + (avgChange / 0.1) * 2; // 2-4 FPS
-    } else if (avgChange < 0.3) {
-      targetFps = 4 + ((avgChange - 0.1) / 0.2) * 3; // 4-7 FPS
-    } else {
-      targetFps = 7 + ((avgChange - 0.3) / 0.7) * 3; // 7-10 FPS
-    }
-
-    // Limit to area and round
-    targetFps = clamp(Math.round(targetFps * 2) / 2, ADAPTIVE_FPS.MIN, ADAPTIVE_FPS.MAX);
-
-    // Smooth adjustment (maximum 1 FPS per step)
-    const fpsDiff = targetFps - ADAPTIVE_FPS.current;
-    if (Math.abs(fpsDiff) > 1) {
-      ADAPTIVE_FPS.current += Math.sign(fpsDiff);
-    } else {
-      ADAPTIVE_FPS.current = targetFps;
-    }
-
-    return ADAPTIVE_FPS.current;
-  }
 
   // -------------------------
   // Auto debug-dot (IN VIDEO FRAME)
@@ -1390,8 +894,8 @@
     d.className = 'gvf-auto-dot';
     d.style.cssText = `
       position: fixed;
-      width: 8px;
-      height: 8px;
+      width: 10px;
+      height: 10px;
       border-radius: 999px;
       z-index: 2147483647;
       pointer-events: none;
@@ -1511,7 +1015,7 @@
     return best;
   }
 
-  // --- Y-Luma based stats (analysis) mit Object Pooling ---
+  // --- Y-Luma based stats (analysis) ---
   function computeFrameStats(imgData) {
     const d = imgData.data;
 
@@ -1558,7 +1062,7 @@
     return { mR, mG, mB, mY, sdY, mCh };
   }
 
-  // motion metric from downsampled luma (0..1) mit Motion Buffer
+  // motion metric from downsampled luma (0..1)
   function computeMotionFromImage(imgData) {
     const d = imgData.data;
     const stepPx = 2;
@@ -1589,23 +1093,11 @@
 
     if (!prev || prev.length !== cur.length) return 1.0;
 
-    // Use motion buffer for approximation
-    const approx = MOTION_BUFFER.approximate(cur, AUTO.motionThresh);
-    if (approx > 0) {
-      return approx;
-    }
-
-    // Fallback: Full calculation
     let sum = 0;
     for (let i=0; i<cur.length; i++) sum += Math.abs(cur[i] - prev[i]);
 
     const meanAbs = sum / Math.max(1, cur.length);
-    const motion = meanAbs / 255;
-
-    // Add to motion buffer
-    MOTION_BUFFER.add(motion);
-
-    return motion;
+    return meanAbs / 255;
   }
 
   function detectCut(sig, lastSig) {
@@ -1661,12 +1153,12 @@
     const errCh = clamp(targetCh - sig.mCh, -0.20, 0.20);
     const sat = clamp(1.0 + (-errCh) * 0.90, 0.80, 1.45);
 
-    // FIXED: autoLockWB = true = correction ACTIVE
+    // FIXED: autoLockWB = true = Korrektur AKTIV
     let hue = 0.0;
-    if (autoLockWB) {  // If true, correct color cast
+    if (autoLockWB) {  // Wenn true, dann Farbstich korrigieren
       const rb = clamp(sig.mR - sig.mB, -0.18, 0.18);
       hue = clamp((-rb) * 28.0, -10.0, 10.0);
-    } // If false, hue = 0.0 (no correction)
+    } // Bei false bleibt hue = 0.0 (keine Korrektur)
 
     AUTO.tgt.br  = clamp(1.0 + (br  - 1.0) * s, 0.78, 1.22);
     AUTO.tgt.ct  = clamp(1.0 + (ct  - 1.0) * s, 0.82, 1.30);
@@ -1692,11 +1184,11 @@
     const hue = clamp(AUTO.cur.hue, -12, 12);
 
     let m = matIdentity4x5();
-
-    // Hue is now applied correctly
-    m = matMul4x5(matHueRotate(hue), m);        // 1. Hue (color cast)
-    m = matMul4x5(matSaturation(sat), m);       // 2. Saturation
-    m = matMul4x5(matBrightnessContrast(br, ct), m); // 3. Brightness/Contrast
+    
+    // Jetzt wird Hue korrekt angewendet
+    m = matMul4x5(matHueRotate(hue), m);        // 1. Hue (Farbstich)
+    m = matMul4x5(matSaturation(sat), m);       // 2. Sättigung
+    m = matMul4x5(matBrightnessContrast(br, ct), m); // 3. Helligkeit/Kontrast
 
     return m;
   }
@@ -1742,9 +1234,6 @@
         AUTO.tBoostUntil = AUTO.tBoostStart + AUTO.boostMs;
         AUTO.drmBlocked = false;
         AUTO.blockUntilMs = 0;
-        ADAPTIVE_FPS.current = ADAPTIVE_FPS.MIN;
-        ADAPTIVE_FPS.history = [];
-        MOTION_BUFFER.vectors = [];
       };
 
       document.addEventListener('play', resetAuto, true);
@@ -1759,9 +1248,6 @@
         AUTO.statsEma = null;
         AUTO.drmBlocked = false;
         AUTO.blockUntilMs = 0;
-        ADAPTIVE_FPS.current = ADAPTIVE_FPS.MIN;
-        ADAPTIVE_FPS.history = [];
-        MOTION_BUFFER.vectors = [];
       }, true);
     } catch (_) {}
   }
@@ -1778,34 +1264,32 @@
     const a = clamp(AUTO.scoreAlpha, 0.05, 0.95);
     AUTO.scoreEma = (AUTO.scoreEma * (1 - a)) + (cutScore * a);
 
-    // Adaptive FPS based on change rate
-    const adaptiveFps = calculateAdaptiveFps(cutScore);
+    let idx = scoreToIdx(AUTO.scoreEma);
 
-    // Briefly boost during scene changes
     if (nowT < AUTO.tBoostUntil) {
       const age = nowT - (AUTO.tBoostStart || nowT);
       const early = age >= 0 && age < AUTO.minBoostEarlyMs;
-      const boostFps = early ? 10 : 8;
-      return Math.max(adaptiveFps, boostFps);
+      const minIdx = early ? AUTO.minBoostEarlyIdx : AUTO.minBoostIdx;
+      idx = Math.max(idx, clamp(minIdx, 0, AUTO_LEVELS.length - 1));
     }
 
-    return adaptiveFps;
+    return AUTO_LEVELS[clamp(idx, 0, AUTO_LEVELS.length - 1)];
   }
 
   // -------------------------
-  // Auto loop (STRICT motion-gated) + DRM fallback + Adaptive FPS + Object Pooling
+  // Auto loop (STRICT motion-gated) + DRM fallback
   // -------------------------
   function ensureAutoLoop() {
     if (AUTO.running) return;
     AUTO.running = true;
 
-    // Get canvas and context from pool
-    const c = FRAME_POOL.getCanvas(AUTO.canvasW, AUTO.canvasH);
-    let ctx = FRAME_POOL.getContext(c);
-    if (!ctx) {
-      try { ctx = c.getContext('2d', { willReadFrequently: true }); }
-      catch (_) { try { ctx = c.getContext('2d'); } catch (__) {} }
-    }
+    const c = document.createElement('canvas');
+    c.width = AUTO.canvasW;
+    c.height = AUTO.canvasH;
+
+    let ctx = null;
+    try { ctx = c.getContext('2d', { willReadFrequently: true }); }
+    catch (_) { try { ctx = c.getContext('2d'); } catch (__) {} }
 
     const scheduleNext = (fps) => {
       const ms = Math.max(80, Math.round(1000 / Math.max(1, fps)));
@@ -1826,7 +1310,7 @@
         AUTO.blockUntilMs = 0;
         AUTO.lastAppliedMs = 0; // reset stale timer
         setAutoDotState('off');
-        scheduleNext(ADAPTIVE_FPS.MIN);
+        scheduleNext(AUTO.baseFps);
         return;
       }
 
@@ -1834,7 +1318,7 @@
       const tNow = nowMs();
       if (AUTO.drmBlocked && tNow < (AUTO.blockUntilMs || 0)) {
         setAutoDotState('idle');
-        scheduleNext(ADAPTIVE_FPS.MIN);
+        scheduleNext(AUTO.baseFps);
         return;
       }
 
@@ -1852,14 +1336,14 @@
           LOG.lastTickMs = t;
           log('Auto(A) running: no playable video found.');
         }
-        scheduleNext(ADAPTIVE_FPS.MIN);
+        scheduleNext(AUTO.baseFps);
         return;
       }
 
       if (v.paused || v.seeking) {
         AUTO.motionFrames = 0;
         setAutoDotState('idle');
-        scheduleNext(ADAPTIVE_FPS.MIN);
+        scheduleNext(AUTO.baseFps);
         return;
       }
 
@@ -1896,22 +1380,10 @@
         const hasMotion = (AUTO.motionFrames >= AUTO.motionMinFrames);
         const allowUpdate = isCut || hasMotion;
 
-        // Adaptive FPS based on change rate
-        let fps = ADAPTIVE_FPS.current;
+        let fps = AUTO.baseFps;
+        if (allowUpdate) fps = pickAutoFps(t, rawScore);
+
         if (allowUpdate) {
-          fps = pickAutoFps(t, rawScore);
-        }
-
-        // Dirty flag for auto matrix
-        if (allowUpdate && DIRTY_FLAGS.needsAutoMatrixUpdate()) {
-          updateAutoTargetsFromStats(sig);
-          updateAutoSmoothing(isCut);
-          setAutoMatrixAndApply();
-
-          AUTO.blink = !AUTO.blink;
-          setAutoDotState(AUTO.blink ? 'workBright' : 'workDark');
-          DIRTY_FLAGS.autoMatrix = false;
-        } else if (allowUpdate) {
           updateAutoTargetsFromStats(sig);
           updateAutoSmoothing(isCut);
           setAutoMatrixAndApply();
@@ -1925,8 +1397,7 @@
         if (LOG.on && (t - LOG.lastTickMs) >= LOG.tickEveryMs) {
           LOG.lastTickMs = t;
           log(
-            `Auto(A) tick @${fps.toFixed(1)}fps`,
-            `adaptive=${ADAPTIVE_FPS.current.toFixed(1)}fps`,
+            `Auto(A) tick @${fps}fps`,
             `update=${allowUpdate ? 'YES' : 'NO'}`,
             `motion=${motion.toFixed(4)} ema=${AUTO.motionEma.toFixed(4)} thr=${AUTO.motionThresh.toFixed(3)} frames=${AUTO.motionFrames}/${AUTO.motionMinFrames}`,
             `raw=${rawScore.toFixed(3)} emaScore=${AUTO.scoreEma.toFixed(3)}`,
@@ -1960,12 +1431,12 @@
           logW('Auto(A) DRM/cross-origin: pixels blocked. Using last AutoMatrix (static) + backoff.', e && e.message ? e.message : e);
         }
 
-        scheduleNext(ADAPTIVE_FPS.MIN);
+        scheduleNext(AUTO.baseFps);
       }
     };
 
-    log(`Auto analyzer loop created with ADAPTIVE FPS (2-10fps). levels=${AUTO_LEVELS.join(',')} canvas=${AUTO.canvasW}x${AUTO.canvasH} motionThresh=${AUTO.motionThresh}`);
-    scheduleNext(ADAPTIVE_FPS.MIN);
+    log(`Auto analyzer loop created. levels=${AUTO_LEVELS.join(',')} canvas=${AUTO.canvasW}x${AUTO.canvasH} motionThresh=${AUTO.motionThresh}`);
+    scheduleNext(AUTO.baseFps);
   }
 
   // -------------------------
@@ -1986,7 +1457,7 @@
     autoOn = next;
     if (!_inSync) gmSet(K.AUTO_ON, autoOn);
 
-    logToggle('Auto Scene Match (Ctrl+Alt+A)', autoOn, `(strength=${autoStrength.toFixed(2)}, lockWB=${autoLockWB ? 'yes' : 'no'}, adaptive FPS 2-10)`);
+    logToggle('Auto Scene Match (Ctrl+Alt+A)', autoOn, `(strength=${autoStrength.toFixed(2)}, lockWB=${autoLockWB ? 'yes' : 'no'})`);
 
     if (!autoOn) {
       AUTO.lastSig = null;
@@ -2018,8 +1489,6 @@
 
     // start fresh; red-dot starts only after a real change occurs
     AUTO.lastAppliedMs = 0;
-    ADAPTIVE_FPS.current = ADAPTIVE_FPS.MIN;
-    ADAPTIVE_FPS.history = [];
 
     setAutoDotState('idle');
     ensureAutoLoop();
@@ -2075,7 +1544,6 @@
       display: none;
       flex-direction: column;
       gap: 6px;
-      margin-top: 15px;
       z-index: 2147483647;
       pointer-events: auto;
       opacity: 0.92;
@@ -2161,11 +1629,7 @@
         gmSet(gmKey, getVal());
         if (gmKey === K.HDR && getVal() !== 0) gmSet(K.HDR_LAST, getVal());
 
-        // Set dirty flags
-        DIRTY_FLAGS.svg = true;
-
-        // Use lazy SVG regeneration
-        scheduleSvgRegeneration();
+        applyFilter();
       });
 
       wrap.appendChild(lbl);
@@ -2251,12 +1715,7 @@
         rng.value = String(keyGet());
         val.textContent = Number(keyGet()).toFixed(1);
         gmSet(gmKey, keyGet());
-
-        // Set dirty flags
-        DIRTY_FLAGS.svg = true;
-
-        // Use lazy SVG regeneration
-        scheduleSvgRegeneration();
+        applyFilter();
         scheduleOverlayUpdate();
       });
 
@@ -2303,12 +1762,7 @@
         rng.value = String(keyGet());
         val.textContent = String(Math.round(keyGet()));
         gmSet(gmKey, keyGet());
-
-        // Set dirty flags
-        DIRTY_FLAGS.svg = true;
-
-        // Use lazy SVG regeneration
-        scheduleSvgRegeneration();
+        applyFilter();
         scheduleOverlayUpdate();
       });
 
@@ -3003,7 +2457,7 @@
   function exportSettings() {
     return {
       schema: 'gvf-settings',
-      ver: '1.7',
+      ver: '1.5',
       enabled: !!enabled,
       darkMoody: !!darkMoody,
       tealOrange: !!tealOrange,
@@ -3164,12 +2618,7 @@
       // apply ONCE at end (no mid-import races)
       setAutoOn(autoOn, { silent: true });
 
-      // Dirty Flags setzen
-      DIRTY_FLAGS.svg = true;
-      DIRTY_FLAGS.style = true;
-
-      // Schedule SVG regeneration instead of immediate
-      scheduleSvgRegeneration();
+      applyFilter({ skipSvgIfPossible: false });
       scheduleOverlayUpdate();
 
       return true;
@@ -3536,7 +2985,7 @@
   }
 
   // -------------------------
-  // SVG filter build + apply (UPDATED mit Shader Cache und Branchless Logic)
+  // SVG filter build + apply (with RGB Gain only)
   // -------------------------
   function mkGamma(ch, amp, exp, off) {
     const f = document.createElementNS(svgNS, ch);
@@ -3805,199 +3254,234 @@
   function buildFilter(svg, id, opts, radius, sharpenA, blurSigma, blackOffset, whiteAdj, dnVal, hdrVal, prof) {
     const { moody, teal, vib } = opts;
 
-    // Shader-Cache verwenden
-    const cacheKey = `${id}_${moody}_${teal}_${vib}_${radius}_${sharpenA}_${blackOffset}_${whiteAdj}_${dnVal}_${hdrVal}_${prof}`;
+    const filter = document.createElementNS(svgNS, 'filter');
+    filter.setAttribute('id', id);
+    filter.setAttribute('color-interpolation-filters', 'sRGB');
 
-    return SHADER_CACHE.get(cacheKey, () => {
-      const filter = document.createElementNS(svgNS, 'filter');
-      filter.setAttribute('id', id);
-      filter.setAttribute('color-interpolation-filters', 'sRGB');
+    let last = 'SourceGraphic';
 
-      let last = 'SourceGraphic';
+    if (blurSigma > 0) {
+      const b = document.createElementNS(svgNS, 'feGaussianBlur');
+      b.setAttribute('in', last);
+      b.setAttribute('stdDeviation', String(radius));
+      b.setAttribute('result', 'r_blur');
+      filter.appendChild(b);
+      last = 'r_blur';
+    } else {
+      const blur = document.createElementNS(svgNS, 'feGaussianBlur');
+      blur.setAttribute('in', 'SourceGraphic');
+      blur.setAttribute('stdDeviation', String(radius));
+      blur.setAttribute('result', 'blur');
+      filter.appendChild(blur);
 
-      // Original pipeline - separate operations
-      if (blurSigma > 0) {
-        const b = document.createElementNS(svgNS, 'feGaussianBlur');
-        b.setAttribute('in', last);
-        b.setAttribute('stdDeviation', String(radius));
-        b.setAttribute('result', 'r_blur');
-        filter.appendChild(b);
-        last = 'r_blur';
-      } else {
-        const blur = document.createElementNS(svgNS, 'feGaussianBlur');
-        blur.setAttribute('in', 'SourceGraphic');
-        blur.setAttribute('stdDeviation', String(radius));
-        blur.setAttribute('result', 'blur');
-        filter.appendChild(blur);
+      const comp = document.createElementNS(svgNS, 'feComposite');
+      comp.setAttribute('in', 'SourceGraphic');
+      comp.setAttribute('in2', 'blur');
+      comp.setAttribute('operator', 'arithmetic');
+      comp.setAttribute('k1', '0');
+      comp.setAttribute('k2', String(1 + sharpenA));
+      comp.setAttribute('k3', String(-sharpenA));
+      comp.setAttribute('k4', '0');
+      comp.setAttribute('result', 'r0');
+      filter.appendChild(comp);
 
-        const comp = document.createElementNS(svgNS, 'feComposite');
-        comp.setAttribute('in', 'SourceGraphic');
-        comp.setAttribute('in2', 'blur');
-        comp.setAttribute('operator', 'arithmetic');
-        comp.setAttribute('k1', '0');
-        comp.setAttribute('k2', String(1 + sharpenA));
-        comp.setAttribute('k3', String(-sharpenA));
-        comp.setAttribute('k4', '0');
-        comp.setAttribute('result', 'r0');
-        filter.appendChild(comp);
-
-        last = 'r0';
-      }
-
-      if (blackOffset !== 0) {
-        filter.appendChild(mkOffsetCT(last, 'r_bl', blackOffset));
-        last = 'r_bl';
-      }
-
-      if (whiteAdj !== 0) {
-        filter.appendChild(mkHighlightsTableCT(last, 'r_wl', whiteAdj));
-        last = 'r_wl';
-      }
-
-      if (dnVal > 0) {
-        const mix = dnToDenoiseMix(dnVal);
-        const sig = dnToDenoiseSigma(dnVal);
-        const [b, c] = mkDenoiseBlend(last, 'r_dn', sig, mix);
-        filter.appendChild(b);
-        filter.appendChild(c);
-        last = 'r_dn';
-      } else if (dnVal < 0) {
-        const alpha = dnToGrainAlpha(dnVal);
-        const parts = mkGrain(last, 'r_gr', alpha);
-        parts.forEach(p => filter.appendChild(p));
-        last = 'r_gr';
-      }
-
-      if (hdrVal !== 0) {
-        if (hdrVal > 0) {
-          const s = clamp(hdrVal, 0, 2);
-
-          const clarityAmt = 0.55 + s * 0.55;
-          const claritySigma = clamp(1.3 + radius * 0.75, 1.3, 3.6);
-          const [b, c] = mkClarityHighpass(last, 'r_hdr_cl', claritySigma, clarityAmt);
-          filter.appendChild(b);
-          filter.appendChild(c);
-
-          filter.appendChild(mkBlend(last, 'r_hdr_cl', 'r_hdr_clb', clamp(0.65 + s * 0.12, 0.65, 0.89)));
-          last = 'r_hdr_clb';
-
-          filter.appendChild(mkSCurveTableCT(last, 'r_hdr_tm', s));
-          last = 'r_hdr_tm';
-
-          const slope = 1.10 + s * 0.18;
-          const intercept = -0.015 + s * 0.006;
-          filter.appendChild(mkLinearCT(last, 'r_hdr_lin', slope, intercept));
-          last = 'r_hdr_lin';
-
-          const sat = document.createElementNS(svgNS, 'feColorMatrix');
-          sat.setAttribute('type', 'saturate');
-          sat.setAttribute('values', String(1.10 + s * 0.30));
-          sat.setAttribute('in', last);
-          sat.setAttribute('result', 'r_hdr_sat');
-          filter.appendChild(sat);
-          last = 'r_hdr_sat';
-        } else {
-          const s = clamp(-hdrVal, 0, 1);
-
-          const mix = clamp(s * 0.55, 0, 0.55);
-          const sig = clamp(0.9 + s * 1.8, 0.9, 2.7);
-          const [b, c] = mkDenoiseBlend(last, 'r_hdr_soft', sig, mix);
-          filter.appendChild(b);
-          filter.appendChild(c);
-          last = 'r_hdr_soft';
-
-          const sat = document.createElementNS(svgNS, 'feColorMatrix');
-          sat.setAttribute('type', 'saturate');
-          sat.setAttribute('values', String(1.0 - s * 0.18));
-          sat.setAttribute('in', last);
-          sat.setAttribute('result', 'r_hdr_soft2');
-          filter.appendChild(sat);
-          last = 'r_hdr_soft2';
-        }
-      }
-
-      // RGB Gain
-      if (profile === 'user') {
-        const rGain = rgbGainToFactor(u_r_gain);
-        const gGain = rgbGainToFactor(u_g_gain);
-        const bGain = rgbGainToFactor(u_b_gain);
-
-        // Only add if not neutral
-        if (Math.abs(rGain - 1.0) > 0.01 || Math.abs(gGain - 1.0) > 0.01 || Math.abs(bGain - 1.0) > 0.01) {
-
-          const rgbMatrix = matRGBGain(rGain, gGain, bGain);
-          const rgbCM = document.createElementNS(svgNS, 'feColorMatrix');
-          rgbCM.setAttribute('type', 'matrix');
-          rgbCM.setAttribute('in', last);
-          rgbCM.setAttribute('result', 'r_rgb');
-          rgbCM.setAttribute('values', matToSvgValues(rgbMatrix));
-          filter.appendChild(rgbCM);
-          last = 'r_rgb';
-        }
-      }
-
-      // Branchless Shader Logic für Moody/Teal/Vib
-      const flags = { moody, teal, vib };
-      const branchlessMatrix = BRANCHLESS_MATRIX.combine(flags, null);
-
-      // Nur anwenden wenn nicht identisch
-      if (branchlessMatrix !== matIdentity4x5()) {
-        const cm = document.createElementNS(svgNS, 'feColorMatrix');
-        cm.setAttribute('type', 'matrix');
-        cm.setAttribute('in', last);
-        cm.setAttribute('result', 'r_branchless');
-        cm.setAttribute('values', matToSvgValues(branchlessMatrix));
-        filter.appendChild(cm);
-        last = 'r_branchless';
-      }
-
-      if (prof && (prof === 'film' || prof === 'anime' || prof === 'gaming' || prof === 'eyecare')) {
-        const pm = mkProfileMatrixCT(last, 'r_prof', prof);
-        if (pm) {
-          filter.appendChild(pm);
-          last = 'r_prof';
-
-          const sat = document.createElementNS(svgNS, 'feColorMatrix');
-          sat.setAttribute('type', 'saturate');
-          sat.setAttribute('in', last);
-          sat.setAttribute('result', 'r_prof_sat');
-          if (prof === 'film')   sat.setAttribute('values', '1.08');
-          if (prof === 'anime')  sat.setAttribute('values', '1.18');
-          if (prof === 'gaming') sat.setAttribute('values', '1.06');
-          if (prof === 'eyecare') sat.setAttribute('values', '0.90');
-          filter.appendChild(sat);
-          last = 'r_prof_sat';
-        }
-      }
-
-      const autoCM = document.createElementNS(svgNS, 'feColorMatrix');
-      autoCM.setAttribute('type', 'matrix');
-      autoCM.setAttribute('in', last);
-      autoCM.setAttribute('result', 'r_auto');
-      autoCM.setAttribute('data-gvf-auto', '1');
-      autoCM.setAttribute('values', autoMatrixStr || matToSvgValues(matIdentity4x5()));
-      filter.appendChild(autoCM);
-      last = 'r_auto';
-
-      const merge = document.createElementNS(svgNS, 'feMerge');
-      const n1 = document.createElementNS(svgNS, 'feMergeNode');
-      n1.setAttribute('in', last);
-      merge.appendChild(n1);
-      filter.appendChild(merge);
-
-      svg.appendChild(filter);
-
-      return filter;
-    });
-  }
-
-  // Modified ensureSvgFilter with lazy regeneration support
-  function ensureSvgFilter(force = false) {
-    // Prüfen ob überhaupt nötig (Dirty Flags)
-    if (!force && !DIRTY_FLAGS.needsSvgRebuild()) {
-      return;
+      last = 'r0';
     }
 
+    if (blackOffset !== 0) {
+      filter.appendChild(mkOffsetCT(last, 'r_bl', blackOffset));
+      last = 'r_bl';
+    }
+
+    if (whiteAdj !== 0) {
+      filter.appendChild(mkHighlightsTableCT(last, 'r_wl', whiteAdj));
+      last = 'r_wl';
+    }
+
+    if (dnVal > 0) {
+      const mix = dnToDenoiseMix(dnVal);
+      const sig = dnToDenoiseSigma(dnVal);
+      const [b, c] = mkDenoiseBlend(last, 'r_dn', sig, mix);
+      filter.appendChild(b);
+      filter.appendChild(c);
+      last = 'r_dn';
+    } else if (dnVal < 0) {
+      const alpha = dnToGrainAlpha(dnVal);
+      const parts = mkGrain(last, 'r_gr', alpha);
+      parts.forEach(p => filter.appendChild(p));
+      last = 'r_gr';
+    }
+
+    if (hdrVal !== 0) {
+      if (hdrVal > 0) {
+        const s = clamp(hdrVal, 0, 2);
+
+        const clarityAmt = 0.55 + s * 0.55;
+        const claritySigma = clamp(1.3 + radius * 0.75, 1.3, 3.6);
+        const [b, c] = mkClarityHighpass(last, 'r_hdr_cl', claritySigma, clarityAmt);
+        filter.appendChild(b);
+        filter.appendChild(c);
+
+        filter.appendChild(mkBlend(last, 'r_hdr_cl', 'r_hdr_clb', clamp(0.65 + s * 0.12, 0.65, 0.89)));
+        last = 'r_hdr_clb';
+
+        filter.appendChild(mkSCurveTableCT(last, 'r_hdr_tm', s));
+        last = 'r_hdr_tm';
+
+        const slope = 1.10 + s * 0.18;
+        const intercept = -0.015 + s * 0.006;
+        filter.appendChild(mkLinearCT(last, 'r_hdr_lin', slope, intercept));
+        last = 'r_hdr_lin';
+
+        const sat = document.createElementNS(svgNS, 'feColorMatrix');
+        sat.setAttribute('type', 'saturate');
+        sat.setAttribute('values', String(1.10 + s * 0.30));
+        sat.setAttribute('in', last);
+        sat.setAttribute('result', 'r_hdr_sat');
+        filter.appendChild(sat);
+        last = 'r_hdr_sat';
+      } else {
+        const s = clamp(-hdrVal, 0, 1);
+
+        const mix = clamp(s * 0.55, 0, 0.55);
+        const sig = clamp(0.9 + s * 1.8, 0.9, 2.7);
+        const [b, c] = mkDenoiseBlend(last, 'r_hdr_soft', sig, mix);
+        filter.appendChild(b);
+        filter.appendChild(c);
+        last = 'r_hdr_soft';
+
+        const sat = document.createElementNS(svgNS, 'feColorMatrix');
+        sat.setAttribute('type', 'saturate');
+        sat.setAttribute('values', String(1.0 - s * 0.18));
+        sat.setAttribute('in', last);
+        sat.setAttribute('result', 'r_hdr_soft2');
+        filter.appendChild(sat);
+        last = 'r_hdr_soft2';
+      }
+    }
+
+    // RGB Gain
+    if (profile === 'user') {
+      const rGain = rgbGainToFactor(u_r_gain);
+      const gGain = rgbGainToFactor(u_g_gain);
+      const bGain = rgbGainToFactor(u_b_gain);
+
+      // Only add if not neutral
+      if (Math.abs(rGain - 1.0) > 0.01 || Math.abs(gGain - 1.0) > 0.01 || Math.abs(bGain - 1.0) > 0.01) {
+
+        const rgbMatrix = matRGBGain(rGain, gGain, bGain);
+        const rgbCM = document.createElementNS(svgNS, 'feColorMatrix');
+        rgbCM.setAttribute('type', 'matrix');
+        rgbCM.setAttribute('in', last);
+        rgbCM.setAttribute('result', 'r_rgb');
+        rgbCM.setAttribute('values', matToSvgValues(rgbMatrix));
+        filter.appendChild(rgbCM);
+        last = 'r_rgb';
+      }
+    }
+
+    if (moody) {
+      const ct = document.createElementNS(svgNS, 'feComponentTransfer');
+      ct.setAttribute('in', last);
+      ct.setAttribute('result', 'r1');
+      ct.appendChild(mkGamma('feFuncR', 0.96, 1.14, -0.015));
+      ct.appendChild(mkGamma('feFuncG', 0.96, 1.13, -0.015));
+      ct.appendChild(mkGamma('feFuncB', 0.97, 1.11, -0.015));
+      filter.appendChild(ct);
+
+      const sat = document.createElementNS(svgNS, 'feColorMatrix');
+      sat.setAttribute('type', 'saturate');
+      sat.setAttribute('values', '0.90');
+      sat.setAttribute('in', 'r1');
+      sat.setAttribute('result', 'r2');
+      filter.appendChild(sat);
+
+      last = 'r2';
+    }
+
+    if (teal) {
+      const cool = document.createElementNS(svgNS, 'feColorMatrix');
+      cool.setAttribute('type', 'matrix');
+      cool.setAttribute('values',
+        '0.96 0.02 0.00 0 0 ' +
+        '0.02 1.02 0.02 0 0 ' +
+        '0.00 0.04 1.06 0 0 ' +
+        '0    0    0    1 0'
+      );
+      cool.setAttribute('in', last);
+      cool.setAttribute('result', 'r3');
+      filter.appendChild(cool);
+
+      const warm = document.createElementNS(svgNS, 'feColorMatrix');
+      warm.setAttribute('type', 'matrix');
+      warm.setAttribute('values',
+        '1.10 0.02 0.00 0 0 ' +
+        '0.02 1.00 0.00 0 0 ' +
+        '0.00 0.00 0.90 0 0 ' +
+        '0    0    0    1 0'
+      );
+      warm.setAttribute('in', 'r3');
+      warm.setAttribute('result', 'r4');
+      filter.appendChild(warm);
+
+      const pop = document.createElementNS(svgNS, 'feColorMatrix');
+      pop.setAttribute('type', 'saturate');
+      pop.setAttribute('values', '1.08');
+      pop.setAttribute('in', 'r4');
+      pop.setAttribute('result', 'r4b');
+      filter.appendChild(pop);
+
+      last = 'r4b';
+    }
+
+    if (vib) {
+      const vSat = document.createElementNS(svgNS, 'feColorMatrix');
+      vSat.setAttribute('type', 'saturate');
+      vSat.setAttribute('values', '1.35');
+      vSat.setAttribute('in', last);
+      vSat.setAttribute('result', 'r5');
+      filter.appendChild(vSat);
+      last = 'r5';
+    }
+
+    if (prof && (prof === 'film' || prof === 'anime' || prof === 'gaming' || prof === 'eyecare')) {
+      const pm = mkProfileMatrixCT(last, 'r_prof', prof);
+      if (pm) {
+        filter.appendChild(pm);
+        last = 'r_prof';
+
+        const sat = document.createElementNS(svgNS, 'feColorMatrix');
+        sat.setAttribute('type', 'saturate');
+        sat.setAttribute('in', last);
+        sat.setAttribute('result', 'r_prof_sat');
+        if (prof === 'film')   sat.setAttribute('values', '1.08');
+        if (prof === 'anime')  sat.setAttribute('values', '1.18');
+        if (prof === 'gaming') sat.setAttribute('values', '1.06');
+        if (prof === 'eyecare') sat.setAttribute('values', '0.90');
+        filter.appendChild(sat);
+        last = 'r_prof_sat';
+      }
+    }
+
+    const autoCM = document.createElementNS(svgNS, 'feColorMatrix');
+    autoCM.setAttribute('type', 'matrix');
+    autoCM.setAttribute('in', last);
+    autoCM.setAttribute('result', 'r_auto');
+    autoCM.setAttribute('data-gvf-auto', '1');
+    autoCM.setAttribute('values', autoMatrixStr || matToSvgValues(matIdentity4x5()));
+    filter.appendChild(autoCM);
+    last = 'r_auto';
+
+    const merge = document.createElementNS(svgNS, 'feMerge');
+    const n1 = document.createElementNS(svgNS, 'feMergeNode');
+    n1.setAttribute('in', last);
+    merge.appendChild(n1);
+    filter.appendChild(merge);
+
+    svg.appendChild(filter);
+  }
+
+  function ensureSvgFilter() {
     const SL  = Number(normSL().toFixed(1));
     const SR  = Number(normSR().toFixed(1));
     const R   = Number(getRadius().toFixed(1));
@@ -4023,17 +3507,8 @@
       const has = existing.getAttribute('data-params') || '';
       if (has === want) {
         updateAutoMatrixInSvg(autoMatrixStr);
-        DIRTY_FLAGS.svg = false;
         return;
       }
-
-      // If not forcing regeneration, just update the auto matrix
-      if (!force) {
-        updateAutoMatrixInSvg(autoMatrixStr);
-        return;
-      }
-
-      // Force regeneration - remove existing
       existing.remove();
     }
 
@@ -4061,7 +3536,6 @@
     (document.body || document.documentElement).appendChild(svg);
 
     updateAutoMatrixInSvg(autoMatrixStr);
-    DIRTY_FLAGS.svg = false;
   }
 
   function pickComboId() {
@@ -4101,11 +3575,7 @@
 
     const skipSvgIfPossible = !!opts.skipSvgIfPossible;
     const svgExists = !!document.getElementById(SVG_ID);
-
-    // Use lazy regeneration - only check if SVG needs update, don't force rebuild
-    if (!skipSvgIfPossible || !svgExists) {
-      ensureSvgFilter(false); // Don't force regeneration
-    }
+    if (!skipSvgIfPossible || !svgExists) ensureSvgFilter();
 
     if (!style) {
       style = document.createElement('style');
@@ -4130,7 +3600,6 @@
       }
     `;
 
-    DIRTY_FLAGS.style = false;
     scheduleOverlayUpdate();
   }
 
@@ -4234,13 +3703,7 @@
         autoLockWB   = !!gmGet(K.AUTO_LOCK_WB, autoLockWB);
 
         setAutoOn(autoOn);
-
-        // Dirty Flags setzen
-        DIRTY_FLAGS.svg = true;
-        DIRTY_FLAGS.style = true;
-
-        // Schedule lazy regeneration instead of immediate
-        scheduleSvgRegeneration();
+        applyFilter();
         scheduleOverlayUpdate();
       } finally {
         _inSync = false;
@@ -4258,11 +3721,7 @@
     profile = order[(cur < 0 ? 0 : (cur + 1)) % order.length];
     gmSet(K.PROF, profile);
     log('Profile cycled:', profile);
-
-    DIRTY_FLAGS.svg = true;
-    DIRTY_FLAGS.style = true;
-
-    scheduleSvgRegeneration();
+    applyFilter();
     scheduleOverlayUpdate();
   }
 
@@ -4318,7 +3777,7 @@
   }
 
   // -------------------------
-  // Init - with lazy init and all optimizations
+  // Init
   // -------------------------
   function init() {
     sl  = normSL();  gmSet(K.SL,  sl);
@@ -4363,24 +3822,7 @@
     AUTO.lastGoodMatrixStr = autoMatrixStr;
     AUTO.lastAppliedMs = 0;
 
-    // Set dirty flags initially
-    DIRTY_FLAGS.svg = true;
-    DIRTY_FLAGS.style = true;
-
-    // Lazy Init: Initialize modules only when needed
-    LAZY_MODULES.get('svgFilter');
-    LAZY_MODULES.get('overlays');
-
-    if (autoOn) {
-      LAZY_MODULES.get('autoAnalyzer');
-    }
-
-    if (scopesHudShown) {
-      LAZY_MODULES.get('scopes');
-    }
-
-    // Initial filter application with lazy regeneration
-    scheduleSvgRegeneration();
+    applyFilter();
     listenGlobalSync();
     watchIframes();
     primeAutoOnVideoActivity();
@@ -4391,7 +3833,7 @@
     // Start scopes loop if enabled
     if (scopesHudShown) startScopesLoop();
 
-    log('Init complete with performance optimizations.', {
+    log('Init complete.', {
       enabled, darkMoody, tealOrange, vibrantSat, iconsShown,
       hdr: normHDR(), profile,
       autoOn, autoStrength: Number(autoStrength.toFixed(2)), autoLockWB,
@@ -4399,17 +3841,7 @@
       rgb: { r_gain: u_r_gain, g_gain: u_g_gain, b_gain: u_b_gain },
       motionThresh: AUTO.motionThresh,
       motionMinFrames: AUTO.motionMinFrames,
-      statsAlpha: AUTO.statsAlpha,
-      lazySvgRegeneration: true,
-      adaptiveFps: '2-10fps',
-      performance: {
-        lazyInit: true,
-        shaderCache: true,
-        objectPooling: true,
-        motionBuffer: true,
-        dirtyFlags: true,
-        branchlessShader: true
-      }
+      statsAlpha: AUTO.statsAlpha
     });
 
     document.addEventListener('keydown', (e) => {
@@ -4455,9 +3887,7 @@
           logToggle('HDR (Ctrl+Alt+P)', false);
         }
         gmSet(K.HDR, normHDR());
-
-        DIRTY_FLAGS.svg = true;
-        scheduleSvgRegeneration();
+        applyFilter();
         return;
       }
 
@@ -4469,54 +3899,11 @@
 
       if (!(e.ctrlKey && e.altKey) || e.shiftKey) return;
 
-      if (k === HK.base)  {
-        enabled = !enabled;
-        gmSet(K.enabled, enabled);
-        e.preventDefault();
-        logToggle('Base (Ctrl+Alt+B)', enabled);
-        DIRTY_FLAGS.svg = true;
-        DIRTY_FLAGS.style = true;
-        scheduleSvgRegeneration();
-        return;
-      }
-      if (k === HK.moody) {
-        darkMoody = !darkMoody;
-        gmSet(K.moody, darkMoody);
-        e.preventDefault();
-        logToggle('Dark&Moody (Ctrl+Alt+D)', darkMoody);
-        DIRTY_FLAGS.svg = true;
-        DIRTY_FLAGS.style = true;
-        scheduleSvgRegeneration();
-        return;
-      }
-      if (k === HK.teal)  {
-        tealOrange = !tealOrange;
-        gmSet(K.teal, tealOrange);
-        e.preventDefault();
-        logToggle('Teal&Orange (Ctrl+Alt+O)', tealOrange);
-        DIRTY_FLAGS.svg = true;
-        DIRTY_FLAGS.style = true;
-        scheduleSvgRegeneration();
-        return;
-      }
-      if (k === HK.vib)   {
-        vibrantSat = !vibrantSat;
-        gmSet(K.vib, vibrantSat);
-        e.preventDefault();
-        logToggle('Vibrant (Ctrl+Alt+V)', vibrantSat);
-        DIRTY_FLAGS.svg = true;
-        DIRTY_FLAGS.style = true;
-        scheduleSvgRegeneration();
-        return;
-      }
-      if (k === HK.icons) {
-        iconsShown = !iconsShown;
-        gmSet(K.icons, iconsShown);
-        e.preventDefault();
-        logToggle('Overlay Icons (Ctrl+Alt+H)', iconsShown);
-        scheduleOverlayUpdate();
-        return;
-      }
+      if (k === HK.base)  { enabled = !enabled;       gmSet(K.enabled, enabled);   e.preventDefault(); logToggle('Base (Ctrl+Alt+B)', enabled); applyFilter(); return; }
+      if (k === HK.moody) { darkMoody = !darkMoody;   gmSet(K.moody, darkMoody);   e.preventDefault(); logToggle('Dark&Moody (Ctrl+Alt+D)', darkMoody); applyFilter(); return; }
+      if (k === HK.teal)  { tealOrange = !tealOrange; gmSet(K.teal, tealOrange);   e.preventDefault(); logToggle('Teal&Orange (Ctrl+Alt+O)', tealOrange); applyFilter(); return; }
+      if (k === HK.vib)   { vibrantSat = !vibrantSat; gmSet(K.vib, vibrantSat);    e.preventDefault(); logToggle('Vibrant (Ctrl+Alt+V)', vibrantSat); applyFilter(); return; }
+      if (k === HK.icons) { iconsShown = !iconsShown; gmSet(K.icons, iconsShown);  e.preventDefault(); logToggle('Overlay Icons (Ctrl+Alt+H)', iconsShown); scheduleOverlayUpdate(); return; }
     });
 
     window.addEventListener('scroll', scheduleOverlayUpdate, { passive: true });
@@ -4526,10 +3913,7 @@
     document.addEventListener('webkitfullscreenchange', onFsChange);
 
     new MutationObserver(() => {
-      if (!document.getElementById(SVG_ID)) {
-        DIRTY_FLAGS.svg = true;
-        scheduleSvgRegeneration();
-      }
+      if (!document.getElementById(SVG_ID)) ensureSvgFilter();
       scheduleOverlayUpdate();
     }).observe(document.documentElement, { childList: true, subtree: true });
 
