@@ -24,10 +24,10 @@ It also renders a small on-video overlay UI (icons + sliders). The slider values
 <li>Optional cinematic looks:</li>
 <ul><li>Dark & Moody</li><li>Teal & Orange</li><li>Vibrant & Saturated</li></ul>
 <li>Color Grading Profile</li>
-<ul><li>Green = Movie, Blue = Anime, Red = Gaming, White = User</li></ul>
+<ul><li>Green = Movie, Blue = Anime, Red = Gaming, Yellow = EyeCare <b style="color:red;">(New)</b>, White = User</li></ul>
 <li>Grading Settings (G)</li>
 <ul><li>Make your own Settings for User Profile</li></ul>
-<li>Auto-Scene-Match <b style="color:red;">(New)</b></li>
+<li>Auto-Scene-Match </li>
 <ul><li>The script continuously samples frames and gently auto-adjusts brightness/contrast/saturation/hue-rotate to keep exposure, contrast, saturation and color cast more stable/neutral</li></ul>
 <hr>
 <h2>Keyboard shortcuts (toggle on/off)</h2>
@@ -41,8 +41,9 @@ All shortcuts use: CTRL + ALT + key
 <li>CTRL + ALT + P → Toggle HDR</li>
 <li>CTRL + ALT + C → Profile Cycle (Color Grading)</li>
 <li>CTRL + ALT + G → Show/Hide Grading Settings (For User Profile)</li>
-<li>CTRL + ALT + A → Toggle Auto-Scene-Match <b style="color:red;">(New)</b></li>
-<li>CTRL + ALT + I → Show/Hide Export/Import JSON ((Screenshot & Recording)<b style="color:red;">(New)</b>)</li>
+<li>CTRL + ALT + A → Toggle Auto-Scene-Match </li>
+<li>CTRL + ALT + I → Show/Hide Export/Import JSON (Screenshot & Recording)</li>
+<li>CTRL + ALT + S → Show/Hide Scopes HUD <b style="color:red;">(New)</b></li>
 <li>CTRL + ALT + H → Show/Hide the overlay UI (icons + sliders)</li>
 <hr>
 Notes:
