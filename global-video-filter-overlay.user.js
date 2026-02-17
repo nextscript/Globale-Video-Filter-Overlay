@@ -42,7 +42,7 @@
   // LOG + DEBUG SWITCH
   // -------------------------
   const logs  = true;    // console logs
-  const debug = false;   // visual debug (Auto-dot)
+  const debug = true;   // visual debug (Auto-dot)
 
   // -------------------------
   // CSS.escape Polyfill + safer selectors
@@ -684,7 +684,7 @@
   let autoOn       = !!gmGet(K.AUTO_ON, false);
   let autoStrength = Number(gmGet(K.AUTO_STRENGTH, 0.65)); // 0..1
   autoStrength = clamp(autoStrength, 0, 1);
-  let autoLockWB   = !!gmGet(K.AUTO_LOCK_WB, false); // true = Korrektur AKTIV, false = AUS
+  let autoLockWB   = !!gmGet(K.AUTO_LOCK_WB, true); // true = Korrektur AKTIV, false = AUS
 
   const HK = { base: 'b', moody: 'd', teal: 'o', vib: 'v', icons: 'h' };
 
