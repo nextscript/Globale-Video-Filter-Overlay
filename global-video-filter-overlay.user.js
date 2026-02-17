@@ -3,7 +3,7 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.3.2
+// @version      1.3.3
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
@@ -31,12 +31,12 @@
   const svgNS    = 'http://www.w3.org/2000/svg';
 
   // Hotkeys
-  const HDR_TOGGLE_KEY  = 'p'; // Strg+Alt+P
-  const PROF_TOGGLE_KEY = 'c'; // Strg+Alt+C
-  const GRADE_HUD_KEY   = 'g'; // Strg+Alt+G (Grading + RGB Slider)
-  const IO_HUD_KEY      = 'i'; // Strg+Alt+I (Settings Export/Import)
-  const AUTO_KEY        = 'a'; // Strg+Alt+A (Auto Scene Match "AI")
-  const SCOPES_KEY      = 's'; // Strg+Alt+S (Scopes HUD)
+  const HDR_TOGGLE_KEY  = 'p'; // Ctrl+Alt+P
+  const PROF_TOGGLE_KEY = 'c'; // Ctrl+Alt+C
+  const GRADE_HUD_KEY   = 'g'; // Ctrl+Alt+G (Grading + RGB Slider)
+  const IO_HUD_KEY      = 'i'; // Ctrl+Alt+I (Settings Export/Import)
+  const AUTO_KEY        = 'a'; // Ctrl+Alt+A (Auto Scene Match "AI")
+  const SCOPES_KEY      = 's'; // Ctrl+Alt+S (Scopes HUD)
 
   // -------------------------
   // LOG + DEBUG SWITCH
@@ -97,7 +97,7 @@
     // Auto scene match
     AUTO_ON:       'gvf_auto_on',
     AUTO_STRENGTH: 'gvf_auto_strength',
-    AUTO_LOCK_WB:  'gvf_auto_lock_wb'
+    AUTO_LOCK_WB:  'gvf_auto_lock_wb'  // true = Korrektur AKTIV, false = AUS
   };
 
   // -------------------------
@@ -680,6 +680,12 @@
   let u_g_gain     = Number(gmGet(K.U_G_GAIN, 128));
   let u_b_gain     = Number(gmGet(K.U_B_GAIN, 128));
 
+  // Auto scene match
+  let autoOn       = !!gmGet(K.AUTO_ON, false);
+  let autoStrength = Number(gmGet(K.AUTO_STRENGTH, 0.65)); // 0..1
+  autoStrength = clamp(autoStrength, 0, 1);
+  let autoLockWB   = !!gmGet(K.AUTO_LOCK_WB, false); // true = Korrektur AKTIV, false = AUS
+
   const HK = { base: 'b', moody: 'd', teal: 'o', vib: 'v', icons: 'h' };
 
   function normSL()  { return snap0(roundTo(clamp(Number(sl)||0,  -2, 2),   0.1), 0.05); }
@@ -829,11 +835,6 @@
   // -------------------------
   // Auto Scene Match ("AI")
   // -------------------------
-  let autoOn       = !!gmGet(K.AUTO_ON, false);
-  let autoStrength = Number(gmGet(K.AUTO_STRENGTH, 0.65)); // 0..1
-  autoStrength = clamp(autoStrength, 0, 1);
-  let autoLockWB   = !!gmGet(K.AUTO_LOCK_WB, false);
-
   let _autoLastStyleStamp = 0;
 
   const AUTO_LEVELS = [2,4,6,8,10];
@@ -1152,11 +1153,12 @@
     const errCh = clamp(targetCh - sig.mCh, -0.20, 0.20);
     const sat = clamp(1.0 + (-errCh) * 0.90, 0.80, 1.45);
 
+    // FIXED: Jetzt ist autoLockWB = true = Korrektur AKTIV
     let hue = 0.0;
-    if (!autoLockWB) {
+    if (autoLockWB) {  // Wenn true, dann Farbstich korrigieren
       const rb = clamp(sig.mR - sig.mB, -0.18, 0.18);
       hue = clamp((-rb) * 28.0, -10.0, 10.0);
-    }
+    } // Bei false bleibt hue = 0.0 (keine Korrektur)
 
     AUTO.tgt.br  = clamp(1.0 + (br  - 1.0) * s, 0.78, 1.22);
     AUTO.tgt.ct  = clamp(1.0 + (ct  - 1.0) * s, 0.82, 1.30);
@@ -1182,9 +1184,11 @@
     const hue = clamp(AUTO.cur.hue, -12, 12);
 
     let m = matIdentity4x5();
-    m = matMul4x5(matHueRotate(hue), m);
-    m = matMul4x5(matSaturation(sat), m);
-    m = matMul4x5(matBrightnessContrast(br, ct), m);
+
+    // Jetzt wird Hue korrekt angewendet
+    m = matMul4x5(matHueRotate(hue), m);        // 1. Hue (Farbstich)
+    m = matMul4x5(matSaturation(sat), m);       // 2. Sättigung
+    m = matMul4x5(matBrightnessContrast(br, ct), m); // 3. Helligkeit/Kontrast
 
     return m;
   }
@@ -1991,7 +1995,7 @@
         gradingHudShown: false,
         autoOn: false,
         autoStrength: 0.65,
-        autoLockWB: false,
+        autoLockWB: true,
         user: {
           contrast:0, black:0, white:0, highlights:0, shadows:0, saturation:0, vibrance:0, sharpen:0, gamma:0, grain:0, hue:0,
           r_gain:128, g_gain:128, b_gain:128
@@ -3553,7 +3557,7 @@
     if (profile === 'film')   return ' brightness(1.01) contrast(1.08) saturate(1.08)';
     if (profile === 'anime')  return ' brightness(1.03) contrast(1.10) saturate(1.16)';
     if (profile === 'gaming') return ' brightness(1.01) contrast(1.12) saturate(1.06)';
-    if (profile === 'eyecare') return ' brightness(1.05) contrast(0.96) saturate(0.88) hue-rotate(-12deg)'; // Enhanced: much warmer
+    if (profile === 'eyecare') return ' brightness(1.05) contrast(0.96) saturate(0.88) hue-rotate(-12deg)';
     return '';
   }
 
