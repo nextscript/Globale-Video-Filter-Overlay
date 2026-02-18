@@ -3,9 +3,9 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.4.5
-// @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads. Features adaptive FPS scan (2-10fps) for optimal performance and branchless shader logic for smoother processing. NOW WITH GPU PIPELINE MODE (Ctrl+Alt+X) for maximum performance!
-// @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern. Mit adaptivem FPS-Scan (2-10fps) für optimale Performance und verzweigungsfreier Shader-Logik für flüssigere Verarbeitung. JETZT MIT GPU PIPELINE MODUS (Ctrl+Alt+X) für maximale Performance!
+// @version      1.4.6
+// @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
+// @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
 // @run-at       document-idle
 // @grant        GM_getValue
@@ -946,7 +946,7 @@
   }
 
   // -------------------------
-  // GPU PIPELINE MODE - CSS Filter Alternativen
+  // GPU PIPELINE MODE - CSS Filter Alternativen mit verbessertem EyeCare (viel gelber)
   // -------------------------
 
   function getGpuFilterString() {
@@ -1013,7 +1013,7 @@
       filters.push('saturate(1.35)');
     }
 
-    // Profile
+    // Profile - UPDATED: Deutlich gelberes/wärmeres EyeCare im GPU-Modus
     if (profile === 'film') {
       filters.push('brightness(1.01) contrast(1.08) saturate(1.08)');
     } else if (profile === 'anime') {
@@ -1021,7 +1021,8 @@
     } else if (profile === 'gaming') {
       filters.push('brightness(1.01) contrast(1.12) saturate(1.06)');
     } else if (profile === 'eyecare') {
-      filters.push('brightness(1.05) contrast(0.96) saturate(0.88) hue-rotate(-12deg)');
+      // Deutlich wärmere/gelbere Werte für bessere Sichtbarkeit
+      filters.push('brightness(1.06) contrast(0.94) saturate(0.85) hue-rotate(-18deg) sepia(0.25)');
     }
 
     // User Grading
@@ -1846,7 +1847,6 @@
     row.appendChild(mkBtn('vib',  'V'));
     row.appendChild(mkBtn('hdr',  'P'));
     row.appendChild(mkBtn('auto', 'A'));
-    row.appendChild(mkBtn('mode', 'X'));
     top.appendChild(row);
 
     const badgeRow = document.createElement('div');
@@ -2990,12 +2990,30 @@
     const profMat = mkProfileMatrixCT(profile);
     if (profMat) f.appendChild(profMat);
 
-    // SVG pipeline applies an additional slight desat for Eye Care.
+    // UPDATED: Deutlich gelberes/wärmeres EyeCare im GPU-Modus
     if (profile === 'eyecare') {
+      // Stärkere Reduzierung der Sättigung
       const sat = document.createElementNS(svgNS, 'feColorMatrix');
       sat.setAttribute('type', 'saturate');
-      sat.setAttribute('values', '0.90');
+      sat.setAttribute('values', '0.82');
       f.appendChild(sat);
+
+      // Sepia für warmen Gelbton - deutlich stärker
+      const sepia = document.createElementNS(svgNS, 'feColorMatrix');
+      sepia.setAttribute('type', 'matrix');
+      sepia.setAttribute('values', [
+        0.85, 0.15, 0.00, 0, 0,
+        0.10, 0.80, 0.10, 0, 0,
+        0.05, 0.05, 0.70, 0, 0,
+        0,    0,    0,    1, 0
+      ].join(' '));
+      f.appendChild(sepia);
+
+      // Zusätzlicher Hue-Rotate für mehr Gelb
+      const hue = document.createElementNS(svgNS, 'feColorMatrix');
+      hue.setAttribute('type', 'hueRotate');
+      hue.setAttribute('values', '-22');
+      f.appendChild(hue);
     }
   }
 
@@ -4297,7 +4315,7 @@
 
     if (scopesHudShown) startScopesLoop();
 
-    log('Init complete with GPU Pipeline Mode!', {
+    log('Init complete with GPU Pipeline Mode! EyeCare profile now much warmer/yellower to match SVG mode!', {
       enabled, darkMoody, tealOrange, vibrantSat, iconsShown,
       hdr: normHDR(), profile, renderMode,
       autoOn, autoStrength: Number(autoStrength.toFixed(2)), autoLockWB,
