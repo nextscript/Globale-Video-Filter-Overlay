@@ -24,7 +24,7 @@ It also renders a small on-video overlay UI (icons + sliders). The slider values
 <li>Optional cinematic looks:</li>
 <ul><li>Dark & Moody</li><li>Teal & Orange</li><li>Vibrant & Saturated</li></ul>
 <li>Color Grading Profile</li>
-<ul><li>Green = Movie, Blue = Anime, Red = Gaming, Yellow = EyeCare <b style="color:red;">(New)</b>, White = User</li></ul>
+<ul><li>Green = Movie, Blue = Anime, Red = Gaming, Yellow = EyeCare, White = User</li></ul>
 <li>Grading Settings (G)</li>
 <ul><li>Make your own Settings for User Profile</li></ul>
 <li>Auto-Scene-Match </li>
@@ -43,7 +43,8 @@ All shortcuts use: CTRL + ALT + key
 <li>CTRL + ALT + G → Show/Hide Grading Settings (For User Profile)</li>
 <li>CTRL + ALT + A → Toggle Auto-Scene-Match </li>
 <li>CTRL + ALT + I → Show/Hide Export/Import JSON (Screenshot & Recording)</li>
-<li>CTRL + ALT + S → Show/Hide Scopes HUD <b style="color:red;">(New)</b></li>
+<li>CTRL + ALT + S → Show/Hide Scopes HUD</li>
+<li>CTRL + ALT + X → Toggle GPU Pipeline Mode <b style="color:red;">(New)</b></li>
 <li>CTRL + ALT + H → Show/Hide the overlay UI (icons + sliders)</li>
 <hr>
 Notes:
@@ -137,9 +138,9 @@ The function continuously analyzes the playing video image and calculates optima
 <b>Visual feedback:</b>
 A small dot in the video shows the status(If debug=true Default: false):
 
-🟢 Green = Active, no changes<br>
-🟢 Light Green = Active and currently adjusting<br>
-🔴 Red = No updates (e.g., with DRM)<br>
+🟢 Green = Active, no changes
+🟢 Light Green = Active and currently adjusting
+🔴 Red = No updates (e.g., with DRM)
 <br>
 <b>Goal:</b>
 Always optimally looking videos without manual intervention – especially useful for changing scenes or different video sources.
@@ -162,6 +163,25 @@ Shows the mean values for brightness (Y), RGB average, and saturation as numeric
 <b>Special Feature:</b>
 The Scopes HUD displays values after applying all your filters – so you see exactly what your settings are doing.
 <hr>
+<h2>GPU Pipeline Mode <b style="color:red;">(New)</b></h2>
+The GPU Pipeline Mode is an alternative rendering mode for maximum performance. Instead of using SVG filters, all image enhancements are processed directly on the GPU using WebGL/Canvas.
+<br>
+<b>Benefits:</b>
+<ul>
+<li>Maximum Speed: Up to 3x faster than SVG mode</li>
+<li>Lower Memory Usage: Optimized for weaker devices</li>
+<li>4K-ready: Ideal for high-resolution videos</li>
+<li>Full Functionality: All filters, profiles, and RGB gain controls remain available</li>
+<li>Real-time Processing: Every frame is optimized at pixel level</li>
+</ul>
+<b>Perfect for:</b>
+<ul>
+<li>Older computers and laptops</li>
+<li>4K/8K videos</li>
+<li>Browsers with slow SVG implementation</li>
+<li>Maximum performance with minimal quality loss</li>
+</ul>
+<hr>
 <h2>Recommended starting presets</h2>
 <b>Clean / natural</b>
 <ul>
@@ -182,3 +202,5 @@ The Scopes HUD displays values after applying all your filters – so you see ex
 <hr>
 <h2>My Profile:</h2>
 <a href="https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/My_Profile.json" target="_blank">My_Profile.json</a>
+<h2>Eyecare Mode = User (Only for GPU mode):</h2>
+<a href="https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/eyecareGPU.json" target="_blank">eyecareGPU.json</a>
