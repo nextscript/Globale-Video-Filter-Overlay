@@ -205,5 +205,3 @@ The GPU Pipeline Mode is an alternative rendering mode for maximum performance. 
 <a href="https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/My_Profile.json" target="_blank">My_Profile.json</a><br>
 <b>GPU Mode</b><br>
 <a href="https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/GPU_Mode_Profile.json" target="_blank">GPU_Mode_Profile.json</a><br>
-<h2>Eyecare Mode = User (Only for GPU mode):</h2>
-<a href="https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/eyecareGPU.json" target="_blank">eyecareGPU.json</a>
