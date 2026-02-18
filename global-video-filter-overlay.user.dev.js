@@ -3,7 +3,7 @@
 // @name:de      Globale Video Filter Overlay dev
 // @namespace    gvf
 // @author       Freak288
-// @version      1.4.3
+// @version      1.4.4
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads. Features adaptive FPS scan (2-10fps) for optimal performance and branchless shader logic for smoother processing. NOW WITH GPU PIPELINE MODE (Ctrl+Alt+X) for maximum performance!
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern. Mit adaptivem FPS-Scan (2-10fps) für optimale Performance und verzweigungsfreier Shader-Logik für flüssigere Verarbeitung. JETZT MIT GPU PIPELINE MODUS (Ctrl+Alt+X) für maximale Performance!
 // @match        *://*/*
@@ -28,6 +28,8 @@
   // -------------------------
   const STYLE_ID = 'global-video-filter-style';
   const SVG_ID   = 'global-video-filter-svg';
+  const GPU_SVG_ID = 'gvf-gpu-svg';
+  const GPU_GAIN_FILTER_ID = 'gvf-gpu-gain-filter';
   const svgNS    = 'http://www.w3.org/2000/svg';
 
   // Hotkeys
@@ -43,7 +45,7 @@
   // LOG + DEBUG SWITCH
   // -------------------------
   const logs  = true;    // console logs
-  const debug = true;    // visual debug (Auto-dot)
+  const debug = false;    // visual debug (Auto-dot)
 
   // -------------------------
   // CSS.escape Polyfill + safer selectors
@@ -2904,6 +2906,70 @@
     scheduleOverlayUpdate();
   }
 
+
+  function ensureGpuSvgHost() {
+    let svg = document.getElementById(GPU_SVG_ID);
+    if (svg) return svg;
+
+    svg = document.createElementNS(svgNS, 'svg');
+    svg.id = GPU_SVG_ID;
+    svg.setAttribute('width', '0');
+    svg.setAttribute('height', '0');
+    svg.style.position = 'absolute';
+    svg.style.left = '-9999px';
+    svg.style.top  = '-9999px';
+
+    const defs = document.createElementNS(svgNS, 'defs');
+    svg.appendChild(defs);
+
+    (document.body || document.documentElement).appendChild(svg);
+    return svg;
+  }
+
+  function upsertGpuGainFilter() {
+    // Lightweight SVG filter used in GPU pipeline mode to support per-channel gains (R/G/B Gain).
+    const svg = ensureGpuSvgHost();
+    if (!svg) return;
+
+    const defs = svg.querySelector('defs') || svg;
+
+    let f = defs.querySelector(`#${GPU_GAIN_FILTER_ID}`);
+    if (!f) {
+      f = document.createElementNS(svgNS, 'filter');
+      f.setAttribute('id', GPU_GAIN_FILTER_ID);
+      defs.appendChild(f);
+    } else {
+      while (f.firstChild) f.removeChild(f.firstChild);
+    }
+
+    const r = rgbGainToFactor(u_r_gain);
+    const g = rgbGainToFactor(u_g_gain);
+    const b = rgbGainToFactor(u_b_gain);
+
+    const fe = document.createElementNS(svgNS, 'feColorMatrix');
+    fe.setAttribute('type', 'matrix');
+    fe.setAttribute('values', [
+      r, 0, 0, 0, 0,
+      0, g, 0, 0, 0,
+      0, 0, b, 0, 0,
+      0, 0, 0, 1, 0
+    ].join(' '));
+    f.appendChild(fe);
+  }
+
+  function removeGpuGainFilter() {
+    const svg = document.getElementById(GPU_SVG_ID);
+    if (!svg) return;
+    const f = svg.querySelector(`#${GPU_GAIN_FILTER_ID}`);
+    if (f && f.parentNode) f.parentNode.removeChild(f);
+  }
+
+  function gpuGainActive() {
+    // Gains exist only for the User profile.
+    if (profile !== 'user') return false;
+    return (u_r_gain !== 128) || (u_g_gain !== 128) || (u_b_gain !== 128);
+  }
+
   function applyGpuFilter() {
     let style = document.getElementById(STYLE_ID);
 
@@ -2912,6 +2978,7 @@
 
     if (nothingOn) {
       if (style) style.remove();
+      removeGpuGainFilter();
       scheduleOverlayUpdate();
       return;
     }
@@ -2922,7 +2989,16 @@
       document.head.appendChild(style);
     }
 
-    const gpuFilterString = getGpuFilterString();
+    let gpuFilterString = getGpuFilterString();
+
+    // In GPU Pipeline Mode, CSS filters cannot do per-channel gains. We chain a tiny SVG color-matrix filter.
+    if (gpuGainActive()) {
+      upsertGpuGainFilter();
+      const url = `url(#${GPU_GAIN_FILTER_ID})`;
+      gpuFilterString = gpuFilterString ? (gpuFilterString + ' ' + url) : url;
+    } else {
+      removeGpuGainFilter();
+    }
 
     const outlineCss = (PROFILE_VIDEO_OUTLINE && profile !== 'off')
       ? `outline: 2px solid ${(PROF[profile]||PROF.off).color} !important; outline-offset: -2px;`
