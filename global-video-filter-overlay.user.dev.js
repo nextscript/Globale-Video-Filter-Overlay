@@ -1,6 +1,6 @@
 // ==UserScript==
-// @name         Global Video Filter Overlay
-// @name:de      Globale Video Filter Overlay
+// @name         Global Video Filter Overlay dev
+// @name:de      Globale Video Filter Overlay dev
 // @namespace    gvf
 // @author       Freak288
 // @version      1.4.3
@@ -4271,5 +4271,6 @@
   document.readyState === 'loading'
     ? document.addEventListener('DOMContentLoaded', init, { once: true })
     : init();
+
 
 })();
