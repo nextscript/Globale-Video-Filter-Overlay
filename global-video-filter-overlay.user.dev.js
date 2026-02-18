@@ -3,7 +3,7 @@
 // @name:de      Globale Video Filter Overlay dev
 // @namespace    gvf
 // @author       Freak288
-// @version      1.4.4
+// @version      1.4.5
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads. Features adaptive FPS scan (2-10fps) for optimal performance and branchless shader logic for smoother processing. NOW WITH GPU PIPELINE MODE (Ctrl+Alt+X) for maximum performance!
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern. Mit adaptivem FPS-Scan (2-10fps) für optimale Performance und verzweigungsfreier Shader-Logik für flüssigere Verarbeitung. JETZT MIT GPU PIPELINE MODUS (Ctrl+Alt+X) für maximale Performance!
 // @match        *://*/*
@@ -30,6 +30,7 @@
   const SVG_ID   = 'global-video-filter-svg';
   const GPU_SVG_ID = 'gvf-gpu-svg';
   const GPU_GAIN_FILTER_ID = 'gvf-gpu-gain-filter';
+  const GPU_PROFILE_FILTER_ID = 'gvf-gpu-profile-filter';
   const svgNS    = 'http://www.w3.org/2000/svg';
 
   // Hotkeys
@@ -2957,6 +2958,54 @@
     f.appendChild(fe);
   }
 
+  function gpuProfileMatrixActive() {
+    // In GPU pipeline we emulate the SVG profile matrices for built-in looks (film/anime/gaming/eyecare).
+    // User profile is already handled by sliders (and optional GPU gains matrix), so we don't double-apply.
+    return (profile === 'film' || profile === 'anime' || profile === 'gaming' || profile === 'eyecare');
+  }
+
+  function upsertGpuProfileFilter() {
+    const svg = ensureGpuSvgHost();
+    if (!svg) return;
+
+    const defs = svg.querySelector('defs') || svg;
+
+    let f = defs.querySelector(`#${GPU_PROFILE_FILTER_ID}`);
+    if (!f) {
+      f = document.createElementNS(svgNS, 'filter');
+      f.setAttribute('id', GPU_PROFILE_FILTER_ID);
+      // Avoid linearRGB surprises (the "grey veil" look) and match SVG pipeline behavior.
+      f.setAttribute('color-interpolation-filters', 'sRGB');
+      defs.appendChild(f);
+    } else {
+      // Only rebuild when profile changes
+      const lastP = f.getAttribute('data-prof');
+      if (lastP === profile) return;
+      while (f.firstChild) f.removeChild(f.firstChild);
+    }
+
+    f.setAttribute('data-prof', profile);
+
+    // Same matrices as SVG pipeline's mkProfileMatrixCT(...)
+    const profMat = mkProfileMatrixCT(profile);
+    if (profMat) f.appendChild(profMat);
+
+    // SVG pipeline applies an additional slight desat for Eye Care.
+    if (profile === 'eyecare') {
+      const sat = document.createElementNS(svgNS, 'feColorMatrix');
+      sat.setAttribute('type', 'saturate');
+      sat.setAttribute('values', '0.90');
+      f.appendChild(sat);
+    }
+  }
+
+  function removeGpuProfileFilter() {
+    const svg = document.getElementById(GPU_SVG_ID);
+    if (!svg) return;
+    const f = svg.querySelector(`#${GPU_PROFILE_FILTER_ID}`);
+    if (f && f.parentNode) f.parentNode.removeChild(f);
+  }
+
   function removeGpuGainFilter() {
     const svg = document.getElementById(GPU_SVG_ID);
     if (!svg) return;
@@ -2991,6 +3040,15 @@
 
     let gpuFilterString = getGpuFilterString();
 
+    // In GPU Pipeline Mode, we emulate built-in SVG profile matrices (film/anime/gaming/eyecare) via a tiny SVG filter.
+    if (gpuProfileMatrixActive()) {
+      upsertGpuProfileFilter();
+      const urlP = `url(#${GPU_PROFILE_FILTER_ID})`;
+      gpuFilterString = gpuFilterString ? (gpuFilterString + ' ' + urlP) : urlP;
+    } else {
+      removeGpuProfileFilter();
+    }
+
     // In GPU Pipeline Mode, CSS filters cannot do per-channel gains. We chain a tiny SVG color-matrix filter.
     if (gpuGainActive()) {
       upsertGpuGainFilter();
@@ -3004,11 +3062,13 @@
       ? `outline: 2px solid ${(PROF[profile]||PROF.off).color} !important; outline-offset: -2px;`
       : `outline: none !important;`;
 
+    const finalFilter = (gpuFilterString && String(gpuFilterString).trim()) ? String(gpuFilterString).trim() : 'none';
+
     style.textContent = `
       video {
         will-change: filter;
         transform: translateZ(0);
-        filter: ${gpuFilterString} !important;
+        filter: ${finalFilter} !important;
         ${outlineCss}
       }
     `;
