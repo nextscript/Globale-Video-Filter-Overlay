@@ -1,0 +1,43 @@
+{
+  "schema": "gvf-settings",
+  "ver": "1.9",
+  "enabled": true,
+  "darkMoody": true,
+  "tealOrange": false,
+  "vibrantSat": false,
+  "iconsShown": false,
+  "sl": 0.4,
+  "sr": 0.4,
+  "bl": 0.7,
+  "wl": 1.5,
+  "dn": 0.6,
+  "hdr": 0,
+  "profile": "user",
+  "renderMode": "gpu",
+  "gradingHudShown": false,
+  "scopesHudShown": false,
+  "autoOn": true,
+  "autoStrength": 0.65,
+  "autoLockWB": true,
+  "adaptiveFps": {
+    "min": 2,
+    "max": 10,
+    "current": 3
+  },
+  "user": {
+    "contrast": 0.8,
+    "black": -6.3,
+    "white": -2.5,
+    "highlights": -5,
+    "shadows": -0.6,
+    "saturation": -5.6,
+    "vibrance": -1.7,
+    "sharpen": -0.6,
+    "gamma": 1.9,
+    "grain": -1.2,
+    "hue": -1.2,
+    "r_gain": 128,
+    "g_gain": 128,
+    "b_gain": 128
+  }
+}
