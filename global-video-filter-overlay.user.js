@@ -3,9 +3,9 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.4.0
-// @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
-// @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
+// @version      1.4.5
+// @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads. Features adaptive FPS scan (2-10fps) for optimal performance and branchless shader logic for smoother processing. NOW WITH GPU PIPELINE MODE (Ctrl+Alt+X) for maximum performance!
+// @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern. Mit adaptivem FPS-Scan (2-10fps) für optimale Performance und verzweigungsfreier Shader-Logik für flüssigere Verarbeitung. JETZT MIT GPU PIPELINE MODUS (Ctrl+Alt+X) für maximale Performance!
 // @match        *://*/*
 // @run-at       document-idle
 // @grant        GM_getValue
@@ -28,6 +28,9 @@
   // -------------------------
   const STYLE_ID = 'global-video-filter-style';
   const SVG_ID   = 'global-video-filter-svg';
+  const GPU_SVG_ID = 'gvf-gpu-svg';
+  const GPU_GAIN_FILTER_ID = 'gvf-gpu-gain-filter';
+  const GPU_PROFILE_FILTER_ID = 'gvf-gpu-profile-filter';
   const svgNS    = 'http://www.w3.org/2000/svg';
 
   // Hotkeys
@@ -37,6 +40,7 @@
   const IO_HUD_KEY      = 'i'; // Ctrl+Alt+I (Settings Export/Import)
   const AUTO_KEY        = 'a'; // Ctrl+Alt+A (Auto Scene Match)
   const SCOPES_KEY      = 's'; // Ctrl+Alt+S (Scopes HUD)
+  const GPU_MODE_KEY    = 'x'; // Ctrl+Alt+X (GPU Pipeline Mode)
 
   // -------------------------
   // LOG + DEBUG SWITCH
@@ -77,6 +81,9 @@
     I_HUD:    'gvf_i_hud',
     S_HUD:    'gvf_s_hud', // Scopes HUD
 
+    // Render Mode: 'svg' or 'gpu'
+    RENDER_MODE: 'gvf_render_mode',
+
     U_CONTRAST:   'gvf_u_contrast',
     U_BLACK:      'gvf_u_black',
     U_WHITE:      'gvf_u_white',
@@ -113,13 +120,13 @@
   const isFirefox = () => { try { return /firefox/i.test(navigator.userAgent || ''); } catch (_) { return false; } };
 
   // -------------------------
-  // Bulk-update guard (FIX: Import/Reset applies ALL at once)
+  // Bulk-update guard
   // -------------------------
-  let _inSync = false;          // existing guard for not re-writing GM inside sync
-  let _suspendSync = false;     // suppress GM_addValueChangeListener during bulk import/reset
+  let _inSync = false;
+  let _suspendSync = false;
 
   // -------------------------
-  // INSTANT SVG REGENERATION - NO DELAY!
+  // INSTANT SVG REGENERATION
   // -------------------------
   let _svgNeedsRegeneration = false;
 
@@ -127,11 +134,10 @@
     if (_svgNeedsRegeneration) return;
     _svgNeedsRegeneration = true;
 
-    // Use microtask to batch multiple rapid changes but still execute ASAP
     queueMicrotask(() => {
       _svgNeedsRegeneration = false;
-      ensureSvgFilter(true); // Force regeneration immediately
-      applyFilter(); // Apply the filter right away
+      ensureSvgFilter(true);
+      applyFilter();
     });
   }
 
@@ -170,7 +176,6 @@
       const cs = window.getComputedStyle(video);
       let f = String(cs.filter || '').trim();
       if (!f || f === 'none') return '';
-      // remove SVG url() parts because canvas ctx.filter cannot apply them
       f = f.replace(/url\([^)]+\)/g, '').replace(/\s+/g, ' ').trim();
       if (!f || f === 'none') return '';
       return f;
@@ -675,6 +680,10 @@
   let profile = String(gmGet(K.PROF, 'off')).toLowerCase();
   if (!['off','film','anime','gaming','eyecare','user'].includes(profile)) profile = 'off';
 
+  // Render mode: 'svg' or 'gpu'
+  let renderMode = String(gmGet(K.RENDER_MODE, 'svg')).toLowerCase();
+  if (!['svg', 'gpu'].includes(renderMode)) renderMode = 'svg';
+
   let gradingHudShown = !!gmGet(K.G_HUD, false);
   let ioHudShown      = !!gmGet(K.I_HUD, false);
   let scopesHudShown  = !!gmGet(K.S_HUD, false);
@@ -852,53 +861,36 @@
   // -------------------------
   // BRANCHLESS SHADER LOGIC
   // -------------------------
-  // This section implements branchless processing for better performance
-  // by avoiding conditional branches in critical paths
-
-  // Branchless clamp using min/max (no conditionals)
   function branchlessClamp(x, min, max) {
     return Math.min(max, Math.max(min, x));
   }
 
-  // Branchless sign extraction (returns -1, 0, or 1 without branching)
   function branchlessSign(x) {
     return (x > 0) - (x < 0);
   }
 
-  // Branchless step function: returns 1 if x >= edge, else 0
   function branchlessStep(edge, x) {
     return (x >= edge) | 0;
   }
 
-  // Branchless mix/lerp: a * (1 - t) + b * t
   function branchlessMix(a, b, t) {
     return a + (b - a) * t;
   }
 
-  // Branchless smoothstep approximation using polynomial (no branching)
   function branchlessSmoothStep(edge0, edge1, x) {
     const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
     return t * t * (3 - 2 * t);
   }
 
-  // Branchless gamma correction approximation (no pow calls, uses polynomial)
   function branchlessGamma(x, gamma) {
-    // Linear approximation for gamma correction without pow()
-    // This is a performance optimization for real-time processing
     const g = branchlessClamp(gamma, 0.5, 2.0);
-    const a = 1.0 / (1.0 + Math.exp(-(g - 1.0) * 4.0)); // Sigmoid approximation
-
-    // Polynomial approximation of x^(1/g)
     if (g < 1.0) {
-      // For gamma < 1.0 (brightening shadows)
       return x * (1.0 + (1.0 - g) * (1.0 - x) * 0.5);
     } else {
-      // For gamma > 1.0 (darkening highlights)
       return x * (1.0 - (g - 1.0) * x * 0.3);
     }
   }
 
-  // Branchless RGB gain (direct multiplication, no conditionals)
   function branchlessRGBGain(r, g, b, rGain, gGain, bGain) {
     return [
       r * rGain / 128.0,
@@ -907,7 +899,6 @@
     ];
   }
 
-  // Branchless saturation adjustment
   function branchlessSaturation(r, g, b, sat) {
     const luma = LUMA.r * r + LUMA.g * g + LUMA.b * b;
     return [
@@ -917,7 +908,6 @@
     ];
   }
 
-  // Branchless contrast adjustment
   function branchlessContrast(r, g, b, contrast) {
     const factor = (259.0 * (contrast * 255.0 + 255.0)) / (255.0 * (259.0 - contrast * 255.0));
     return [
@@ -927,17 +917,13 @@
     ];
   }
 
-  // Branchless HDR tone mapping (Reinhard operator approximation)
   function branchlessHDRToneMap(r, g, b, exposure) {
     const luma = LUMA.r * r + LUMA.g * g + LUMA.b * b;
     const scale = (luma * exposure + 1.0) / (luma + 1.0);
     return [r * scale, g * scale, b * scale];
   }
 
-  // Branchless sharpening/unsharp mask (using convolution approximation)
   function branchlessSharpen(original, blurred, amount) {
-    // (original - blurred) * amount + original
-    // = original * (1 + amount) - blurred * amount
     return [
       branchlessClamp(original[0] * (1.0 + amount) - blurred[0] * amount, 0, 255),
       branchlessClamp(original[1] * (1.0 + amount) - blurred[1] * amount, 0, 255),
@@ -945,33 +931,146 @@
     ];
   }
 
-  // Branchless motion detection (using absolute difference, no conditionals)
   function branchlessMotionDetect(curr, prev) {
     let diff = 0;
     for (let i = 0; i < curr.length; i++) {
-      diff += Math.abs(curr[i] - prev[i]); // abs is branchless in JS engines
+      diff += Math.abs(curr[i] - prev[i]);
     }
     return diff / curr.length;
   }
 
-  // Branchless adaptive FPS calculation based on motion
   function branchlessAdaptiveFps(motionScore, currentFps, minFps, maxFps) {
-    // Map motion score (0-1) to FPS range without branching
     const targetFps = minFps + motionScore * (maxFps - minFps);
-
-    // Smooth transition using exponential moving average
     const alpha = 0.2;
     return currentFps * (1 - alpha) + targetFps * alpha;
   }
 
   // -------------------------
-  // Auto Scene Match ("AI") - Enhanced with branchless logic
+  // GPU PIPELINE MODE - CSS Filter Alternativen
+  // -------------------------
+
+  function getGpuFilterString() {
+    const filters = [];
+
+    // Basis Filter
+    if (enabled) {
+      filters.push('brightness(1.02)');
+      filters.push('contrast(1.05)');
+      filters.push('saturate(1.21)');
+    }
+
+    // SL/SR (Sharpen/Blur)
+    const slVal = normSL();
+    if (slVal > 0) {
+      const sharpAmount = Math.min(2, slVal * 0.3);
+      filters.push(`contrast(${1 + sharpAmount})`);
+    } else if (slVal < 0) {
+      const blurAmount = Math.abs(slVal) * 0.5;
+      filters.push(`blur(${blurAmount.toFixed(1)}px)`);
+    }
+
+    // BL (Black Level)
+    const blVal = normBL();
+    if (blVal !== 0) {
+      const blackAdj = 1 + (blVal * 0.03);
+      filters.push(`brightness(${blackAdj.toFixed(2)})`);
+    }
+
+    // WL (White Level)
+    const wlVal = normWL();
+    if (wlVal !== 0) {
+      const whiteAdj = 1 + (wlVal * 0.04);
+      filters.push(`contrast(${whiteAdj.toFixed(2)})`);
+    }
+
+    // HDR
+    const hdrVal = normHDR();
+    if (hdrVal > 0) {
+      const hdrContrast = 1 + (hdrVal * 0.15);
+      const hdrSaturate = 1 + (hdrVal * 0.1);
+      filters.push(`contrast(${hdrContrast.toFixed(2)})`);
+      filters.push(`saturate(${hdrSaturate.toFixed(2)})`);
+    } else if (hdrVal < 0) {
+      const softContrast = 1 + (hdrVal * 0.1);
+      filters.push(`contrast(${softContrast.toFixed(2)})`);
+    }
+
+    // Dark Moody
+    if (darkMoody) {
+      filters.push('brightness(0.96)');
+      filters.push('saturate(0.92)');
+    }
+
+    // Teal & Orange
+    if (tealOrange) {
+      filters.push('sepia(0.15)');
+      filters.push('hue-rotate(-5deg)');
+      filters.push('saturate(1.1)');
+    }
+
+    // Vibrant
+    if (vibrantSat) {
+      filters.push('saturate(1.35)');
+    }
+
+    // Profile
+    if (profile === 'film') {
+      filters.push('brightness(1.01) contrast(1.08) saturate(1.08)');
+    } else if (profile === 'anime') {
+      filters.push('brightness(1.03) contrast(1.10) saturate(1.16)');
+    } else if (profile === 'gaming') {
+      filters.push('brightness(1.01) contrast(1.12) saturate(1.06)');
+    } else if (profile === 'eyecare') {
+      filters.push('brightness(1.05) contrast(0.96) saturate(0.88) hue-rotate(-12deg)');
+    }
+
+    // User Grading
+    if (profile === 'user') {
+      if (u_contrast !== 0) {
+        const c = 1 + (u_contrast * 0.04);
+        filters.push(`contrast(${c.toFixed(2)})`);
+      }
+      if (u_sat !== 0) {
+        const sat = 1 + (u_sat * 0.05);
+        filters.push(`saturate(${sat.toFixed(2)})`);
+      }
+      if (u_vib !== 0) {
+        const vib = 1 + (u_vib * 0.02);
+        filters.push(`saturate(${vib.toFixed(2)})`);
+      }
+      if (u_hue !== 0) {
+        const hue = u_hue * 3;
+        filters.push(`hue-rotate(${hue.toFixed(1)}deg)`);
+      }
+      if (u_black !== 0 || u_white !== 0) {
+        const blk = u_black * 0.012;
+        const wht = u_white * 0.012;
+        const br = 1 + (-blk + wht) * 0.6;
+        filters.push(`brightness(${br.toFixed(2)})`);
+      }
+      if (u_gamma !== 0) {
+        const g = 1 + (u_gamma * 0.025);
+        filters.push(`brightness(${g.toFixed(2)})`);
+      }
+    }
+
+    // Auto Scene Match
+    if (autoOn && AUTO.cur) {
+      if (AUTO.cur.br !== 1.0) filters.push(`brightness(${AUTO.cur.br.toFixed(2)})`);
+      if (AUTO.cur.ct !== 1.0) filters.push(`contrast(${AUTO.cur.ct.toFixed(2)})`);
+    }
+
+    const uniqueFilters = [...new Set(filters.filter(f => f && f.length > 0))];
+    return uniqueFilters.length > 0 ? uniqueFilters.join(' ') : 'none';
+  }
+
+  // -------------------------
+  // Auto Scene Match
   // -------------------------
   let _autoLastStyleStamp = 0;
 
   const AUTO_LEVELS = [2,4,6,8,10];
 
-  // Adaptive FPS with branchless calculation
   const ADAPTIVE_FPS = {
     MIN: 2,
     MAX: 10,
@@ -1000,7 +1099,6 @@
     scoreEma: 0,
     scoreAlpha: 0.35,
 
-    // motion gating (STRICT): only update when motion exists
     lastLuma: null,
     motionEma: 0,
     motionAlpha: 0.55,
@@ -1008,58 +1106,43 @@
     motionMinFrames: 2,
     motionFrames: 0,
 
-    // --- used for "stale -> red dot" ---
-    lastAppliedMs: 0, // set whenever AutoMatrix actually updates
+    lastAppliedMs: 0,
 
-    // FRAME AVERAGING (EMA)
     statsEma: null,
     statsAlpha: 0.22,
     lastStatsMs: 0,
 
-    // debug-dot state
     blink: false,
 
-    // ---- DRM / taint fallback ----
     drmBlocked: false,
     blockUntilMs: 0,
     lastGoodMatrixStr: autoMatrixStr,
 
-    // Adaptive FPS tracking
     lastFrameTime: 0,
     frameIntervals: [],
     maxFrameIntervals: 10
   };
 
-  // -------------------------
-  // Adaptive FPS Calc (branchless version)
-  // -------------------------
   function calculateAdaptiveFps(changeScore) {
-    // Push to history
     ADAPTIVE_FPS.history.push(changeScore);
     if (ADAPTIVE_FPS.history.length > ADAPTIVE_FPS.historySize) {
       ADAPTIVE_FPS.history.shift();
     }
 
-    // Calculate average using reduce (branchless)
     const avgChange = ADAPTIVE_FPS.history.reduce((a, b) => a + b, 0) / ADAPTIVE_FPS.history.length;
 
-    // Branchless mapping of avgChange to target FPS
-    // Using min/max to avoid if/else
     const t1 = Math.min(avgChange, 0.1) / 0.1;
     const t2 = Math.max(0, Math.min(avgChange - 0.1, 0.2)) / 0.2;
     const t3 = Math.max(0, Math.min(avgChange - 0.3, 0.7)) / 0.7;
 
-    // Weighted combination without conditionals
     const targetFps =
       (avgChange < 0.1 ? 2 + t1 * 2 : 0) +
       (avgChange >= 0.1 && avgChange < 0.3 ? 4 + t2 * 3 : 0) +
       (avgChange >= 0.3 ? 7 + t3 * 3 : 0);
 
-    // Clamp without branching
     const clamped = Math.max(ADAPTIVE_FPS.MIN, Math.min(targetFps, ADAPTIVE_FPS.MAX));
     const rounded = Math.round(clamped * 2) / 2;
 
-    // Smooth transition without branching
     const fpsDiff = rounded - ADAPTIVE_FPS.current;
     const step = Math.max(-1, Math.min(fpsDiff, 1));
     ADAPTIVE_FPS.current += step;
@@ -1067,11 +1150,8 @@
     return ADAPTIVE_FPS.current;
   }
 
-  // -------------------------
-  // Auto debug-dot (IN VIDEO FRAME)
-  // -------------------------
   const overlaysAutoDot = new WeakMap();
-  let autoDotMode = 'off'; // off | idle | workBright | workDark
+  let autoDotMode = 'off';
 
   function mkAutoDotOverlay() {
     const d = document.createElement('div');
@@ -1109,9 +1189,8 @@
 
     dotEl.style.display = 'block';
 
-    // --- if AutoMatrix didn't change for 10s -> RED DOT (your code had 10_000)
     const t = nowMs();
-    const staleMs = 10_000;
+    const staleMs = 10000;
     const isStale = (AUTO.lastAppliedMs > 0) && ((t - AUTO.lastAppliedMs) >= staleMs);
     if (isStale) {
       dotEl.style.background = '#ff2a2a';
@@ -1138,9 +1217,6 @@
     }
   }
 
-  // -------------------------
-  // Video picking helpers
-  // -------------------------
   function isActuallyVisible(v) {
     try {
       const cs = window.getComputedStyle(v);
@@ -1199,7 +1275,6 @@
     return best;
   }
 
-  // --- Y-Luma based stats (analysis) ---
   function computeFrameStats(imgData) {
     const d = imgData.data;
 
@@ -1246,7 +1321,6 @@
     return { mR, mG, mB, mY, sdY, mCh };
   }
 
-  // motion metric from downsampled luma (0..1)
   function computeMotionFromImage(imgData) {
     const d = imgData.data;
     const stepPx = 2;
@@ -1277,7 +1351,6 @@
 
     if (!prev || prev.length !== cur.length) return 1.0;
 
-    // Use branchless motion detection
     return branchlessMotionDetect(cur, prev);
   }
 
@@ -1334,12 +1407,11 @@
     const errCh = clamp(targetCh - sig.mCh, -0.20, 0.20);
     const sat = clamp(1.0 + (-errCh) * 0.90, 0.80, 1.45);
 
-    // FIXED: autoLockWB = true = correction ACTIVE
     let hue = 0.0;
-    if (autoLockWB) {  // When true, correct color cast
+    if (autoLockWB) {
       const rb = clamp(sig.mR - sig.mB, -0.18, 0.18);
       hue = clamp((-rb) * 28.0, -10.0, 10.0);
-    } // When false, hue stays 0.0 (no correction)
+    }
 
     AUTO.tgt.br  = clamp(1.0 + (br  - 1.0) * s, 0.78, 1.22);
     AUTO.tgt.ct  = clamp(1.0 + (ct  - 1.0) * s, 0.82, 1.30);
@@ -1366,7 +1438,6 @@
 
     let m = matIdentity4x5();
 
-    // Hue
     m = matMul4x5(matHueRotate(hue), m);
     m = matMul4x5(matSaturation(sat), m);
     m = matMul4x5(matBrightnessContrast(br, ct), m);
@@ -1382,10 +1453,7 @@
     autoMatrixStr = valuesStr;
     _autoLastMatrixStr = valuesStr;
 
-    // keep last good matrix for DRM fallback
     AUTO.lastGoodMatrixStr = _autoLastMatrixStr;
-
-    // mark "values changed" timestamp for red-dot logic
     AUTO.lastAppliedMs = nowMs();
 
     const t = nowMs();
@@ -1449,7 +1517,6 @@
     const a = clamp(AUTO.scoreAlpha, 0.05, 0.95);
     AUTO.scoreEma = (AUTO.scoreEma * (1 - a)) + (cutScore * a);
 
-    // Adaptive FPS using branchless calculation
     const adaptiveFps = calculateAdaptiveFps(cutScore);
 
     if (nowT < AUTO.tBoostUntil) {
@@ -1462,9 +1529,6 @@
     return adaptiveFps;
   }
 
-  // -------------------------
-  // Auto loop (STRICT motion-gated) + DRM fallback + ADAPTIVE FPS
-  // -------------------------
   function ensureAutoLoop() {
     if (AUTO.running) return;
     AUTO.running = true;
@@ -1494,13 +1558,12 @@
         AUTO.statsEma = null;
         AUTO.drmBlocked = false;
         AUTO.blockUntilMs = 0;
-        AUTO.lastAppliedMs = 0; // reset stale timer
+        AUTO.lastAppliedMs = 0;
         setAutoDotState('off');
         scheduleNext(ADAPTIVE_FPS.MIN);
         return;
       }
 
-      // DRM backoff window
       const tNow = nowMs();
       if (AUTO.drmBlocked && tNow < (AUTO.blockUntilMs || 0)) {
         setAutoDotState('idle');
@@ -1566,7 +1629,6 @@
         const hasMotion = (AUTO.motionFrames >= AUTO.motionMinFrames);
         const allowUpdate = isCut || hasMotion;
 
-        // Adaptive FPS
         let fps = ADAPTIVE_FPS.current;
         if (allowUpdate) {
           fps = pickAutoFps(t, rawScore);
@@ -1629,9 +1691,6 @@
     scheduleNext(ADAPTIVE_FPS.MIN);
   }
 
-  // -------------------------
-  // Auto toggle + sync guard (UPDATED: supports silent bulk apply)
-  // -------------------------
   function setAutoOn(on, opts = {}) {
     const silent = !!opts.silent;
     const next = !!on;
@@ -1661,7 +1720,7 @@
       AUTO.tgt = { br: 1.0, ct: 1.0, sat: 1.0, hue: 0.0 };
       AUTO.drmBlocked = false;
       AUTO.blockUntilMs = 0;
-      AUTO.lastAppliedMs = 0; // reset stale timer
+      AUTO.lastAppliedMs = 0;
 
       autoMatrixStr = matToSvgValues(matIdentity4x5());
       _autoLastMatrixStr = autoMatrixStr;
@@ -1677,7 +1736,6 @@
       return;
     }
 
-    // start fresh; red-dot starts only after a real change occurs
     AUTO.lastAppliedMs = 0;
     ADAPTIVE_FPS.current = ADAPTIVE_FPS.MIN;
     ADAPTIVE_FPS.history = [];
@@ -1690,7 +1748,6 @@
       setAutoMatrixAndApply();
       scheduleOverlayUpdate();
     } else {
-      // still prime matrix so later applyFilter uses correct values
       autoMatrixStr = matToSvgValues(buildAutoMatrixValues());
       _autoLastMatrixStr = autoMatrixStr;
       AUTO.lastGoodMatrixStr = autoMatrixStr;
@@ -1726,7 +1783,7 @@
   }
 
   // -------------------------
-  // Main overlay (stays on top of video)
+  // Main overlay
   // -------------------------
   function mkMainOverlay() {
     const overlay = document.createElement('div');
@@ -1759,6 +1816,16 @@
       box-shadow: 0 0 0 1px rgba(255,255,255,0.14) inset;white-space: nowrap;
     `;
 
+    const renderBadge = document.createElement('div');
+    renderBadge.className = 'gvf-render-badge';
+    renderBadge.style.cssText = `
+      padding: 2px 6px;border-radius: 8px;font-size: 9px;font-weight: 900;
+      background: rgba(0,0,0,0.92);color: #ffaa00;
+      box-shadow: 0 0 0 1px rgba(255,255,255,0.14) inset;
+      margin-left: 4px;
+    `;
+    renderBadge.textContent = renderMode === 'gpu' ? 'GPU' : 'SVG';
+
     const mkBtn = (key, label) => {
       const el = document.createElement('div');
       el.dataset.key = key;
@@ -1779,8 +1846,15 @@
     row.appendChild(mkBtn('vib',  'V'));
     row.appendChild(mkBtn('hdr',  'P'));
     row.appendChild(mkBtn('auto', 'A'));
+    row.appendChild(mkBtn('mode', 'X'));
     top.appendChild(row);
-    top.appendChild(profBadge);
+
+    const badgeRow = document.createElement('div');
+    badgeRow.style.cssText = `display:flex;align-items:center;gap:4px;`;
+    badgeRow.appendChild(profBadge);
+    badgeRow.appendChild(renderBadge);
+    top.appendChild(badgeRow);
+
     overlay.appendChild(top);
 
     const mkSliderRow = (name, labelText, min, max, step, getVal, setVal, gmKey, snapZero, fmt = v => Number(v).toFixed(1)) => {
@@ -1822,8 +1896,11 @@
         gmSet(gmKey, getVal());
         if (gmKey === K.HDR && getVal() !== 0) gmSet(K.HDR_LAST, getVal());
 
-        // INSTANT SVG regeneration - no delay!
-        regenerateSvgImmediately();
+        if (renderMode === 'gpu') {
+          applyGpuFilter();
+        } else {
+          regenerateSvgImmediately();
+        }
       });
 
       wrap.appendChild(lbl);
@@ -1844,7 +1921,7 @@
   }
 
   // -------------------------
-  // Grading overlay (Ctrl+Alt+G) - ENHANCED with RGB Gain sliders
+  // Grading overlay (Ctrl+Alt+G) - FIXED: RGB Gain Slider in richtigen Farben
   // -------------------------
   function mkGradingOverlay() {
     const overlay = document.createElement('div');
@@ -1910,8 +1987,11 @@
         val.textContent = Number(keyGet()).toFixed(1);
         gmSet(gmKey, keyGet());
 
-        // INSTANT SVG regeneration - no delay!
-        regenerateSvgImmediately();
+        if (renderMode === 'gpu') {
+          applyGpuFilter();
+        } else {
+          regenerateSvgImmediately();
+        }
         scheduleOverlayUpdate();
       });
 
@@ -1921,7 +2001,7 @@
       return wrap;
     };
 
-    // Helper for RGB 0-255 sliders
+    // Helper for RGB 0-255 sliders - FIXED: Farben richtig zugeordnet
     const mkRGBRow = (name, labelText, keyGet, keySet, gmKey, color) => {
       const wrap = document.createElement('div');
       wrap.style.cssText = `
@@ -1959,8 +2039,11 @@
         val.textContent = String(Math.round(keyGet()));
         gmSet(gmKey, keyGet());
 
-        // INSTANT SVG regeneration - no delay!
-        regenerateSvgImmediately();
+        if (renderMode === 'gpu') {
+          applyGpuFilter();
+        } else {
+          regenerateSvgImmediately();
+        }
         scheduleOverlayUpdate();
       });
 
@@ -1988,10 +2071,10 @@
     sep.style.cssText = `height:1px;background:rgba(255,255,255,0.14);margin:8px 0;`;
     overlay.appendChild(sep);
 
-    // RGB Gain controls
-    overlay.appendChild(mkRGBRow('U_R_GAIN','R Gain',  () => normRGB(u_r_gain), (v)=>{ u_r_gain=v; }, K.U_R_GAIN, '#ff6b6b'));
-    overlay.appendChild(mkRGBRow('U_G_GAIN','G Gain',  () => normRGB(u_g_gain), (v)=>{ u_g_gain=v; }, K.U_G_GAIN, '#6bff6b'));
-    overlay.appendChild(mkRGBRow('U_B_GAIN','B Gain',  () => normRGB(u_b_gain), (v)=>{ u_b_gain=v; }, K.U_B_GAIN, '#6b6bff'));
+    // RGB Gain controls - FIXED: Richtige Farben für jeden Slider
+    overlay.appendChild(mkRGBRow('U_R_GAIN','R Gain (0-255)',  () => normRGB(u_r_gain), (v)=>{ u_r_gain=v; }, K.U_R_GAIN, '#ff6b6b')); // Rot
+    overlay.appendChild(mkRGBRow('U_G_GAIN','G Gain (0-255)',  () => normRGB(u_g_gain), (v)=>{ u_g_gain=v; }, K.U_G_GAIN, '#6bff6b')); // Grün
+    overlay.appendChild(mkRGBRow('U_B_GAIN','B Gain (0-255)',  () => normRGB(u_b_gain), (v)=>{ u_b_gain=v; }, K.U_B_GAIN, '#6b6bff')); // Blau
 
     // Hint
     const hint = document.createElement('div');
@@ -2004,7 +2087,7 @@
   }
 
   // -------------------------
-  // Settings Import/Export overlay (Ctrl+Alt+I) - stays on top of video
+  // Settings Import/Export overlay
   // -------------------------
   function mkIOOverlay() {
     const overlay = document.createElement('div');
@@ -2126,7 +2209,6 @@
       catch (_) { status.textContent = 'Export failed.'; }
     });
 
-    // FIX: always reset input so SAME FILE triggers change every time
     btnImportFile.addEventListener('click', () => {
       try { fileInput.value = ''; } catch (_) {}
       fileInput.click();
@@ -2150,7 +2232,6 @@
         } catch (_) {
           status.textContent = 'Import failed (invalid JSON).';
         } finally {
-          // FIX: allow immediate re-import of same file without reselect quirks
           try { fileInput.value = ''; } catch (_) {}
         }
       };
@@ -2191,6 +2272,7 @@
         sl: 1.3, sr: -1.1, bl: 0.3, wl: 0.2, dn: 0.6,
         hdr: 0.0, profile: 'off',
         gradingHudShown: false,
+        renderMode: 'svg',
         autoOn: true,
         autoStrength: 0.65,
         autoLockWB: true,
@@ -2232,7 +2314,7 @@
   }
 
   // -------------------------
-  // Scopes HUD (Ctrl+Alt+S) - FIXED: Properly reads video data with filters applied
+  // Scopes HUD
   // -------------------------
   function mkScopesOverlay() {
     const overlay = document.createElement('div');
@@ -2281,7 +2363,6 @@
       gap: 10px;
     `;
 
-    // Luma Histogram
     const lumaSection = document.createElement('div');
     lumaSection.style.cssText = `display:flex;flex-direction:column;gap:2px;`;
 
@@ -2307,7 +2388,6 @@
     }
     lumaSection.appendChild(lumaBars);
 
-    // RGB Parade
     const rgbSection = document.createElement('div');
     rgbSection.style.cssText = `display:flex;flex-direction:column;gap:2px;`;
 
@@ -2322,7 +2402,6 @@
       background:rgba(20,20,20,0.6);border-radius:4px;padding:4px;
     `;
 
-    // Red
     const redCol = document.createElement('div');
     redCol.style.cssText = `display:flex;flex-direction:column;gap:1px;`;
     const redLabel = document.createElement('div');
@@ -2341,7 +2420,6 @@
     redCol.appendChild(redBars);
     rgbGrid.appendChild(redCol);
 
-    // Green
     const greenCol = document.createElement('div');
     greenCol.style.cssText = `display:flex;flex-direction:column;gap:1px;`;
     const greenLabel = document.createElement('div');
@@ -2360,7 +2438,6 @@
     greenCol.appendChild(greenBars);
     rgbGrid.appendChild(greenCol);
 
-    // Blue
     const blueCol = document.createElement('div');
     blueCol.style.cssText = `display:flex;flex-direction:column;gap:1px;`;
     const blueLabel = document.createElement('div');
@@ -2381,7 +2458,6 @@
 
     rgbSection.appendChild(rgbGrid);
 
-    // Saturation Meter
     const satSection = document.createElement('div');
     satSection.style.cssText = `display:flex;flex-direction:column;gap:2px;`;
 
@@ -2413,7 +2489,6 @@
     satMeter.appendChild(satValue);
     satSection.appendChild(satMeter);
 
-    // Average values
     const avgSection = document.createElement('div');
     avgSection.style.cssText = `
       display:grid;grid-template-columns:1fr 1fr 1fr;gap:2px;margin-top:2px;
@@ -2449,9 +2524,6 @@
     return overlay;
   }
 
-  // -------------------------
-  // Scopes update logic - FIXED: Uses filtered video frames
-  // -------------------------
   const SCOPES = {
     running: false,
     canvas: document.createElement('canvas'),
@@ -2461,7 +2533,6 @@
     lastVideo: null
   };
 
-  // Initialize canvas
   SCOPES.canvas.width = 160;
   SCOPES.canvas.height = 90;
   try {
@@ -2480,7 +2551,6 @@
     const v = choosePrimaryVideo();
     if (!v || !SCOPES.ctx) return;
 
-    // Check if video is playable
     if (v.paused || v.seeking || v.ended || v.readyState < 2) {
       return;
     }
@@ -2493,10 +2563,8 @@
       const h = Math.max(2, v.videoHeight || 0);
       if (!w || !h) return;
 
-      // Get the applied CSS filter from the video element
       const cssFilter = getAppliedCssFilterString(v);
 
-      // Draw video frame with filters applied
       SCOPES.ctx.save();
       if (cssFilter) {
         SCOPES.ctx.filter = cssFilter;
@@ -2504,19 +2572,16 @@
       SCOPES.ctx.drawImage(v, 0, 0, 160, 90);
       SCOPES.ctx.restore();
 
-      // Try to get image data - this may fail for cross-origin/DRM video
       let imgData;
       try {
         imgData = SCOPES.ctx.getImageData(0, 0, 160, 90);
       } catch (e) {
-        // If we can't get pixel data, just return (keep old values)
         SCOPES.lastUpdate = now;
         return;
       }
 
       const d = imgData.data;
 
-      // Histogram buckets (16 buckets)
       const lumaHist = new Array(16).fill(0);
       const redHist = new Array(16).fill(0);
       const greenHist = new Array(16).fill(0);
@@ -2525,7 +2590,6 @@
       let sumR = 0, sumG = 0, sumB = 0, sumSat = 0;
       let count = 0;
 
-      // Sample every 2nd pixel for performance
       for (let y = 0; y < 90; y += 2) {
         for (let x = 0; x < 160; x += 2) {
           const i = (y * 160 + x) * 4;
@@ -2533,12 +2597,10 @@
           const g = d[i+1];
           const b = d[i+2];
 
-          // Luma (simplified)
           const yVal = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
           const lumaBucket = Math.floor(yVal / 16);
           if (lumaBucket >= 0 && lumaBucket < 16) lumaHist[lumaBucket]++;
 
-          // RGB histograms
           const rBucket = Math.floor(r / 16);
           const gBucket = Math.floor(g / 16);
           const bBucket = Math.floor(b / 16);
@@ -2546,7 +2608,6 @@
           if (gBucket >= 0 && gBucket < 16) greenHist[gBucket]++;
           if (bBucket >= 0 && bBucket < 16) blueHist[bBucket]++;
 
-          // Saturation (max - min)
           const max = Math.max(r, g, b);
           const min = Math.min(r, g, b);
           const sat = max - min;
@@ -2561,13 +2622,11 @@
 
       if (count === 0) return;
 
-      // Normalize histograms
       const maxLuma = Math.max(...lumaHist, 1);
       const maxRed = Math.max(...redHist, 1);
       const maxGreen = Math.max(...greenHist, 1);
       const maxBlue = Math.max(...blueHist, 1);
 
-      // Update Luma bars
       document.querySelectorAll('.gvf-scope-luma [data-index]').forEach(bar => {
         const idx = parseInt(bar.dataset.index);
         const val = lumaHist[idx] || 0;
@@ -2575,7 +2634,6 @@
         bar.style.height = Math.max(2, pct) + 'px';
       });
 
-      // Update RGB bars
       document.querySelectorAll('.gvf-scope-red [data-index]').forEach(bar => {
         const idx = parseInt(bar.dataset.index);
         const val = redHist[idx] || 0;
@@ -2597,7 +2655,6 @@
         bar.style.height = Math.max(2, pct) + 'px';
       });
 
-      // Update saturation meter
       const avgSat = sumSat / count / 255;
       const satPct = Math.min(100, avgSat * 200);
       const satFill = document.querySelector('.gvf-scope-sat-fill');
@@ -2605,7 +2662,6 @@
       if (satFill) satFill.style.width = satPct + '%';
       if (satValue) satValue.textContent = avgSat.toFixed(2);
 
-      // Update averages
       const avgY = (0.299 * (sumR/count) + 0.587 * (sumG/count) + 0.114 * (sumB/count)) / 255;
       const avgR = (sumR/count) / 255;
       const avgG = (sumG/count) / 255;
@@ -2649,13 +2705,10 @@
     setTimeout(loop, 100);
   }
 
-  // -------------------------
-  // Export/Import logic
-  // -------------------------
   function exportSettings() {
     return {
       schema: 'gvf-settings',
-      ver: '1.8',
+      ver: '1.9',
       enabled: !!enabled,
       darkMoody: !!darkMoody,
       tealOrange: !!tealOrange,
@@ -2670,6 +2723,7 @@
 
       hdr: nFix(normHDR(), 1),
       profile: String(profile),
+      renderMode: String(renderMode),
 
       gradingHudShown: !!gradingHudShown,
       scopesHudShown: !!scopesHudShown,
@@ -2697,7 +2751,6 @@
         grain:      nFix(normU(u_grain), 1),
         hue:        nFix(normU(u_hue), 1),
 
-        // RGB Gain controls
         r_gain:     Math.round(normRGB(u_r_gain)),
         g_gain:     Math.round(normRGB(u_g_gain)),
         b_gain:     Math.round(normRGB(u_b_gain))
@@ -2708,7 +2761,6 @@
   function importSettings(obj) {
     if (!obj || typeof obj !== 'object') return false;
 
-    // FIX: batch apply; prevent value-change listeners from racing mid-import
     _suspendSync = true;
     _inSync = true;
 
@@ -2734,6 +2786,11 @@
         profile = (['off','film','anime','gaming','eyecare','user'].includes(p) ? p : 'off');
       }
 
+      if ('renderMode' in obj) {
+        const r = String(obj.renderMode).toLowerCase();
+        renderMode = (r === 'gpu' ? 'gpu' : 'svg');
+      }
+
       if ('gradingHudShown' in obj) gradingHudShown = !!obj.gradingHudShown;
       if ('scopesHudShown' in obj) scopesHudShown = !!obj.scopesHudShown;
 
@@ -2753,12 +2810,10 @@
       if ('grain'      in u) u_grain      = normU(u.grain);
       if ('hue'        in u) u_hue        = normU(u.hue);
 
-      // RGB Gain controls
       if ('r_gain'     in u) u_r_gain     = normRGB(u.r_gain);
       if ('g_gain'     in u) u_g_gain     = normRGB(u.g_gain);
       if ('b_gain'     in u) u_b_gain     = normRGB(u.b_gain);
 
-      // normalize + write ALL GM keys (still in suspended mode)
       enabled = !!enabled; darkMoody = !!darkMoody; tealOrange = !!tealOrange; vibrantSat = !!vibrantSat; iconsShown = !!iconsShown;
 
       sl = normSL(); sr = normSR(); bl = normBL(); wl = normWL(); dn = normDN(); hdr = normHDR();
@@ -2795,6 +2850,7 @@
       if (hdr !== 0) gmSet(K.HDR_LAST, hdr);
 
       gmSet(K.PROF, profile);
+      gmSet(K.RENDER_MODE, renderMode);
       gmSet(K.G_HUD, gradingHudShown);
       gmSet(K.I_HUD, ioHudShown);
       gmSet(K.S_HUD, scopesHudShown);
@@ -2819,11 +2875,13 @@
       gmSet(K.AUTO_STRENGTH, autoStrength);
       gmSet(K.AUTO_LOCK_WB, autoLockWB);
 
-      // apply ONCE at end (no mid-import races)
       setAutoOn(autoOn, { silent: true });
 
-      // INSTANT SVG regeneration instead of lazy
-      regenerateSvgImmediately();
+      if (renderMode === 'gpu') {
+        applyGpuFilter();
+      } else {
+        regenerateSvgImmediately();
+      }
       scheduleOverlayUpdate();
 
       return true;
@@ -2835,9 +2893,189 @@
     }
   }
 
-  // -------------------------
-  // Overlay state updates + positioning
-  // -------------------------
+  function toggleRenderMode() {
+    renderMode = renderMode === 'svg' ? 'gpu' : 'svg';
+    gmSet(K.RENDER_MODE, renderMode);
+    logToggle('Render Mode (Ctrl+Alt+X)', renderMode === 'gpu', `Mode: ${renderMode === 'gpu' ? 'GPU Pipeline' : 'SVG'}`);
+
+    if (renderMode === 'gpu') {
+      applyGpuFilter();
+    } else {
+      regenerateSvgImmediately();
+    }
+
+    scheduleOverlayUpdate();
+  }
+
+
+  function ensureGpuSvgHost() {
+    let svg = document.getElementById(GPU_SVG_ID);
+    if (svg) return svg;
+
+    svg = document.createElementNS(svgNS, 'svg');
+    svg.id = GPU_SVG_ID;
+    svg.setAttribute('width', '0');
+    svg.setAttribute('height', '0');
+    svg.style.position = 'absolute';
+    svg.style.left = '-9999px';
+    svg.style.top  = '-9999px';
+
+    const defs = document.createElementNS(svgNS, 'defs');
+    svg.appendChild(defs);
+
+    (document.body || document.documentElement).appendChild(svg);
+    return svg;
+  }
+
+  function upsertGpuGainFilter() {
+    // Lightweight SVG filter used in GPU pipeline mode to support per-channel gains (R/G/B Gain).
+    const svg = ensureGpuSvgHost();
+    if (!svg) return;
+
+    const defs = svg.querySelector('defs') || svg;
+
+    let f = defs.querySelector(`#${GPU_GAIN_FILTER_ID}`);
+    if (!f) {
+      f = document.createElementNS(svgNS, 'filter');
+      f.setAttribute('id', GPU_GAIN_FILTER_ID);
+      defs.appendChild(f);
+    } else {
+      while (f.firstChild) f.removeChild(f.firstChild);
+    }
+
+    const r = rgbGainToFactor(u_r_gain);
+    const g = rgbGainToFactor(u_g_gain);
+    const b = rgbGainToFactor(u_b_gain);
+
+    const fe = document.createElementNS(svgNS, 'feColorMatrix');
+    fe.setAttribute('type', 'matrix');
+    fe.setAttribute('values', [
+      r, 0, 0, 0, 0,
+      0, g, 0, 0, 0,
+      0, 0, b, 0, 0,
+      0, 0, 0, 1, 0
+    ].join(' '));
+    f.appendChild(fe);
+  }
+
+  function gpuProfileMatrixActive() {
+    // In GPU pipeline we emulate the SVG profile matrices for built-in looks (film/anime/gaming/eyecare).
+    // User profile is already handled by sliders (and optional GPU gains matrix), so we don't double-apply.
+    return (profile === 'film' || profile === 'anime' || profile === 'gaming' || profile === 'eyecare');
+  }
+
+  function upsertGpuProfileFilter() {
+    const svg = ensureGpuSvgHost();
+    if (!svg) return;
+
+    const defs = svg.querySelector('defs') || svg;
+
+    let f = defs.querySelector(`#${GPU_PROFILE_FILTER_ID}`);
+    if (!f) {
+      f = document.createElementNS(svgNS, 'filter');
+      f.setAttribute('id', GPU_PROFILE_FILTER_ID);
+      // Avoid linearRGB surprises (the "grey veil" look) and match SVG pipeline behavior.
+      f.setAttribute('color-interpolation-filters', 'sRGB');
+      defs.appendChild(f);
+    } else {
+      // Only rebuild when profile changes
+      const lastP = f.getAttribute('data-prof');
+      if (lastP === profile) return;
+      while (f.firstChild) f.removeChild(f.firstChild);
+    }
+
+    f.setAttribute('data-prof', profile);
+
+    // Same matrices as SVG pipeline's mkProfileMatrixCT(...)
+    const profMat = mkProfileMatrixCT(profile);
+    if (profMat) f.appendChild(profMat);
+
+    // SVG pipeline applies an additional slight desat for Eye Care.
+    if (profile === 'eyecare') {
+      const sat = document.createElementNS(svgNS, 'feColorMatrix');
+      sat.setAttribute('type', 'saturate');
+      sat.setAttribute('values', '0.90');
+      f.appendChild(sat);
+    }
+  }
+
+  function removeGpuProfileFilter() {
+    const svg = document.getElementById(GPU_SVG_ID);
+    if (!svg) return;
+    const f = svg.querySelector(`#${GPU_PROFILE_FILTER_ID}`);
+    if (f && f.parentNode) f.parentNode.removeChild(f);
+  }
+
+  function removeGpuGainFilter() {
+    const svg = document.getElementById(GPU_SVG_ID);
+    if (!svg) return;
+    const f = svg.querySelector(`#${GPU_GAIN_FILTER_ID}`);
+    if (f && f.parentNode) f.parentNode.removeChild(f);
+  }
+
+  function gpuGainActive() {
+    // Gains exist only for the User profile.
+    if (profile !== 'user') return false;
+    return (u_r_gain !== 128) || (u_g_gain !== 128) || (u_b_gain !== 128);
+  }
+
+  function applyGpuFilter() {
+    let style = document.getElementById(STYLE_ID);
+
+    const nothingOn =
+      !enabled && !darkMoody && !tealOrange && !vibrantSat && normHDR() === 0 && (profile === 'off') && !autoOn;
+
+    if (nothingOn) {
+      if (style) style.remove();
+      removeGpuGainFilter();
+      scheduleOverlayUpdate();
+      return;
+    }
+
+    if (!style) {
+      style = document.createElement('style');
+      style.id = STYLE_ID;
+      document.head.appendChild(style);
+    }
+
+    let gpuFilterString = getGpuFilterString();
+
+    // In GPU Pipeline Mode, we emulate built-in SVG profile matrices (film/anime/gaming/eyecare) via a tiny SVG filter.
+    if (gpuProfileMatrixActive()) {
+      upsertGpuProfileFilter();
+      const urlP = `url(#${GPU_PROFILE_FILTER_ID})`;
+      gpuFilterString = gpuFilterString ? (gpuFilterString + ' ' + urlP) : urlP;
+    } else {
+      removeGpuProfileFilter();
+    }
+
+    // In GPU Pipeline Mode, CSS filters cannot do per-channel gains. We chain a tiny SVG color-matrix filter.
+    if (gpuGainActive()) {
+      upsertGpuGainFilter();
+      const url = `url(#${GPU_GAIN_FILTER_ID})`;
+      gpuFilterString = gpuFilterString ? (gpuFilterString + ' ' + url) : url;
+    } else {
+      removeGpuGainFilter();
+    }
+
+    const outlineCss = (PROFILE_VIDEO_OUTLINE && profile !== 'off')
+      ? `outline: 2px solid ${(PROF[profile]||PROF.off).color} !important; outline-offset: -2px;`
+      : `outline: none !important;`;
+
+    const finalFilter = (gpuFilterString && String(gpuFilterString).trim()) ? String(gpuFilterString).trim() : 'none';
+
+    style.textContent = `
+      video {
+        will-change: filter;
+        transform: translateZ(0);
+        filter: ${finalFilter} !important;
+        ${outlineCss}
+      }
+    `;
+
+    scheduleOverlayUpdate();
+  }
+
   function updateMainOverlayState(overlay) {
     if (!iconsShown) { overlay.style.display = 'none'; return; }
     overlay.style.display = 'flex';
@@ -2848,13 +3086,23 @@
       teal: tealOrange,
       vib: vibrantSat,
       hdr: (normHDR() !== 0),
-      auto: autoOn
+      auto: autoOn,
+      mode: true
     };
 
     overlay.querySelectorAll('[data-key]').forEach(el => {
-      const on = !!state[el.dataset.key];
-      el.style.color = on ? '#fff' : '#666';
-      el.style.background = on ? 'rgba(255,255,255,0.22)' : '#000';
+      const key = el.dataset.key;
+      let on = !!state[key];
+
+      if (key === 'mode') {
+        el.textContent = renderMode === 'gpu' ? 'G' : 'S';
+        on = true;
+        el.style.color = renderMode === 'gpu' ? '#ffaa00' : '#88ccff';
+        el.style.background = 'rgba(255,255,255,0.15)';
+      } else {
+        el.style.color = on ? '#fff' : '#666';
+        el.style.background = on ? 'rgba(255,255,255,0.22)' : '#000';
+      }
       el.style.boxShadow = '0 0 0 1px rgba(255,255,255,0.18) inset';
     });
 
@@ -2873,6 +3121,12 @@
         badge.style.border = '1px solid rgba(255,255,255,0.10)';
         badge.style.boxShadow = '0 0 0 1px rgba(255,255,255,0.14) inset';
       }
+    }
+
+    const renderBadge = overlay.querySelector('.gvf-render-badge');
+    if (renderBadge) {
+      renderBadge.textContent = renderMode === 'gpu' ? 'GPU' : 'SVG';
+      renderBadge.style.color = renderMode === 'gpu' ? '#ffaa00' : '#88ccff';
     }
 
     const setPair = (name, v) => {
@@ -2901,7 +3155,6 @@
       if (t) t.textContent = Number(v).toFixed(1);
     };
 
-    // Standard controls
     setPair('U_CONTRAST',   normU(u_contrast));
     setPair('U_BLACK',      normU(u_black));
     setPair('U_WHITE',      normU(u_white));
@@ -2914,7 +3167,6 @@
     setPair('U_GRAIN',      normU(u_grain));
     setPair('U_HUE',        normU(u_hue));
 
-    // RGB Gain controls only (0-255, round to integer for display)
     const setRGBPair = (name, v) => {
       const r = overlay.querySelector(`[data-gvf-range="${cssEscape(name)}"]`);
       const t = overlay.querySelector(`[data-gvf-val="${cssEscape(name)}"]`);
@@ -2980,12 +3232,8 @@
   function updateScopesOverlayState(overlay) {
     if (!scopesHudShown) { overlay.style.display = 'none'; return; }
     overlay.style.display = 'flex';
-    // Scopes data is updated in the background loop
   }
 
-  // -------------------------
-  // Fullscreen wrapper
-  // -------------------------
   const fsWraps2  = new WeakMap();
 
   function ensureFsWrapper(video) {
@@ -3071,7 +3319,6 @@
     const fsEl = getFsEl();
     const container = getOverlayContainer(video);
 
-    // Ensure overlay is in the correct container
     if (overlay.parentNode !== container) container.appendChild(overlay);
 
     const isWrapFs = fsEl && container === fsEl && fsEl.classList && fsEl.classList.contains('gvf-fs-wrap');
@@ -3087,9 +3334,7 @@
       }
     }
 
-    // Special positioning for Scopes HUD (left side)
     if (overlay.classList.contains('gvf-video-overlay-scopes')) {
-      // Position at top-left inside video
       if (isWrapFs) {
         const cr = container.getBoundingClientRect();
         overlay.style.top = `${Math.round((r.top - cr.top) + dy)}px`;
@@ -3101,7 +3346,6 @@
         overlay.style.transform = 'none';
       }
     } else {
-      // Position all other overlays at top-right
       if (isWrapFs) {
         const cr = container.getBoundingClientRect();
         overlay.style.top = `${Math.round((r.top - cr.top) + dy)}px`;
@@ -3119,7 +3363,6 @@
     document.querySelectorAll('video').forEach(v => {
       patchFullscreenRequest(v);
 
-      // Create overlays if they don't exist (they will be attached in positionOverlayAt)
       if (!overlaysMain.has(v)) overlaysMain.set(v, mkMainOverlay());
       if (!overlaysGrade.has(v)) overlaysGrade.set(v, mkGradingOverlay());
       if (!overlaysIO.has(v)) overlaysIO.set(v, mkIOOverlay());
@@ -3189,9 +3432,6 @@
     scheduleOverlayUpdate();
   }
 
-  // -------------------------
-  // SVG filter build + apply (UPDATED with Lazy Regeneration)
-  // -------------------------
   function mkGamma(ch, amp, exp, off) {
     const f = document.createElementNS(svgNS, ch);
     f.setAttribute('type', 'gamma');
@@ -3465,7 +3705,6 @@
 
     let last = 'SourceGraphic';
 
-    // Original pipeline - separate operations
     if (blurSigma > 0) {
       const b = document.createElementNS(svgNS, 'feGaussianBlur');
       b.setAttribute('in', last);
@@ -3566,13 +3805,11 @@
       }
     }
 
-    // RGB Gain
     if (profile === 'user') {
       const rGain = rgbGainToFactor(u_r_gain);
       const gGain = rgbGainToFactor(u_g_gain);
       const bGain = rgbGainToFactor(u_b_gain);
 
-      // Only add if not neutral
       if (Math.abs(rGain - 1.0) > 0.01 || Math.abs(gGain - 1.0) > 0.01 || Math.abs(bGain - 1.0) > 0.01) {
 
         const rgbMatrix = matRGBGain(rGain, gGain, bGain);
@@ -3687,7 +3924,6 @@
     svg.appendChild(filter);
   }
 
-  // Modified ensureSvgFilter with instant regeneration
   function ensureSvgFilter(force = false) {
     const SL  = Number(normSL().toFixed(1));
     const SR  = Number(normSR().toFixed(1));
@@ -3703,7 +3939,6 @@
     const uSig = [
       normU(u_contrast), normU(u_black), normU(u_white), normU(u_highlights), normU(u_shadows),
       normU(u_sat), normU(u_vib), normU(u_sharp), normU(u_gamma), normU(u_grain), normU(u_hue),
-      // Include RGB Gain values
       normRGB(u_r_gain), normRGB(u_g_gain), normRGB(u_b_gain)
     ].map(x => Number(x).toFixed(1)).join(',');
 
@@ -3717,13 +3952,11 @@
         return;
       }
 
-      // If not forcing regeneration, just update the auto matrix
       if (!force) {
         updateAutoMatrixInSvg(autoMatrixStr);
         return;
       }
 
-      // Force regeneration - remove existing
       existing.remove();
     }
 
@@ -3777,6 +4010,11 @@
   }
 
   function applyFilter(opts = {}) {
+    if (renderMode === 'gpu') {
+      applyGpuFilter();
+      return;
+    }
+
     let style = document.getElementById(STYLE_ID);
 
     const nothingOn =
@@ -3791,9 +4029,8 @@
     const skipSvgIfPossible = !!opts.skipSvgIfPossible;
     const svgExists = !!document.getElementById(SVG_ID);
 
-    // Use immediate regeneration for toggles
     if (!skipSvgIfPossible || !svgExists) {
-      ensureSvgFilter(true); // Force regeneration immediately for toggles
+      ensureSvgFilter(true);
     }
 
     if (!style) {
@@ -3822,9 +4059,6 @@
     scheduleOverlayUpdate();
   }
 
-  // -------------------------
-  // Same-origin iframe injection
-  // -------------------------
   function getSelfCode() {
     try {
       if (document.currentScript && document.currentScript.textContent) {
@@ -3871,12 +4105,8 @@
     new MutationObserver(scan).observe(document.documentElement, { childList: true, subtree: true });
   }
 
-  // -------------------------
-  // Global sync (tabs + sites)
-  // -------------------------
   function listenGlobalSync() {
     const sync = () => {
-      // FIX: ignore mid-import / mid-reset cascades
       if (_suspendSync) return;
 
       _inSync = true;
@@ -3896,6 +4126,9 @@
 
         profile = String(gmGet(K.PROF, profile)).toLowerCase();
         if (!['off','film','anime','gaming','eyecare','user'].includes(profile)) profile = 'off';
+
+        renderMode = String(gmGet(K.RENDER_MODE, renderMode)).toLowerCase();
+        if (!['svg', 'gpu'].includes(renderMode)) renderMode = 'svg';
 
         gradingHudShown = !!gmGet(K.G_HUD, gradingHudShown);
         ioHudShown      = !!gmGet(K.I_HUD, ioHudShown);
@@ -3923,8 +4156,11 @@
 
         setAutoOn(autoOn);
 
-        // INSTANT SVG regeneration instead of lazy
-        regenerateSvgImmediately();
+        if (renderMode === 'gpu') {
+          applyGpuFilter();
+        } else {
+          regenerateSvgImmediately();
+        }
         scheduleOverlayUpdate();
       } finally {
         _inSync = false;
@@ -3942,7 +4178,12 @@
     profile = order[(cur < 0 ? 0 : (cur + 1)) % order.length];
     gmSet(K.PROF, profile);
     log('Profile cycled:', profile);
-    regenerateSvgImmediately();
+
+    if (renderMode === 'gpu') {
+      applyGpuFilter();
+    } else {
+      regenerateSvgImmediately();
+    }
     scheduleOverlayUpdate();
   }
 
@@ -3966,11 +4207,9 @@
     logToggle('Scopes HUD (Ctrl+Alt+S)', scopesHudShown);
     scheduleOverlayUpdate();
 
-    // Start or stop the scopes loop based on visibility
     if (scopesHudShown) {
       startScopesLoop();
     } else {
-      // Clear any displayed data when hiding
       document.querySelectorAll('.gvf-scope-luma [data-index]').forEach(bar => {
         bar.style.height = '2px';
       });
@@ -3997,9 +4236,6 @@
     }
   }
 
-  // -------------------------
-  // Init - UPDATED with adaptive FPS and branchless logic
-  // -------------------------
   function init() {
     sl  = normSL();  gmSet(K.SL,  sl);
     sr  = normSR();  gmSet(K.SR,  sr);
@@ -4032,6 +4268,9 @@
     if (!['off','film','anime','gaming','eyecare','user'].includes(profile)) profile = 'off';
     gmSet(K.PROF, profile);
 
+    if (!['svg', 'gpu'].includes(renderMode)) renderMode = 'svg';
+    gmSet(K.RENDER_MODE, renderMode);
+
     gmSet(K.AUTO_ON, autoOn);
     gmSet(K.AUTO_STRENGTH, autoStrength);
     gmSet(K.AUTO_LOCK_WB, autoLockWB);
@@ -4043,8 +4282,12 @@
     AUTO.lastGoodMatrixStr = autoMatrixStr;
     AUTO.lastAppliedMs = 0;
 
-    // Initial filter application with instant regeneration
-    regenerateSvgImmediately();
+    if (renderMode === 'gpu') {
+      applyGpuFilter();
+    } else {
+      regenerateSvgImmediately();
+    }
+
     listenGlobalSync();
     watchIframes();
     primeAutoOnVideoActivity();
@@ -4052,12 +4295,11 @@
     ensureAutoLoop();
     setAutoOn(autoOn);
 
-    // Start scopes loop if enabled
     if (scopesHudShown) startScopesLoop();
 
-    log('Init complete with adaptive FPS and branchless shader logic - INSTANT TOGGLE!', {
+    log('Init complete with GPU Pipeline Mode!', {
       enabled, darkMoody, tealOrange, vibrantSat, iconsShown,
-      hdr: normHDR(), profile,
+      hdr: normHDR(), profile, renderMode,
       autoOn, autoStrength: Number(autoStrength.toFixed(2)), autoLockWB,
       scopesHudShown,
       rgb: { r_gain: u_r_gain, g_gain: u_g_gain, b_gain: u_b_gain },
@@ -4065,7 +4307,7 @@
       motionThresh: AUTO.motionThresh,
       motionMinFrames: AUTO.motionMinFrames,
       statsAlpha: AUTO.statsAlpha,
-      instantSvgRegeneration: true,
+      gpuPipeline: renderMode === 'gpu',
       branchlessShader: true
     });
 
@@ -4093,6 +4335,12 @@
         return;
       }
 
+      if (e.ctrlKey && e.altKey && !e.shiftKey && k === GPU_MODE_KEY) {
+        e.preventDefault();
+        toggleRenderMode();
+        return;
+      }
+
       if (e.ctrlKey && e.altKey && !e.shiftKey && k === PROF_TOGGLE_KEY) {
         e.preventDefault();
         cycleProfile();
@@ -4112,7 +4360,12 @@
           logToggle('HDR (Ctrl+Alt+P)', false);
         }
         gmSet(K.HDR, normHDR());
-        regenerateSvgImmediately();
+
+        if (renderMode === 'gpu') {
+          applyGpuFilter();
+        } else {
+          regenerateSvgImmediately();
+        }
         return;
       }
 
@@ -4124,10 +4377,14 @@
 
       if (!(e.ctrlKey && e.altKey) || e.shiftKey) return;
 
-      if (k === HK.base)  { enabled = !enabled;       gmSet(K.enabled, enabled);   e.preventDefault(); logToggle('Base (Ctrl+Alt+B)', enabled); regenerateSvgImmediately(); return; }
-      if (k === HK.moody) { darkMoody = !darkMoody;   gmSet(K.moody, darkMoody);   e.preventDefault(); logToggle('Dark&Moody (Ctrl+Alt+D)', darkMoody); regenerateSvgImmediately(); return; }
-      if (k === HK.teal)  { tealOrange = !tealOrange; gmSet(K.teal, tealOrange);   e.preventDefault(); logToggle('Teal&Orange (Ctrl+Alt+O)', tealOrange); regenerateSvgImmediately(); return; }
-      if (k === HK.vib)   { vibrantSat = !vibrantSat; gmSet(K.vib, vibrantSat);    e.preventDefault(); logToggle('Vibrant (Ctrl+Alt+V)', vibrantSat); regenerateSvgImmediately(); return; }
+      if (k === HK.base)  { enabled = !enabled;       gmSet(K.enabled, enabled);   e.preventDefault(); logToggle('Base (Ctrl+Alt+B)', enabled);
+        if (renderMode === 'gpu') applyGpuFilter(); else regenerateSvgImmediately(); return; }
+      if (k === HK.moody) { darkMoody = !darkMoody;   gmSet(K.moody, darkMoody);   e.preventDefault(); logToggle('Dark&Moody (Ctrl+Alt+D)', darkMoody);
+        if (renderMode === 'gpu') applyGpuFilter(); else regenerateSvgImmediately(); return; }
+      if (k === HK.teal)  { tealOrange = !tealOrange; gmSet(K.teal, tealOrange);   e.preventDefault(); logToggle('Teal&Orange (Ctrl+Alt+O)', tealOrange);
+        if (renderMode === 'gpu') applyGpuFilter(); else regenerateSvgImmediately(); return; }
+      if (k === HK.vib)   { vibrantSat = !vibrantSat; gmSet(K.vib, vibrantSat);    e.preventDefault(); logToggle('Vibrant (Ctrl+Alt+V)', vibrantSat);
+        if (renderMode === 'gpu') applyGpuFilter(); else regenerateSvgImmediately(); return; }
       if (k === HK.icons) { iconsShown = !iconsShown; gmSet(K.icons, iconsShown);  e.preventDefault(); logToggle('Overlay Icons (Ctrl+Alt+H)', iconsShown); scheduleOverlayUpdate(); return; }
     });
 
@@ -4138,7 +4395,7 @@
     document.addEventListener('webkitfullscreenchange', onFsChange);
 
     new MutationObserver(() => {
-      if (!document.getElementById(SVG_ID)) {
+      if (!document.getElementById(SVG_ID) && renderMode === 'svg') {
         regenerateSvgImmediately();
       }
       scheduleOverlayUpdate();
@@ -4150,5 +4407,6 @@
   document.readyState === 'loading'
     ? document.addEventListener('DOMContentLoaded', init, { once: true })
     : init();
+
 
 })();
