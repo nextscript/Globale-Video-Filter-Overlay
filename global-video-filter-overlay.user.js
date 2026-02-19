@@ -3,9 +3,9 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.4.8
-// @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
-// @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
+// @version      1.4.9
+// @description  Global Video Filter Overlay with TRUE WebGL2 CANVAS PIPELINE! Videos are rendered through WebGL canvas for maximum performance and accurate RGB gain!
+// @description:de  Globale Video Filter Overlay mit ECHTER WebGL2 CANVAS PIPELINE! Videos werden durch WebGL-Canvas gerendert für maximale Performance und akkuraten RGB-Gain!
 // @match        *://*/*
 // @run-at       document-idle
 // @grant        GM_getValue
@@ -399,8 +399,8 @@
 
     function pickRecorderMime(hasAudio) {
         const mp4Audio = [
-            'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
-            'video/mp4;codecs=avc1.4D401E,mp4a.40.2',
+            'video/mp4;codecs=avc1.4D401F,mp4a.40.2',
+            'video/mp4;codecs=avc1.4D401F,mp4a.40.2',
             'video/mp4'
         ];
         const webmAudio = [
@@ -411,8 +411,8 @@
             'video/webm'
         ];
         const mp4NoAudio = [
-            'video/mp4;codecs=avc1.42E01E',
-            'video/mp4;codecs=avc1.4D401E',
+            'video/mp4;codecs=avc1.4D401F',
+            'video/mp4;codecs=avc1.4D401F',
             'video/mp4'
         ];
         const webmNoAudio = [
@@ -571,7 +571,7 @@
         try {
             const opts = {
                 mimeType: mime,
-                videoBitsPerSecond: 6_000_000,
+                videoBitsPerSecond: 2_200_000,
                 audioBitsPerSecond: 96_000
             };
             mr = new MediaRecorder(filteredStream, opts);
@@ -930,7 +930,7 @@
         return currentFps * (1 - alpha) + targetFps * alpha;
     }
 
-    // =====================  WEBGL2 CANVAS PIPELINE =====================
+    // ===================== NEU: ECHTE WEBGL2 CANVAS PIPELINE =====================
     let webglPipeline = null;
 
     class WebGL2Pipeline {
