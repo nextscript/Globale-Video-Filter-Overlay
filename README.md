@@ -1,4 +1,4 @@
-<img src="https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/befaft.gif">
+<img src="https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/preview.png">
 
 <h2>What this script does</h2>
 
@@ -201,7 +201,7 @@ The GPU Pipeline Mode is an alternative rendering mode for maximum performance. 
 </ul>
 <hr>
 <h2>My Profile:</h2>
-<b>SVG Mode (Recommended)</b><br>
-<a href="https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/My_Profile.json" target="_blank">My_Profile.json</a><br>
-<b>GPU Mode</b><br>
-<a href="https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/GPU_Mode_Profile.json" target="_blank">GPU_Mode_Profile.json</a><br>
+<b>SVG Mode (Recommended)</b>
+<a href="https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/My_Profile.json" target="_blank">My_Profile.json</a>
+<b>GPU Mode</b>
+<a href="https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/GPU_Mode_Profile.json" target="_blank">GPU_Mode_Profile.json</a>
