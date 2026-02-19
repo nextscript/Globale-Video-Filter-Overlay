@@ -2,7 +2,7 @@
   "schema": "gvf-settings",
   "ver": "1.9",
   "enabled": false,
-  "darkMoody": false,
+  "darkMoody": true,
   "tealOrange": false,
   "vibrantSat": false,
   "iconsShown": false,
@@ -22,7 +22,7 @@
   "adaptiveFps": {
     "min": 2,
     "max": 10,
-    "current": 2
+    "current": 2.5
   },
   "user": {
     "contrast": 2.5,
