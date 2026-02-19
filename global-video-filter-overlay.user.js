@@ -1000,7 +1000,7 @@
                 // Try WebGL2 first, fallback to WebGL1
                 let gl = this.canvas.getContext('webgl2', {
                     alpha: false,
-                    antialias: true,
+                    antialias: false,
                     preserveDrawingBuffer: true,
                     powerPreference: 'high-performance'
                 });
@@ -1008,11 +1008,11 @@
                 if (!gl) {
                     gl = this.canvas.getContext('webgl', {
                         alpha: false,
-                        antialias: true,
+                        antialias: false,
                         preserveDrawingBuffer: true
                     }) || this.canvas.getContext('experimental-webgl', {
                         alpha: false,
-                        antialias: true
+                        antialias: false
                     });
                 }
 
