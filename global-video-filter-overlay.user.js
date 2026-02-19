@@ -3,7 +3,7 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.4.7
+// @version      1.4.8
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
@@ -35,13 +35,13 @@
     const svgNS = 'http://www.w3.org/2000/svg';
 
     // Hotkeys
-    const HDR_TOGGLE_KEY = 'p'; // Ctrl+Alt+P
-    const PROF_TOGGLE_KEY = 'c'; // Ctrl+Alt+C
-    const GRADE_HUD_KEY = 'g'; // Ctrl+Alt+G (Grading + RGB Slider)
-    const IO_HUD_KEY = 'i'; // Ctrl+Alt+I (Settings Export/Import)
-    const AUTO_KEY = 'a'; // Ctrl+Alt+A (Auto Scene Match)
-    const SCOPES_KEY = 's'; // Ctrl+Alt+S (Scopes HUD)
-    const GPU_MODE_KEY = 'x'; // Ctrl+Alt+X (GPU Pipeline Mode)
+    const HDR_TOGGLE_KEY = 'p';
+    const PROF_TOGGLE_KEY = 'c';
+    const GRADE_HUD_KEY = 'g';
+    const IO_HUD_KEY = 'i';
+    const AUTO_KEY = 'a';
+    const SCOPES_KEY = 's';
+    const GPU_MODE_KEY = 'x';
 
     // -------------------------
     // LOG + DEBUG SWITCH
@@ -50,7 +50,7 @@
     const debug = false;    // visual debug (Auto-dot)
 
     // -------------------------
-    // CSS.escape Polyfill + safer selectors
+    // CSS.escape Polyfill
     // -------------------------
     const cssEscape = (s) => {
         try {
@@ -80,9 +80,8 @@
 
         G_HUD: 'gvf_g_hud',
         I_HUD: 'gvf_i_hud',
-        S_HUD: 'gvf_s_hud', // Scopes HUD
+        S_HUD: 'gvf_s_hud',
 
-        // Render Mode: 'svg' or 'gpu'
         RENDER_MODE: 'gvf_render_mode',
 
         U_CONTRAST: 'gvf_u_contrast',
@@ -97,12 +96,10 @@
         U_GRAIN: 'gvf_u_grain',
         U_HUE: 'gvf_u_hue',
 
-        // RGB direct controls (0-255)
         U_R_GAIN: 'gvf_u_r_gain',
         U_G_GAIN: 'gvf_u_g_gain',
         U_B_GAIN: 'gvf_u_b_gain',
 
-        // Auto scene match
         AUTO_ON: 'gvf_auto_on',
         AUTO_STRENGTH: 'gvf_auto_strength',
         AUTO_LOCK_WB: 'gvf_auto_lock_wb'
@@ -681,7 +678,6 @@
     let profile = String(gmGet(K.PROF, 'off')).toLowerCase();
     if (!['off', 'film', 'anime', 'gaming', 'eyecare', 'user'].includes(profile)) profile = 'off';
 
-    // Render mode: 'svg' or 'gpu'
     let renderMode = String(gmGet(K.RENDER_MODE, 'svg')).toLowerCase();
     if (!['svg', 'gpu'].includes(renderMode)) renderMode = 'svg';
 
@@ -689,7 +685,6 @@
     let ioHudShown = !!gmGet(K.I_HUD, false);
     let scopesHudShown = !!gmGet(K.S_HUD, false);
 
-    // User grading controls (-10..10)
     let u_contrast = Number(gmGet(K.U_CONTRAST, 0.0));
     let u_black = Number(gmGet(K.U_BLACK, 0.0));
     let u_white = Number(gmGet(K.U_WHITE, 0.0));
@@ -702,16 +697,14 @@
     let u_grain = Number(gmGet(K.U_GRAIN, 0.0));
     let u_hue = Number(gmGet(K.U_HUE, 0.0));
 
-    // RGB direct controls (0-255) - only Gain
     let u_r_gain = Number(gmGet(K.U_R_GAIN, 128));
     let u_g_gain = Number(gmGet(K.U_G_GAIN, 128));
     let u_b_gain = Number(gmGet(K.U_B_GAIN, 128));
 
-    // Auto scene match - Now enabled by default!
     let autoOn = !!gmGet(K.AUTO_ON, true);
-    let autoStrength = Number(gmGet(K.AUTO_STRENGTH, 0.65)); // 0..1
+    let autoStrength = Number(gmGet(K.AUTO_STRENGTH, 0.65));
     autoStrength = clamp(autoStrength, 0, 1);
-    let autoLockWB = !!gmGet(K.AUTO_LOCK_WB, true); // Default changed to TRUE!
+    let autoLockWB = !!gmGet(K.AUTO_LOCK_WB, true);
 
     const HK = { base: 'b', moody: 'd', teal: 'o', vib: 'v', icons: 'h' };
 
@@ -723,10 +716,8 @@
     function normHDR() { return snap0(roundTo(clamp(Number(hdr) || 0, -1.0, 2.0), 0.1), 0.05); }
     function normU(v) { return roundTo(clamp(Number(v) || 0, -10, 10), 0.1); }
     function uDelta(v) { return normU(v); }
-
-    // RGB helpers
     function normRGB(v) { return clamp(Math.round(Number(v) || 128), 0, 255); }
-    function rgbGainToFactor(v) { return (normRGB(v) / 128); } // 128 = 1.0, 0 = 0.0, 255 = 2.0
+    function rgbGainToFactor(v) { return (normRGB(v) / 128); }
 
     function getSharpenA() { return Math.max(0, normSL()) * 1.0; }
     function getBlurSigma() { return Math.max(0, -normSL()) * 1.0; }
@@ -742,14 +733,14 @@
         film: { name: 'Movie', color: '#00b050' },
         anime: { name: 'Anime', color: '#1e6fff' },
         gaming: { name: 'Gaming', color: '#ff2a2a' },
-        eyecare: { name: 'EyeCare', color: '#ffaa33' }, // Warm orange color
+        eyecare: { name: 'EyeCare', color: '#ffaa33' },
         user: { name: 'User', color: '#bfbfbf' }
     };
 
     const PROFILE_VIDEO_OUTLINE = false;
 
     // -------------------------
-    // 5x5 Color Matrix utils (Browser SVG feColorMatrix)
+    // 5x5 Color Matrix utils
     // -------------------------
     const LUMA = { r: 0.2126, g: 0.7152, b: 0.0722 };
 
@@ -764,7 +755,6 @@
 
     function matMul4x5(a, b) {
         const out = new Array(20);
-
         for (let row = 0; row < 4; row++) {
             for (let col = 0; col < 4; col++) {
                 let s = 0;
@@ -793,7 +783,6 @@
         const ir = (1 - s) * LUMA.r;
         const ig = (1 - s) * LUMA.g;
         const ib = (1 - s) * LUMA.b;
-
         return [
             ir + s, ig, ib, 0, 0,
             ir, ig + s, ib, 0, 0,
@@ -806,17 +795,14 @@
         const rad = (deg * Math.PI) / 180;
         const cosA = Math.cos(rad);
         const sinA = Math.sin(rad);
-
         const lr = LUMA.r, lg = LUMA.g, lb = LUMA.b;
 
         const a00 = lr + cosA * (1 - lr) + sinA * (-lr);
         const a01 = lg + cosA * (-lg) + sinA * (-lg);
         const a02 = lb + cosA * (-lb) + sinA * (1 - lb);
-
         const a10 = lr + cosA * (-lr) + sinA * (0.143);
         const a11 = lg + cosA * (1 - lg) + sinA * (0.140);
         const a12 = lb + cosA * (-lb) + sinA * (-0.283);
-
         const a20 = lr + cosA * (-lr) + sinA * (-(1 - lr));
         const a21 = lg + cosA * (-lg) + sinA * (lg);
         const a22 = lb + cosA * (1 - lb) + sinA * (lb);
@@ -829,7 +815,6 @@
         ];
     }
 
-    // RGB gain matrix
     function matRGBGain(rGain, gGain, bGain) {
         return [
             rGain, 0, 0, 0, 0,
@@ -843,7 +828,6 @@
         return m.map(x => (Math.abs(x) < 1e-10 ? '0' : Number(x).toFixed(6))).join(' ');
     }
 
-    // Auto matrix state (updated live without rebuilding SVG)
     let autoMatrixStr = matToSvgValues(matIdentity4x5());
     let _autoLastMatrixStr = autoMatrixStr;
 
@@ -946,7 +930,7 @@
         return currentFps * (1 - alpha) + targetFps * alpha;
     }
 
-    // ===================== NEU: ECHTE WEBGL2 PIPELINE =====================
+    // =====================  WEBGL2 CANVAS PIPELINE =====================
     let webglPipeline = null;
 
     class WebGL2Pipeline {
@@ -977,6 +961,11 @@
             this.vertexBuffer = null;
             this.texCoordBuffer = null;
 
+            // Original video parent and styles
+            this.originalParent = null;
+            this.originalNextSibling = null;
+            this.originalStyle = null;
+
             // Parameter cache
             this.params = {
                 contrast: 1.0,
@@ -1000,16 +989,13 @@
 
         init() {
             try {
-                // Create hidden canvas
+                // Create visible canvas that will replace the video
                 this.canvas = document.createElement('canvas');
                 this.canvas.id = WEBGL_CANVAS_ID;
-                this.canvas.style.position = 'absolute';
-                this.canvas.style.left = '-9999px';
-                this.canvas.style.top = '-9999px';
-                this.canvas.style.width = '0';
-                this.canvas.style.height = '0';
-                this.canvas.style.pointerEvents = 'none';
-                document.body.appendChild(this.canvas);
+                this.canvas.style.width = '100%';
+                this.canvas.style.height = '100%';
+                this.canvas.style.objectFit = 'contain';
+                this.canvas.style.display = 'block';
 
                 // Try WebGL2 first, fallback to WebGL1
                 let gl = this.canvas.getContext('webgl2', {
@@ -1020,7 +1006,7 @@
                 });
 
                 if (!gl) {
-                    gl = this.canvas.getContext('GPU', {
+                    gl = this.canvas.getContext('webgl', {
                         alpha: false,
                         antialias: true,
                         preserveDrawingBuffer: true
@@ -1043,7 +1029,7 @@
 
                 this.setupBuffers();
                 this.active = true;
-                log('WebGL2 Pipeline initialized successfully');
+                log('WebGL2 Canvas Pipeline initialized successfully');
                 return true;
             } catch (e) {
                 logW('WebGL init error:', e);
@@ -1113,7 +1099,7 @@
                     vec4 texColor = texture2D(uVideoTex, vTexCoord);
                     vec3 color = texColor.rgb;
 
-                    // RGB Gain - Jetzt korrekt implementiert!
+                    // RGB Gain
                     color.r *= uRGBGain.x;
                     color.g *= uRGBGain.y;
                     color.b *= uRGBGain.z;
@@ -1139,7 +1125,7 @@
                     color = (color - 0.5) * uParams.x + 0.5;
                     color *= uParams.z;
 
-                    // Gamma (approximiert)
+                    // Gamma
                     float gInv = 1.0 / clampFast(uParams2.x, 0.5, 2.0);
                     color.r = pow(color.r, gInv);
                     color.g = pow(color.g, gInv);
@@ -1175,7 +1161,6 @@
         setupShaders() {
             const gl = this.gl;
 
-            // Vertex shader
             const vertexShader = gl.createShader(gl.VERTEX_SHADER);
             gl.shaderSource(vertexShader, this.getVertexShader());
             gl.compileShader(vertexShader);
@@ -1185,7 +1170,6 @@
                 return false;
             }
 
-            // Fragment shader
             const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
             gl.shaderSource(fragmentShader, this.getFragmentShader());
             gl.compileShader(fragmentShader);
@@ -1195,7 +1179,6 @@
                 return false;
             }
 
-            // Program
             this.program = gl.createProgram();
             gl.attachShader(this.program, vertexShader);
             gl.attachShader(this.program, fragmentShader);
@@ -1206,7 +1189,6 @@
                 return false;
             }
 
-            // Get uniform locations
             gl.useProgram(this.program);
 
             this.uResolution = gl.getUniformLocation(this.program, 'uResolution');
@@ -1218,11 +1200,9 @@
             this.uProfileMatrix = gl.getUniformLocation(this.program, 'uProfileMatrix');
             this.uAutoMatrix = gl.getUniformLocation(this.program, 'uAutoMatrix');
 
-            // Attributes
             this.aPosition = gl.getAttribLocation(this.program, 'aPosition');
             this.aTexCoord = gl.getAttribLocation(this.program, 'aTexCoord');
 
-            // Set texture unit
             gl.uniform1i(this.uVideoTex, 0);
 
             return true;
@@ -1231,7 +1211,6 @@
         setupBuffers() {
             const gl = this.gl;
 
-            // Fullscreen quad vertices
             const vertices = new Float32Array([
                 -1.0, -1.0,
                  1.0, -1.0,
@@ -1243,7 +1222,6 @@
             gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
             gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
 
-            // Texture coordinates
             const texCoords = new Float32Array([
                 0.0, 0.0,
                 1.0, 0.0,
@@ -1263,6 +1241,11 @@
 
             this.video = video;
 
+            // Save original position in DOM
+            this.originalParent = video.parentNode;
+            this.originalNextSibling = video.nextSibling;
+            this.originalStyle = video.style.cssText;
+
             // Create texture if needed
             if (!this.videoTexture) {
                 const gl = this.gl;
@@ -1274,17 +1257,36 @@
                 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
             }
 
+            // Replace video with canvas
+            if (this.originalParent) {
+                // Hide original video
+                video.style.position = 'absolute';
+                video.style.opacity = '0';
+                video.style.pointerEvents = 'none';
+                video.style.width = '1px';
+                video.style.height = '1px';
+
+                // Insert canvas in its place
+                if (this.originalNextSibling) {
+                    this.originalParent.insertBefore(this.canvas, this.originalNextSibling);
+                } else {
+                    this.originalParent.appendChild(this.canvas);
+                }
+
+                // Copy dimensions
+                this.canvas.width = video.videoWidth || 640;
+                this.canvas.height = video.videoHeight || 360;
+            }
+
             this.startRenderLoop();
             return true;
         }
 
         updateParams() {
-            // Convert UI state to shader parameters
             let contrast = 1.0 + (u_contrast * 0.04);
             let saturation = 1.0 + (u_sat * 0.05);
             let brightness = 1.0 + (u_black * -0.012) + (u_white * 0.012);
 
-            // RGB Gain - Jetzt werden die Werte korrekt konvertiert
             let rGain = u_r_gain / 128.0;
             let gGain = u_g_gain / 128.0;
             let bGain = u_b_gain / 128.0;
@@ -1348,8 +1350,7 @@
                 sinHue: Math.sin(hueRad)
             };
 
-            // Debug-Ausgabe für RGB-Gain
-            if (LOG.on) {
+            if (LOG.on && (performance.now() - LOG.lastTickMs) > 5000) {
                 log('RGB Gain:', this.params.rGain.toFixed(2), this.params.gGain.toFixed(2), this.params.bGain.toFixed(2));
             }
         }
@@ -1379,10 +1380,8 @@
 
                 this.updateParams();
 
-                // Update uniforms
                 gl.useProgram(this.program);
 
-                // Hauptparameter
                 gl.uniform4f(this.uParams,
                     this.params.contrast,
                     this.params.saturation,
@@ -1390,7 +1389,6 @@
                     this.params.sharpen
                 );
 
-                // Sekundäre Parameter
                 gl.uniform4f(this.uParams2,
                     this.params.gamma,
                     this.params.grain,
@@ -1398,7 +1396,6 @@
                     this.params.hdr
                 );
 
-                // RGB Gain
                 gl.uniform4f(this.uRGBGain,
                     this.params.rGain,
                     this.params.gGain,
@@ -1406,28 +1403,25 @@
                     1.0
                 );
 
-                // Hue Rotation
                 gl.uniform2f(this.uHueRotate,
                     this.params.cosHue,
                     this.params.sinHue
                 );
 
-                // Profile matrix
+                // Profile matrix (Identity for now)
                 let profMatrix = new Float32Array(16);
                 profMatrix[0] = 1; profMatrix[5] = 1; profMatrix[10] = 1; profMatrix[15] = 1;
                 gl.uniformMatrix4fv(this.uProfileMatrix, false, profMatrix);
 
-                // Auto matrix
+                // Auto matrix (Identity for now)
                 let autoMatrix = new Float32Array(16);
                 autoMatrix[0] = 1; autoMatrix[5] = 1; autoMatrix[10] = 1; autoMatrix[15] = 1;
                 gl.uniformMatrix4fv(this.uAutoMatrix, false, autoMatrix);
 
-                // Upload video frame
                 gl.activeTexture(gl.TEXTURE0);
                 gl.bindTexture(gl.TEXTURE_2D, this.videoTexture);
                 gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
 
-                // Setup attributes
                 gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
                 gl.enableVertexAttribArray(this.aPosition);
                 gl.vertexAttribPointer(this.aPosition, 2, gl.FLOAT, false, 0, 0);
@@ -1436,66 +1430,11 @@
                 gl.enableVertexAttribArray(this.aTexCoord);
                 gl.vertexAttribPointer(this.aTexCoord, 2, gl.FLOAT, false, 0, 0);
 
-                // Draw
                 gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
-                // CSS-Filter
-                this.applyCSSFilter();
             } catch (e) {
                 logW('WebGL render error:', e);
             }
-        }
-
-        applyCSSFilter() {
-            if (!this.video) return;
-
-            // Build CSS filter string
-            let filters = [];
-
-            if (enabled) {
-                filters.push('brightness(1.02) contrast(1.05) saturate(1.21)');
-            }
-
-            const slVal = normSL();
-            if (slVal > 0) {
-                filters.push(`contrast(${1 + slVal * 0.2})`);
-            }
-
-            if (darkMoody) {
-                filters.push('brightness(0.96) saturate(0.92)');
-            }
-
-            if (vibrantSat) {
-                filters.push('saturate(1.35)');
-            }
-
-            if (profile === 'eyecare') {
-                filters.push('brightness(1.06) contrast(0.94) saturate(0.85) hue-rotate(-18deg) sepia(0.25)');
-            } else if (profile === 'film') {
-                filters.push('brightness(1.01) contrast(1.08) saturate(1.08)');
-            } else if (profile === 'anime') {
-                filters.push('brightness(1.03) contrast(1.10) saturate(1.16)');
-            } else if (profile === 'gaming') {
-                filters.push('brightness(1.01) contrast(1.12) saturate(1.06)');
-            }
-
-            if (profile === 'user') {
-                if (u_contrast !== 0) filters.push(`contrast(${1 + u_contrast * 0.04})`);
-                if (u_sat !== 0) filters.push(`saturate(${1 + u_sat * 0.05})`);
-                if (u_hue !== 0) filters.push(`hue-rotate(${u_hue * 3}deg)`);
-            }
-
-            // RGB Gain via CSS
-            if (u_r_gain !== 128 || u_g_gain !== 128 || u_b_gain !== 128) {
-                
-                let avgGain = (u_r_gain + u_g_gain + u_b_gain) / (3 * 128);
-                filters.push(`brightness(${avgGain.toFixed(2)})`);
-            }
-
-            const filterString = filters.length > 0 ? filters.join(' ') : 'none';
-            this.video.style.filter = filterString;
-            this.video.style.transform = 'translateZ(0)';
-            this.video.style.willChange = 'filter';
         }
 
         startRenderLoop() {
@@ -1520,9 +1459,25 @@
                 this.rafId = null;
             }
 
-            // Clean up CSS
-            if (this.video) {
-                this.video.style.filter = '';
+            // Restore original video
+            if (this.video && this.originalParent) {
+                this.video.style.cssText = this.originalStyle || '';
+                this.video.style.position = '';
+                this.video.style.opacity = '';
+                this.video.style.pointerEvents = '';
+                this.video.style.width = '';
+                this.video.style.height = '';
+
+                if (this.originalNextSibling) {
+                    this.originalParent.insertBefore(this.video, this.originalNextSibling);
+                } else {
+                    this.originalParent.appendChild(this.video);
+                }
+            }
+
+            // Remove canvas
+            if (this.canvas && this.canvas.parentNode) {
+                this.canvas.parentNode.removeChild(this.canvas);
             }
 
             // Clean up WebGL resources
@@ -1532,11 +1487,6 @@
                 if (this.videoTexture) gl.deleteTexture(this.videoTexture);
                 if (this.vertexBuffer) gl.deleteBuffer(this.vertexBuffer);
                 if (this.texCoordBuffer) gl.deleteBuffer(this.texCoordBuffer);
-            }
-
-            // Remove canvas
-            if (this.canvas && this.canvas.parentNode) {
-                this.canvas.parentNode.removeChild(this.canvas);
             }
         }
     }
@@ -1565,15 +1515,13 @@
     }
 
     // -------------------------
-    // GPU PIPELINE MODE - MODIFIED for WebGL
+    // GPU PIPELINE MODE - Fallback
     // -------------------------
     function getGpuFilterString() {
-        // Original function kept but modified to use WebGL
         if (webglPipeline && webglPipeline.active) {
-            return 'none'; // WebGL handles it internally
+            return 'none';
         }
 
-        // Fallback to CSS filters if WebGL not active
         const filters = [];
 
         if (enabled) {
@@ -1678,7 +1626,7 @@
     }
 
     // -------------------------
-    // Auto Scene Match
+    // Auto Scene Match (UNCHANGED)
     // -------------------------
     let _autoLastStyleStamp = 0;
     const AUTO_LEVELS = [2, 4, 6, 8, 10];
@@ -2366,7 +2314,7 @@
     }
 
     // -------------------------
-    // Overlay infrastructure
+    // Overlay infrastructure (UNCHANGED - gekürzt für Antwort)
     // -------------------------
     const overlaysMain = new WeakMap();
     const overlaysGrade = new WeakMap();
@@ -2392,9 +2340,6 @@
         ].forEach(ev => el.addEventListener(ev, stop, { passive: true }));
     }
 
-    // -------------------------
-    // Main overlay (UNCHANGED)
-    // -------------------------
     function mkMainOverlay() {
         const overlay = document.createElement('div');
         overlay.className = 'gvf-video-overlay-main';
@@ -2529,9 +2474,6 @@
         return overlay;
     }
 
-    // -------------------------
-    // Grading overlay (UNCHANGED)
-    // -------------------------
     function mkGradingOverlay() {
         const overlay = document.createElement('div');
         overlay.className = 'gvf-video-overlay-grade';
@@ -2689,9 +2631,6 @@
         return overlay;
     }
 
-    // -------------------------
-    // Settings Import/Export overlay (UNCHANGED)
-    // -------------------------
     function mkIOOverlay() {
         const overlay = document.createElement('div');
         overlay.className = 'gvf-video-overlay-io';
@@ -2916,9 +2855,6 @@
         return overlay;
     }
 
-    // -------------------------
-    // Scopes HUD (UNCHANGED)
-    // -------------------------
     function mkScopesOverlay() {
         const overlay = document.createElement('div');
         overlay.className = 'gvf-video-overlay-scopes';
@@ -3499,7 +3435,7 @@
     function toggleRenderMode() {
         renderMode = renderMode === 'svg' ? 'gpu' : 'svg';
         gmSet(K.RENDER_MODE, renderMode);
-        logToggle('Render Mode (Ctrl+Alt+X)', renderMode === 'gpu', `Mode: ${renderMode === 'gpu' ? 'WebGL2 Pipeline' : 'SVG'}`);
+        logToggle('Render Mode (Ctrl+Alt+X)', renderMode === 'gpu', `Mode: ${renderMode === 'gpu' ? 'WebGL2 Canvas Pipeline' : 'SVG'}`);
 
         if (renderMode === 'gpu') {
             deactivateSVGMode();
@@ -3649,16 +3585,13 @@
     }
 
     function applyGpuFilter() {
-        // Wenn WebGL aktiv ist, nutzen wir das für die Filter
         if (renderMode === 'gpu' && webglPipeline && webglPipeline.active) {
-            // WebGL übernimmt die Filter, wir müssen nur sicherstellen dass CSS zurückgesetzt wird
             let style = document.getElementById(STYLE_ID);
             if (style) style.remove();
             scheduleOverlayUpdate();
             return;
         }
 
-        // Fallback zu CSS/SVG wenn WebGL nicht verfügbar
         let style = document.getElementById(STYLE_ID);
 
         const nothingOn =
@@ -3732,7 +3665,7 @@
             let on = !!state[key];
 
             if (key === 'mode') {
-                el.textContent = renderMode === 'gpu' ? 'G' : 'S';
+                el.textContent = renderMode === 'gpu' ? 'C' : 'S';
                 on = true;
                 el.style.color = renderMode === 'gpu' ? '#ffaa00' : '#88ccff';
                 el.style.background = 'rgba(255,255,255,0.15)';
@@ -4934,7 +4867,7 @@
 
         if (scopesHudShown) startScopesLoop();
 
-        log('Init complete with WebGL2 GPU Pipeline! RGB Gain now works correctly!', {
+        log('Init complete with WebGL2 Canvas Pipeline! RGB Gain now works correctly!', {
             enabled, darkMoody, tealOrange, vibrantSat, iconsShown,
             hdr: normHDR(), profile, renderMode,
             autoOn, autoStrength: Number(autoStrength.toFixed(2)), autoLockWB,
