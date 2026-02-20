@@ -3,9 +3,9 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.4.9
-// @description  Global Video Filter Overlay with TRUE WebGL2 CANVAS PIPELINE! Videos are rendered through WebGL canvas for maximum performance and accurate RGB gain!
-// @description:de  Globale Video Filter Overlay mit ECHTER WebGL2 CANVAS PIPELINE! Videos werden durch WebGL-Canvas gerendert für maximale Performance und akkuraten RGB-Gain!
+// @version      1.5.0
+// @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
+// @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
 // @run-at       document-idle
 // @grant        GM_getValue
@@ -1640,9 +1640,9 @@
     };
     const AUTO = {
         baseFps: 2,
-        boostMs: 1200,
+        boostMs: 800,
         minBoostIdx: 3,
-        minBoostEarlyMs: 450,
+        minBoostEarlyMs: 700,
         minBoostEarlyIdx: 4,
         minArea: 64 * 64,
         canvasW: 96,
@@ -1655,19 +1655,19 @@
         tgt: { br: 1.0, ct: 1.0, sat: 1.0, hue: 0.0 },
 
         scoreEma: 0,
-        scoreAlpha: 0.35,
+        scoreAlpha: 0.16,
 
         lastLuma: null,
         motionEma: 0,
-        motionAlpha: 0.55,
-        motionThresh: 0.0045,
-        motionMinFrames: 2,
+        motionAlpha: 0.30,
+        motionThresh: 0.0075,
+        motionMinFrames: 5,
         motionFrames: 0,
 
         lastAppliedMs: 0,
 
         statsEma: null,
-        statsAlpha: 0.22,
+        statsAlpha: 0.12,
         lastStatsMs: 0,
 
         blink: false,
@@ -1931,7 +1931,11 @@
         return d;
     }
 
-    function approach(cur, tgt, a) { return cur + (tgt - cur) * a; }
+    function approach(cur, tgt, a, dead=0.002) {
+        const d = tgt - cur;
+        if (Math.abs(d) < dead) return tgt;
+        return cur + d * a;
+    }
 
     function updateStatsAveraging(sig) {
         const a = clamp(AUTO.statsAlpha, 0.05, 0.95);
@@ -1978,11 +1982,11 @@
     }
 
     function updateAutoSmoothing(isCut) {
-        const a = isCut ? 0.32 : 0.09;
-        AUTO.cur.br = approach(AUTO.cur.br, AUTO.tgt.br, a);
-        AUTO.cur.ct = approach(AUTO.cur.ct, AUTO.tgt.ct, a);
-        AUTO.cur.sat = approach(AUTO.cur.sat, AUTO.tgt.sat, a);
-        AUTO.cur.hue = approach(AUTO.cur.hue, AUTO.tgt.hue, a);
+        const a = isCut ? 0.16 : 0.05;
+        AUTO.cur.br  = approach(AUTO.cur.br,  AUTO.tgt.br,  a, 0.003);
+        AUTO.cur.ct  = approach(AUTO.cur.ct,  AUTO.tgt.ct,  a, 0.003);
+        AUTO.cur.sat = approach(AUTO.cur.sat, AUTO.tgt.sat, a, 0.004);
+        AUTO.cur.hue = approach(AUTO.cur.hue, AUTO.tgt.hue, a, 0.06);
         AUTO.cur.hue = wrapHueDeg(AUTO.cur.hue);
     }
 
@@ -2015,7 +2019,7 @@
         AUTO.lastAppliedMs = nowMs();
 
         const t = nowMs();
-        if ((t - _autoLastStyleStamp) < 35) return;
+        if ((t - _autoLastStyleStamp) < 150) return;
         _autoLastStyleStamp = t;
 
         if (LOG.on && (t - LOG.lastToneMs) >= LOG.toneEveryMs) {
