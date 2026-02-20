@@ -3,7 +3,7 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.5.0
+// @version      1.5.1
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
@@ -46,8 +46,8 @@
     // -------------------------
     // LOG + DEBUG SWITCH
     // -------------------------
-    const logs = true;    // console logs
-    const debug = false;    // visual debug (Auto-dot)
+    let logs = true;    // console logs
+    let debug = false;    // visual debug (Auto-dot)
 
     // -------------------------
     // CSS.escape Polyfill
@@ -102,7 +102,10 @@
 
         AUTO_ON: 'gvf_auto_on',
         AUTO_STRENGTH: 'gvf_auto_strength',
-        AUTO_LOCK_WB: 'gvf_auto_lock_wb'
+        AUTO_LOCK_WB: 'gvf_auto_lock_wb',
+
+        LOGS: 'gvf_logs',
+        DEBUG: 'gvf_debug'
     };
 
     // -------------------------
@@ -122,6 +125,10 @@
     // -------------------------
     let _inSync = false;
     let _suspendSync = false;
+
+    // Debug/Load Einstellungen aus Storage laden
+    logs = !!gmGet(K.LOGS, true);
+    debug = !!gmGet(K.DEBUG, true);
 
     // -------------------------
     // INSTANT SVG REGENERATION
@@ -657,6 +664,30 @@
     function log(...a) { if (!LOG.on) return; try { console.log(LOG.tag, ...a); } catch (_) { } }
     function logW(...a) { if (!LOG.on) return; try { console.warn(LOG.tag, ...a); } catch (_) { } }
     function logToggle(name, state, extra) { log(`${name}:`, state ? 'ON' : 'OFF', extra || ''); }
+
+    // Debug Toggle Funktion
+    function toggleDebug() {
+        debug = !debug;
+        logs = debug; // Logs同步 mit Debug
+        gmSet(K.DEBUG, debug);
+        gmSet(K.LOGS, logs);
+
+        LOG.on = logs;
+
+        logToggle('Debug Mode', debug);
+        logToggle('Console Logs', logs);
+
+        // Auto-Dot sofort aktualisieren
+        setAutoDotState(autoOn ? (debug ? 'idle' : 'off') : 'off');
+        scheduleOverlayUpdate();
+
+        // Kurze Bestätigung im Console
+        if (debug) {
+            console.log('%c[GVF] Debug Mode ACTIVATED - Visual debug dots visible', 'color: #00ff00; font-weight: bold');
+        } else {
+            console.log('%c[GVF] Debug Mode DEACTIVATED - Visual debug dots hidden', 'color: #ff6666; font-weight: bold');
+        }
+    }
 
     // -------------------------
     // Global state
@@ -1740,7 +1771,7 @@
     function applyAutoDotStyle(dotEl) {
         if (!dotEl) return;
 
-        if (!autoOn || autoDotMode === 'off') {
+        if (!autoOn || autoDotMode === 'off' || !debug) {
             dotEl.style.display = 'none';
             return;
         }
@@ -2318,7 +2349,7 @@
     }
 
     // -------------------------
-    // Overlay infrastructure (UNCHANGED - gekürzt für Antwort)
+    // Overlay infrastructure
     // -------------------------
     const overlaysMain = new WeakMap();
     const overlaysGrade = new WeakMap();
@@ -2720,6 +2751,20 @@
         const btnImportFile = mkBtn('Import .json');
         const btnShot = mkBtn('Screenshot');
         const btnRec = mkBtn('Record');
+        // NEU: Debug Toggle Button
+        const btnDebug = mkBtn(debug ? 'Debug: ON' : 'Debug: OFF');
+        btnDebug.style.background = debug ? 'rgba(0,255,0,0.2)' : 'rgba(255,0,0,0.2)';
+        btnDebug.style.border = debug ? '1px solid #00ff00' : '1px solid #ff0000';
+        btnDebug.style.color = debug ? '#00ff00' : '#ff6666';
+
+        btnDebug.addEventListener('click', () => {
+            toggleDebug();
+            btnDebug.textContent = debug ? 'Debug: ON' : 'Debug: OFF';
+            btnDebug.style.background = debug ? 'rgba(0,255,0,0.2)' : 'rgba(255,0,0,0.2)';
+            btnDebug.style.border = debug ? '1px solid #00ff00' : '1px solid #ff0000';
+            btnDebug.style.color = debug ? '#00ff00' : '#ff6666';
+            status.textContent = debug ? 'Debug mode activated' : 'Debug mode deactivated';
+        });
 
         overlay.__btnRec = btnRec;
         overlay.__status = status;
@@ -2847,6 +2892,7 @@
         row.appendChild(btnImportFile);
         row.appendChild(btnShot);
         row.appendChild(btnRec);
+        row.appendChild(btnDebug); // Debug Button einfügen
         row.appendChild(btnReset);
 
         box.appendChild(ta);
@@ -3297,7 +3343,9 @@
                 r_gain: Math.round(normRGB(u_r_gain)),
                 g_gain: Math.round(normRGB(u_g_gain)),
                 b_gain: Math.round(normRGB(u_b_gain))
-            }
+            },
+            debug: !!debug,
+            logs: !!logs
         };
     }
 
@@ -3340,6 +3388,16 @@
             if ('autoOn' in obj) autoOn = !!obj.autoOn;
             if ('autoStrength' in obj) autoStrength = clamp(Number(obj.autoStrength), 0, 1);
             if ('autoLockWB' in obj) autoLockWB = !!obj.autoLockWB;
+
+            if ('debug' in obj) {
+                debug = !!obj.debug;
+                gmSet(K.DEBUG, debug);
+            }
+            if ('logs' in obj) {
+                logs = !!obj.logs;
+                gmSet(K.LOGS, logs);
+                LOG.on = logs;
+            }
 
             if ('contrast' in u) u_contrast = normU(u.contrast);
             if ('black' in u) u_black = normU(u.black);
@@ -3794,6 +3852,15 @@
                     }
                 }
             }
+
+            // Debug Button aktualisieren
+            const btnDebug = Array.from(overlay.querySelectorAll('button')).find(b => b.textContent.startsWith('Debug'));
+            if (btnDebug) {
+                btnDebug.textContent = debug ? 'Debug: ON' : 'Debug: OFF';
+                btnDebug.style.background = debug ? 'rgba(0,255,0,0.2)' : 'rgba(255,0,0,0.2)';
+                btnDebug.style.border = debug ? '1px solid #00ff00' : '1px solid #ff0000';
+                btnDebug.style.color = debug ? '#00ff00' : '#ff6666';
+            }
         } catch (_) { }
 
         const ta = overlay.querySelector('.gvf-io-text');
@@ -4205,9 +4272,8 @@
         return ct;
     }
 
-    function mkProfileMatrixCT(inId, outId, prof) {
+    function mkProfileMatrixCT(prof) {
         const cm = document.createElementNS(svgNS, 'feColorMatrix');
-        cm.setAttribute('in', inId);
         cm.setAttribute('type', 'matrix');
 
         let values = null;
@@ -4241,7 +4307,6 @@
         }
 
         cm.setAttribute('values', values);
-        cm.setAttribute('result', outId);
         return cm;
     }
 
@@ -4462,8 +4527,10 @@
         }
 
         if (prof && (prof === 'film' || prof === 'anime' || prof === 'gaming' || prof === 'eyecare')) {
-            const pm = mkProfileMatrixCT(last, 'r_prof', prof);
+            const pm = mkProfileMatrixCT(prof);
             if (pm) {
+                pm.setAttribute('in', last);
+                pm.setAttribute('result', 'r_prof');
                 filter.appendChild(pm);
                 last = 'r_prof';
 
@@ -4728,6 +4795,11 @@
                 autoStrength = clamp(Number(gmGet(K.AUTO_STRENGTH, autoStrength)), 0, 1);
                 autoLockWB = !!gmGet(K.AUTO_LOCK_WB, autoLockWB);
 
+                // Debug/Load Einstellungen aus Storage laden
+                logs = !!gmGet(K.LOGS, logs);
+                debug = !!gmGet(K.DEBUG, debug);
+                LOG.on = logs;
+
                 setAutoOn(autoOn);
 
                 if (renderMode === 'gpu') {
@@ -4849,7 +4921,10 @@
         gmSet(K.AUTO_STRENGTH, autoStrength);
         gmSet(K.AUTO_LOCK_WB, autoLockWB);
 
-        setAutoDotState(autoOn ? 'idle' : 'off');
+        gmSet(K.LOGS, logs);
+        gmSet(K.DEBUG, debug);
+
+        setAutoDotState(autoOn ? (debug ? 'idle' : 'off') : 'off');
 
         autoMatrixStr = matToSvgValues(autoOn ? buildAutoMatrixValues() : matIdentity4x5());
         _autoLastMatrixStr = autoMatrixStr;
@@ -4882,7 +4957,9 @@
             motionMinFrames: AUTO.motionMinFrames,
             statsAlpha: AUTO.statsAlpha,
             gpuPipeline: renderMode === 'gpu',
-            branchlessShader: true
+            branchlessShader: true,
+            debug: debug,
+            logs: logs
         });
 
         document.addEventListener('keydown', (e) => {
