@@ -3,7 +3,7 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.5.2
+// @version      1.5.3
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
@@ -47,7 +47,7 @@
     // LOG + DEBUG SWITCH
     // -------------------------
     let logs = true;    // console logs
-    let debug = false;    // visual debug (Auto-dot)
+    let debug = false;    // visual debug (Auto-dot) - DEFAULT FALSE
 
     // -------------------------
     // CSS.escape Polyfill
@@ -105,7 +105,10 @@
         AUTO_LOCK_WB: 'gvf_auto_lock_wb',
 
         LOGS: 'gvf_logs',
-        DEBUG: 'gvf_debug'
+        DEBUG: 'gvf_debug',
+
+        // Color blindness filter
+        CB_FILTER: 'gvf_cb_filter'
     };
 
     // -------------------------
@@ -126,9 +129,9 @@
     let _inSync = false;
     let _suspendSync = false;
 
-    // Debug/Load Storage 
+    // Debug/Load settings from storage
     logs = !!gmGet(K.LOGS, true);
-    debug = !!gmGet(K.DEBUG, false);
+    debug = !!gmGet(K.DEBUG, false); // Default false
 
     // -------------------------
     // INSTANT SVG REGENERATION
@@ -665,10 +668,10 @@
     function logW(...a) { if (!LOG.on) return; try { console.warn(LOG.tag, ...a); } catch (_) { } }
     function logToggle(name, state, extra) { log(`${name}:`, state ? 'ON' : 'OFF', extra || ''); }
 
-    // Debug Toggle
+    // Debug Toggle Function
     function toggleDebug() {
         debug = !debug;
-        logs = debug;
+        logs = debug; // Sync logs with debug
         gmSet(K.DEBUG, debug);
         gmSet(K.LOGS, logs);
 
@@ -677,10 +680,11 @@
         logToggle('Debug Mode', debug);
         logToggle('Console Logs', logs);
 
-        // Auto-Dot
+        // Update Auto-Dot immediately
         setAutoDotState(autoOn ? (debug ? 'idle' : 'off') : 'off');
         scheduleOverlayUpdate();
 
+        // Short confirmation in console
         if (debug) {
             console.log('%c[GVF] Debug Mode ACTIVATED - Visual debug dots visible', 'color: #00ff00; font-weight: bold');
         } else {
@@ -736,6 +740,10 @@
     autoStrength = clamp(autoStrength, 0, 1);
     let autoLockWB = !!gmGet(K.AUTO_LOCK_WB, true);
 
+    // Color blindness filter
+    let cbFilter = String(gmGet(K.CB_FILTER, 'none')).toLowerCase();
+    if (!['none', 'protanopia', 'deuteranopia', 'tritanomaly'].includes(cbFilter)) cbFilter = 'none';
+
     const HK = { base: 'b', moody: 'd', teal: 'o', vib: 'v', icons: 'h' };
 
     function normSL() { return snap0(roundTo(clamp(Number(sl) || 0, -2, 2), 0.1), 0.05); }
@@ -768,6 +776,54 @@
     };
 
     const PROFILE_VIDEO_OUTLINE = false;
+
+    // -------------------------
+    // Color blindness filter matrices
+    // -------------------------
+    function getColorBlindnessMatrix(type, strength = 1.0) {
+
+    const k = Math.max(0, Math.min(1, strength));
+
+    // Helper: lerp a matrix towards identity by strength (so k=0 => no change)
+    const I = matIdentity4x5();
+    const mix = (M) => M.map((v, i) => I[i] + (v - I[i]) * k);
+
+    if (type === 'protanopia') {
+
+        const M = [
+            0.90, 0.10, 0.00, 0, 0,
+            0.15, 0.85, 0.00, 0, 0,
+            0.35,-0.35, 1.00, 0, 0,
+            0,    0,    0,    1, 0
+        ];
+        return mix(M);
+    }
+
+    if (type === 'deuteranopia') {
+
+        const M = [
+            0.85, 0.15, 0.00, 0, 0,
+            0.05, 0.95, 0.00, 0, 0,
+           -0.35, 0.35, 1.00, 0, 0,
+            0,    0,    0,    1, 0
+        ];
+        return mix(M);
+    }
+
+    if (type === 'tritanomaly' || type === 'tritanopia') {
+
+        const M = [
+            1.00, 0.00, 0.35, 0, 0,
+            0.00, 1.00, 0.35, 0, 0,
+            0.00, 0.00, 1.00, 0, 0,
+            0,    0,    0,    1, 0
+        ];
+        return mix(M);
+    }
+
+
+    return matIdentity4x5();
+    }
 
     // -------------------------
     // 5x5 Color Matrix utils
@@ -960,7 +1016,7 @@
         return currentFps * (1 - alpha) + targetFps * alpha;
     }
 
-    // ===================== WEBGL2 CANVAS PIPELINE =====================
+    // ===================== NEW: REAL WEBGL2 CANVAS PIPELINE =====================
     let webglPipeline = null;
 
     class WebGL2Pipeline {
@@ -1643,6 +1699,17 @@
             if (u_gamma !== 0) {
                 const g = 1 + (u_gamma * 0.025);
                 filters.push(`brightness(${g.toFixed(2)})`);
+            }
+        }
+
+        // Color blindness filter for GPU mode
+        if (cbFilter !== 'none') {
+            if (cbFilter === 'protanopia') {
+                filters.push('contrast(1.05) saturate(0.9)');
+            } else if (cbFilter === 'deuteranopia') {
+                filters.push('contrast(1.05) saturate(0.9) hue-rotate(5deg)');
+            } else if (cbFilter === 'tritanomaly') {
+                filters.push('contrast(1.02) saturate(0.95) hue-rotate(-5deg)');
             }
         }
 
@@ -2646,7 +2713,7 @@
         overlay.appendChild(mkRow('U_SHARP', 'Sharpen', () => normU(u_sharp), (v) => { u_sharp = v; }, K.U_SHARP));
         overlay.appendChild(mkRow('U_GAMMA', 'Gamma', () => normU(u_gamma), (v) => { u_gamma = v; }, K.U_GAMMA));
         overlay.appendChild(mkRow('U_GRAIN', 'Grain (Banding)', () => normU(u_grain), (v) => { u_grain = v; }, K.U_GRAIN));
-        overlay.appendChild(mkRow('U_HUE', 'Hue-Correction', () => normU(u_hue), (v) => { u_hue = v; }, K.U_HUE));
+        overlay.appendChild(mkRow('U_HUE', 'Hue Correction', () => normU(u_hue), (v) => { u_hue = v; }, K.U_HUE));
 
         const sep = document.createElement('div');
         sep.style.cssText = `height:1px;background:rgba(255,255,255,0.14);margin:8px 0;`;
@@ -2656,10 +2723,74 @@
         overlay.appendChild(mkRGBRow('U_G_GAIN', 'G Gain (0-255)', () => normRGB(u_g_gain), (v) => { u_g_gain = v; }, K.U_G_GAIN, '#6bff6b'));
         overlay.appendChild(mkRGBRow('U_B_GAIN', 'B Gain (0-255)', () => normRGB(u_b_gain), (v) => { u_b_gain = v; }, K.U_B_GAIN, '#6b6bff'));
 
-        const hint = document.createElement('div');
-        hint.style.cssText = `font-size:9px;color:#888;text-align:center;padding:4px;`;
-        hint.textContent = 'Gain: 128=1.0, <128 darker, >128 brighter';
-        overlay.appendChild(hint);
+        // Add color blindness filter dropdown
+        const cbSep = document.createElement('div');
+        cbSep.style.cssText = `height:1px;background:rgba(255,255,255,0.14);margin:8px 0;`;
+        overlay.appendChild(cbSep);
+
+        const cbSection = document.createElement('div');
+        cbSection.style.cssText = `
+      display:flex;align-items:center;gap:8px;padding: 6px 8px;border-radius: 10px;
+      background: rgba(0,0,0,0.92);box-shadow: 0 0 0 1px rgba(255,255,255,0.14) inset;
+      margin-top: 4px;
+    `;
+
+        const cbLabel = document.createElement('div');
+        cbLabel.textContent = 'Color Blind';
+        cbLabel.style.cssText = `
+      min-width: 100px;text-align:left;font-size: 11px;font-weight: 900;
+      color:#cfcfcf;padding-left: 2px;
+    `;
+
+        const cbSelect = document.createElement('select');
+        cbSelect.dataset.gvfSelect = 'cb_filter';
+        cbSelect.style.cssText = `
+      width: 120px;background: rgba(30,30,30,0.9);color: #eaeaea;
+      border: 1px solid rgba(255,255,255,0.2);border-radius: 6px;
+      padding: 4px;font-size: 11px;font-weight: 900;cursor: pointer;
+    `;
+
+        const options = [
+            { value: 'none', text: 'None' },
+            { value: 'protanopia', text: 'Protanopia (Red-Green)' },
+            { value: 'deuteranopia', text: 'Deuteranopia (Green-Red)' },
+            { value: 'tritanomaly', text: 'Tritanomaly (Blue-Yellow)' }
+        ];
+
+        options.forEach(opt => {
+            const option = document.createElement('option');
+            option.value = opt.value;
+            option.textContent = opt.text;
+            if (opt.value === cbFilter) {
+                option.selected = true;
+            }
+            cbSelect.appendChild(option);
+        });
+
+        stopEventsOn(cbSelect);
+
+        cbSelect.addEventListener('change', () => {
+            const newVal = cbSelect.value;
+            if (newVal === cbFilter) return;
+
+            cbFilter = newVal;
+            gmSet(K.CB_FILTER, cbFilter);
+            log('Color blindness filter:', cbFilter);
+
+            if (renderMode === 'gpu') {
+                applyGpuFilter();
+            } else {
+                regenerateSvgImmediately();
+            }
+            scheduleOverlayUpdate();
+        });
+
+        const cbHint = document.createElement('div');
+
+        cbSection.appendChild(cbLabel);
+        cbSection.appendChild(cbSelect);
+        cbSection.appendChild(cbHint);
+        overlay.appendChild(cbSection);
 
         (document.body || document.documentElement).appendChild(overlay);
         return overlay;
@@ -2750,7 +2881,7 @@
         const btnImportFile = mkBtn('Import .json');
         const btnShot = mkBtn('Screenshot');
         const btnRec = mkBtn('Record');
-        // NEU: Debug Toggle Button
+        // NEW: Debug Toggle Button
         const btnDebug = mkBtn(debug ? 'Debug: ON' : 'Debug: OFF');
         btnDebug.style.background = debug ? 'rgba(0,255,0,0.2)' : 'rgba(255,0,0,0.2)';
         btnDebug.style.border = debug ? '1px solid #00ff00' : '1px solid #ff0000';
@@ -2856,7 +2987,7 @@
             }
         });
 
-        // Reset to defaults mit debug = false
+        // Reset to defaults with debug = false
         btnReset.addEventListener('click', () => {
             const defaults = {
                 enabled: true, darkMoody: true, tealOrange: false, vibrantSat: false, iconsShown: false,
@@ -2871,15 +3002,16 @@
                     contrast: 0, black: 0, white: 0, highlights: 0, shadows: 0, saturation: 0, vibrance: 0, sharpen: 0, gamma: 0, grain: 0, hue: 0,
                     r_gain: 128, g_gain: 128, b_gain: 128
                 },
-                debug: false,  // Debug standardmäßig false
-                logs: true
+                debug: false,  // Debug default false
+                logs: true,
+                cbFilter: 'none'  // Color blindness filter default none
             };
             importSettings(defaults);
             setDirty(false);
             ta.value = JSON.stringify(exportSettings(), null, 2);
             status.textContent = 'Reset + applied.';
 
-            // Debug Button aktualisieren
+            // Update Debug button
             btnDebug.textContent = 'Debug: OFF';
             btnDebug.style.background = 'rgba(255,0,0,0.2)';
             btnDebug.style.border = '1px solid #ff0000';
@@ -2900,7 +3032,7 @@
         row.appendChild(btnImportFile);
         row.appendChild(btnShot);
         row.appendChild(btnRec);
-        row.appendChild(btnDebug); // Debug Button einfügen
+        row.appendChild(btnDebug);
         row.appendChild(btnReset);
 
         box.appendChild(ta);
@@ -3353,7 +3485,8 @@
                 b_gain: Math.round(normRGB(u_b_gain))
             },
             debug: !!debug,
-            logs: !!logs
+            logs: !!logs,
+            cbFilter: String(cbFilter)
         };
     }
 
@@ -3405,6 +3538,12 @@
                 logs = !!obj.logs;
                 gmSet(K.LOGS, logs);
                 LOG.on = logs;
+            }
+
+            if ('cbFilter' in obj) {
+                const cb = String(obj.cbFilter).toLowerCase();
+                cbFilter = (['none', 'protanopia', 'deuteranopia', 'tritanomaly'].includes(cb) ? cb : 'none');
+                gmSet(K.CB_FILTER, cbFilter);
             }
 
             if ('contrast' in u) u_contrast = normU(u.contrast);
@@ -3665,7 +3804,7 @@
         let style = document.getElementById(STYLE_ID);
 
         const nothingOn =
-            !enabled && !darkMoody && !tealOrange && !vibrantSat && normHDR() === 0 && (profile === 'off') && !autoOn;
+            !enabled && !darkMoody && !tealOrange && !vibrantSat && normHDR() === 0 && (profile === 'off') && !autoOn && cbFilter === 'none';
 
         if (nothingOn) {
             if (style) style.remove();
@@ -3817,6 +3956,12 @@
         setRGBPair('U_R_GAIN', normRGB(u_r_gain));
         setRGBPair('U_G_GAIN', normRGB(u_g_gain));
         setRGBPair('U_B_GAIN', normRGB(u_b_gain));
+
+        // Update color blindness dropdown
+        const cbSelect = overlay.querySelector('[data-gvf-select="cb_filter"]');
+        if (cbSelect) {
+            cbSelect.value = cbFilter;
+        }
     }
 
     function updateIOOverlayState(overlay) {
@@ -3861,7 +4006,7 @@
                 }
             }
 
-            // Debug Button aktualisieren
+            // Update Debug button
             const btnDebug = Array.from(overlay.querySelectorAll('button')).find(b => b.textContent.startsWith('Debug'));
             if (btnDebug) {
                 btnDebug.textContent = debug ? 'Debug: ON' : 'Debug: OFF';
@@ -4452,6 +4597,18 @@
             }
         }
 
+        // Apply color blindness filter if enabled
+        if (cbFilter !== 'none') {
+            const cbMatrix = getColorBlindnessMatrix(cbFilter);
+            const cbCM = document.createElementNS(svgNS, 'feColorMatrix');
+            cbCM.setAttribute('type', 'matrix');
+            cbCM.setAttribute('in', last);
+            cbCM.setAttribute('result', 'r_cb');
+            cbCM.setAttribute('values', matToSvgValues(cbMatrix));
+            filter.appendChild(cbCM);
+            last = 'r_cb';
+        }
+
         if (profile === 'user') {
             const rGain = rgbGainToFactor(u_r_gain);
             const gGain = rgbGainToFactor(u_g_gain);
@@ -4584,6 +4741,7 @@
         const DN = Number(normDN().toFixed(1));
         const HDR = Number(normHDR().toFixed(1));
         const P = (profile || 'off');
+        const CB = cbFilter;
 
         const uSig = [
             normU(u_contrast), normU(u_black), normU(u_white), normU(u_highlights), normU(u_shadows),
@@ -4591,7 +4749,7 @@
             normRGB(u_r_gain), normRGB(u_g_gain), normRGB(u_b_gain)
         ].map(x => Number(x).toFixed(1)).join(',');
 
-        const want = `${SL}|${SR}|${R}|${A}|${BS}|${BL}|${WL}|${DN}|${HDR}|${P}|U:${uSig}`;
+        const want = `${SL}|${SR}|${R}|${A}|${BS}|${BL}|${WL}|${DN}|${HDR}|${P}|U:${uSig}|CB:${CB}`;
 
         const existing = document.getElementById(SVG_ID);
         if (existing) {
@@ -4667,7 +4825,7 @@
         let style = document.getElementById(STYLE_ID);
 
         const nothingOn =
-            !enabled && !darkMoody && !tealOrange && !vibrantSat && normHDR() === 0 && (profile === 'off') && !autoOn;
+            !enabled && !darkMoody && !tealOrange && !vibrantSat && normHDR() === 0 && (profile === 'off') && !autoOn && cbFilter === 'none';
 
         if (nothingOn) {
             if (style) style.remove();
@@ -4803,7 +4961,10 @@
                 autoStrength = clamp(Number(gmGet(K.AUTO_STRENGTH, autoStrength)), 0, 1);
                 autoLockWB = !!gmGet(K.AUTO_LOCK_WB, autoLockWB);
 
-                // Debug/Load Einstellungen aus Storage laden
+                cbFilter = String(gmGet(K.CB_FILTER, cbFilter)).toLowerCase();
+                if (!['none', 'protanopia', 'deuteranopia', 'tritanomaly'].includes(cbFilter)) cbFilter = 'none';
+
+                // Debug/Load settings from storage
                 logs = !!gmGet(K.LOGS, logs);
                 debug = !!gmGet(K.DEBUG, debug);
                 LOG.on = logs;
@@ -4929,6 +5090,8 @@
         gmSet(K.AUTO_STRENGTH, autoStrength);
         gmSet(K.AUTO_LOCK_WB, autoLockWB);
 
+        gmSet(K.CB_FILTER, cbFilter);
+
         gmSet(K.LOGS, logs);
         gmSet(K.DEBUG, debug);
 
@@ -4967,7 +5130,8 @@
             gpuPipeline: renderMode === 'gpu',
             branchlessShader: true,
             debug: debug,
-            logs: logs
+            logs: logs,
+            colorBlindnessFilter: cbFilter
         });
 
         document.addEventListener('keydown', (e) => {
