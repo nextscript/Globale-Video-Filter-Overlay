@@ -42,9 +42,9 @@ All shortcuts use: CTRL + ALT + key
 <li>CTRL + ALT + C → Profile Cycle (Color Grading)</li>
 <li>CTRL + ALT + G → Show/Hide Grading Settings (For User Profile)</li>
 <li>CTRL + ALT + A → Toggle Auto-Scene-Match </li>
-<li>CTRL + ALT + I → Show/Hide Export/Import JSON (Screenshot & Recording)</li>
+<li>CTRL + ALT + I → Show/Hide Export/Import JSON (Screenshot & Recording) + Debug ON/OFF <b style="color:red;">(New)</b> </li>
 <li>CTRL + ALT + S → Show/Hide Scopes HUD</li>
-<li>CTRL + ALT + X → Toggle GPU Pipeline Mode <b style="color:red;">(New)</b></li>
+<li>CTRL + ALT + X → Toggle GPU Pipeline Mode </li>
 <li>CTRL + ALT + H → Show/Hide the overlay UI (icons + sliders)</li>
 <hr>
 Notes:
@@ -163,7 +163,7 @@ Shows the mean values for brightness (Y), RGB average, and saturation as numeric
 <b>Special Feature:</b>
 The Scopes HUD displays values after applying all your filters – so you see exactly what your settings are doing.
 <hr>
-<h2>GPU Pipeline Mode <b style="color:red;">(New)</b></h2>
+<h2>GPU Pipeline Mode</h2>
 The GPU Pipeline Mode is an alternative rendering mode for maximum performance. Instead of using SVG filters, all image enhancements are processed directly on the GPU using WebGL/Canvas.
 <br>
 <b>Benefits:</b>
