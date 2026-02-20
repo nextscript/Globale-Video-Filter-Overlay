@@ -40,7 +40,7 @@ All shortcuts use: CTRL + ALT + key
 <li>CTRL + ALT + V → Toggle Vibrant & Saturated</li>
 <li>CTRL + ALT + P → Toggle HDR</li>
 <li>CTRL + ALT + C → Profile Cycle (Color Grading)</li>
-<li>CTRL + ALT + G → Show/Hide Grading Settings (For User Profile)</li>
+<li>CTRL + ALT + G → Show/Hide Grading Settings (For User Profile) + Assistive-Recoloring Filters (Experimental) <b style="color:red;">(New)</b></li>
 <li>CTRL + ALT + A → Toggle Auto-Scene-Match </li>
 <li>CTRL + ALT + I → Show/Hide Export/Import JSON (Screenshot & Recording) + Debug ON/OFF <b style="color:red;">(New)</b> </li>
 <li>CTRL + ALT + S → Show/Hide Scopes HUD</li>
@@ -180,6 +180,14 @@ The GPU Pipeline Mode is an alternative rendering mode for maximum performance. 
 <li>4K/8K videos</li>
 <li>Browsers with slow SVG implementation</li>
 <li>Maximum performance with minimal quality loss</li>
+</ul>
+<hr>
+<h2>Assistive-Recoloring Filters (Experimental)<b style="color:red;">(New)</b></h2>
+<b>These filters help people with color blindness distinguish colors better:</b>
+<ul>
+<li>Protanopia (Red-Blind): Enhances red-cyan contrast and shifts red tones to more perceptible orange hues</li>
+<li>Deuteranopia (Green-Blind): Enhances green-magenta contrast and shifts green tones to more distinguishable blue hues</li>
+<li>Tritanopia (Blue-Blind): Enhances blue-yellow contrast and optimizes blue tones for better recognition</li>
 </ul>
 <hr>
 <h2>Recommended starting presets</h2>
