@@ -41,5 +41,6 @@
     "b_gain": 128
   },
   "debug": false,
-  "logs": true
+  "logs": true,
+  "cbFilter": "none"
 }
