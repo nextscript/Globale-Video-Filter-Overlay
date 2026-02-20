@@ -3,7 +3,7 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.5.1
+// @version      1.5.2
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
@@ -126,9 +126,9 @@
     let _inSync = false;
     let _suspendSync = false;
 
-    // Debug/Load Einstellungen aus Storage laden
+    // Debug/Load Storage 
     logs = !!gmGet(K.LOGS, true);
-    debug = !!gmGet(K.DEBUG, true);
+    debug = !!gmGet(K.DEBUG, false);
 
     // -------------------------
     // INSTANT SVG REGENERATION
@@ -665,10 +665,10 @@
     function logW(...a) { if (!LOG.on) return; try { console.warn(LOG.tag, ...a); } catch (_) { } }
     function logToggle(name, state, extra) { log(`${name}:`, state ? 'ON' : 'OFF', extra || ''); }
 
-    // Debug Toggle Funktion
+    // Debug Toggle
     function toggleDebug() {
         debug = !debug;
-        logs = debug; // Logs同步 mit Debug
+        logs = debug;
         gmSet(K.DEBUG, debug);
         gmSet(K.LOGS, logs);
 
@@ -677,11 +677,10 @@
         logToggle('Debug Mode', debug);
         logToggle('Console Logs', logs);
 
-        // Auto-Dot sofort aktualisieren
+        // Auto-Dot
         setAutoDotState(autoOn ? (debug ? 'idle' : 'off') : 'off');
         scheduleOverlayUpdate();
 
-        // Kurze Bestätigung im Console
         if (debug) {
             console.log('%c[GVF] Debug Mode ACTIVATED - Visual debug dots visible', 'color: #00ff00; font-weight: bold');
         } else {
@@ -961,7 +960,7 @@
         return currentFps * (1 - alpha) + targetFps * alpha;
     }
 
-    // ===================== NEU: ECHTE WEBGL2 CANVAS PIPELINE =====================
+    // ===================== WEBGL2 CANVAS PIPELINE =====================
     let webglPipeline = null;
 
     class WebGL2Pipeline {
@@ -2857,6 +2856,7 @@
             }
         });
 
+        // Reset to defaults mit debug = false
         btnReset.addEventListener('click', () => {
             const defaults = {
                 enabled: true, darkMoody: true, tealOrange: false, vibrantSat: false, iconsShown: false,
@@ -2870,12 +2870,20 @@
                 user: {
                     contrast: 0, black: 0, white: 0, highlights: 0, shadows: 0, saturation: 0, vibrance: 0, sharpen: 0, gamma: 0, grain: 0, hue: 0,
                     r_gain: 128, g_gain: 128, b_gain: 128
-                }
+                },
+                debug: false,  // Debug standardmäßig false
+                logs: true
             };
             importSettings(defaults);
             setDirty(false);
             ta.value = JSON.stringify(exportSettings(), null, 2);
             status.textContent = 'Reset + applied.';
+
+            // Debug Button aktualisieren
+            btnDebug.textContent = 'Debug: OFF';
+            btnDebug.style.background = 'rgba(255,0,0,0.2)';
+            btnDebug.style.border = '1px solid #ff0000';
+            btnDebug.style.color = '#ff6666';
         });
 
         btnShot.addEventListener('click', async () => { await takeVideoScreenshot(status); });
