@@ -3,7 +3,7 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.5.3
+// @version      1.5.4
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
@@ -42,6 +42,20 @@
     const AUTO_KEY = 'a';
     const SCOPES_KEY = 's';
     const GPU_MODE_KEY = 'x';
+
+    // -------------------------
+    // Throttling for less computationally intensive operations
+    // -------------------------
+    let lastRenderTime = 0;
+    const RENDER_THROTTLE = 16; // ~60fps
+
+    function throttledRender(timestamp) {
+        if (timestamp - lastRenderTime >= RENDER_THROTTLE) {
+            lastRenderTime = timestamp;
+            render();
+        }
+        requestAnimationFrame(throttledRender);
+    }
 
     // -------------------------
     // LOG + DEBUG SWITCH
@@ -1526,12 +1540,15 @@
         startRenderLoop() {
             if (this.rafId) cancelAnimationFrame(this.rafId);
 
-            const loop = () => {
+            const loop = (timestamp) => {
                 if (!this.active || !this.video) {
                     this.rafId = null;
                     return;
                 }
-                this.render();
+                if (timestamp - lastRenderTime >= RENDER_THROTTLE) {
+                    lastRenderTime = timestamp;
+                    this.render();
+                }
                 this.rafId = requestAnimationFrame(loop);
             };
 
