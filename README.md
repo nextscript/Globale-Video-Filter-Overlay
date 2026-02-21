@@ -135,11 +135,11 @@ The function continuously analyzes the playing video image and calculates optima
 <li>Cannot analyze DRM-protected videos (uses last good values)</li>
 </ul>
 <br>
-<b>Visual feedback:</b>
+<b>Visual feedback:</b><br>
 A small dot in the video shows the status(If debug=true Default: false):
 
-🟢 Green = Active, no changes
-🟢 Light Green = Active and currently adjusting
+<br>🟢 Green = Active, no changes<br>
+🟢 Light Green = Active and currently adjusting<br>
 🔴 Red = No updates (e.g., with DRM)
 <br>
 <b>Goal:</b>
