@@ -141,7 +141,7 @@ A small dot in the video shows the status(If debug=true Default: false):
 <br>🟢 Green = Active, no changes<br>
 🟢 Light Green = Active and currently adjusting<br>
 🔴 Red = No updates (e.g., with DRM)
-<br>
+<br><p>
 <b>Goal:</b>
 Always optimally looking videos without manual intervention – especially useful for changing scenes or different video sources.
 <hr>
