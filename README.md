@@ -42,7 +42,7 @@ All shortcuts use: CTRL + ALT + key
 <li>CTRL + ALT + C → Profile Cycle (Color Grading)</li>
 <li>CTRL + ALT + G → Show/Hide Grading Settings (For User Profile) + Assistive-Recoloring Filters (Experimental) <b style="color:red;">(New)</b></li>
 <li>CTRL + ALT + A → Toggle Auto-Scene-Match </li>
-<li>CTRL + ALT + I → Show/Hide Export/Import JSON (Screenshot & Recording) + Debug ON/OFF <b style="color:red;">(New)</b> </li>
+<li>CTRL + ALT + I → Show/Hide Export/Import JSON (Screenshot & Recording) + Debug ON/OFF </li>
 <li>CTRL + ALT + S → Show/Hide Scopes HUD</li>
 <li>CTRL + ALT + X → Toggle GPU Pipeline Mode </li>
 <li>CTRL + ALT + H → Show/Hide the overlay UI (icons + sliders)</li>
@@ -91,7 +91,14 @@ All sliders support Snap-to-0 around the center, so you can easily return to neu
 <ul>
 <li>Positive = add punch, clarity, deeper highlights, and richer colors</li>
 <li>Negative = soften the image, reducing contrast for a smoother look</li>
-</ul><br>
+</ul>
+<b style="color:red;">New:</b><br>
+<ul>
+<li>HDR completely reworked: Proper ACES tonemapping in linear color space</li>
+<li>Significantly more natural highlights and richer colors</li>
+<li>Smarter HDR control (up to +1.5 stops exposure)</li>
+</ul>
+<br>
 <hr>
 <h2>Profile Cycle</h2>
 
