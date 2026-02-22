@@ -3,9 +3,9 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.5.6
-// @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
-// @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
+// @version      1.5.7
+// @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads. FIX: Screenshots & recordings now include all filters!
+// @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern. FIX: Screenshots & Aufnahmen enthalten jetzt alle Filter!
 // @match        *://*/*
 // @run-at       document-idle
 // @grant        GM_getValue
@@ -163,6 +163,70 @@
             applyFilter();
         });
     }
+
+
+    /**
+     * Determines the currently active filter string for screenshots/recordings
+     */
+    function getCurrentFilterString() {
+        try {
+            // First, try to extract the current CSS filter from the style element.
+            const style = document.getElementById(STYLE_ID);
+            if (style && style.textContent) {
+                const match = style.textContent.match(/filter:\s*([^!;]+)/);
+                if (match && match[1]) {
+                    return match[1].trim();
+                }
+            }
+
+            // Fallback: Create the filter string based on the current settings
+            if (renderMode === 'gpu') {
+                return getGpuFilterString();
+            } else {
+                // For SVG mode: Return the URL filter
+                const comboId = pickComboId();
+                return `url("#${comboId}")${getBaseToneString()}${getProfileToneString()}${getUserToneString()}`;
+            }
+        } catch (e) {
+            logW('Fehler beim Ermitteln des Filter-Strings:', e);
+            return 'none';
+        }
+    }
+
+    function getBaseToneString() {
+        return enabled ? ' brightness(1.02) contrast(1.05) saturate(1.21)' : '';
+    }
+
+    function getProfileToneString() {
+        if (profile === 'film') return ' brightness(1.01) contrast(1.08) saturate(1.08)';
+        if (profile === 'anime') return ' brightness(1.03) contrast(1.10) saturate(1.16)';
+        if (profile === 'gaming') return ' brightness(1.01) contrast(1.12) saturate(1.06)';
+        if (profile === 'eyecare') return ' brightness(1.05) contrast(0.96) saturate(0.88) hue-rotate(-12deg)';
+        return '';
+    }
+
+    function getUserToneString() {
+        if (profile !== 'user') return '';
+
+        const c = clamp(1.0 + (uDelta(u_contrast) * 0.04), 0.60, 1.60);
+        const sat = clamp(1.0 + (uDelta(u_sat) * 0.05), 0.40, 1.80);
+        const vib = clamp(1.0 + (uDelta(u_vib) * 0.02), 0.70, 1.35);
+        const hue = clamp(uDelta(u_hue) * 3.0, -30, 30);
+
+        const blk = clamp(uDelta(u_black) * 0.012, -0.12, 0.12);
+        const wht = clamp(uDelta(u_white) * 0.012, -0.12, 0.12);
+        const sh = clamp(uDelta(u_shadows) * 0.010, -0.10, 0.10);
+        const hi = clamp(uDelta(u_highlights) * 0.010, -0.10, 0.10);
+
+        const br = clamp(1.0 + (-blk + wht + sh + hi) * 0.6, 0.70, 1.35);
+
+        const g = clamp(1.0 + (uDelta(u_gamma) * 0.025), 0.60, 1.60);
+        const gBr = clamp(1.0 + (1.0 - g) * 0.18, 0.85, 1.20);
+        const gCt = clamp(1.0 + (g - 1.0) * 0.10, 0.90, 1.15);
+
+        return ` brightness(${(br * gBr).toFixed(3)}) contrast(${(c * gCt).toFixed(3)}) saturate(${(sat * vib).toFixed(3)}) hue-rotate(${hue.toFixed(1)}deg)`;
+    }
+
 
     // -------------------------
     // Screenshot / Recording helpers
@@ -332,7 +396,9 @@
         ctx.imageSmoothingEnabled = true;
         try { ctx.imageSmoothingQuality = 'high'; } catch (_) { }
 
-        const cssFilter = getAppliedCssFilterString(video);
+        // FIX: Use the correct filter string for recording
+        const filterString = getCurrentFilterString();
+        log('Verwende Filter für Recording:', filterString);
 
         const draw = (t) => {
             if (!REC_PIPE.active) return;
@@ -347,7 +413,7 @@
 
             try {
                 ctx.save();
-                ctx.filter = cssFilter || 'none';
+                ctx.filter = filterString || 'none';
                 ctx.drawImage(video, 0, 0, w, h);
                 ctx.restore();
             } catch (e) {
@@ -636,10 +702,13 @@
         ctx.imageSmoothingEnabled = true;
         try { ctx.imageSmoothingQuality = 'high'; } catch (_) { }
 
-        const cssFilter = getAppliedCssFilterString(v);
+        // FIX: Use the correct filter string for screenshots
+        const filterString = getCurrentFilterString();
+        log('Verwende Filter für Screenshot:', filterString);
+
         try {
             ctx.save();
-            ctx.filter = cssFilter || 'none';
+            ctx.filter = filterString || 'none';
             ctx.drawImage(v, 0, 0, w, h);
             ctx.restore();
             ctx.getImageData(0, 0, 1, 1);
@@ -1187,7 +1256,7 @@
         return currentFps * (1 - alpha) + targetFps * alpha;
     }
 
-    // ===================== NEW: REAL WEBGL2 CANVAS PIPELINE =====================
+    // ===================== REAL WEBGL2 CANVAS PIPELINE =====================
     let webglPipeline = null;
 
     class WebGL2Pipeline {
