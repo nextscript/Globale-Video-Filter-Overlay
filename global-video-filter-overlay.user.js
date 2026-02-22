@@ -3,7 +3,7 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.5.4
+// @version      1.5.5
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
@@ -32,6 +32,7 @@
     const GPU_GAIN_FILTER_ID = 'gvf-gpu-gain-filter';
     const GPU_PROFILE_FILTER_ID = 'gvf-gpu-profile-filter';
     const WEBGL_CANVAS_ID = 'gvf-webgl-canvas';
+    const RECORDING_HUD_ID = 'gvf-recording-hud';
     const svgNS = 'http://www.w3.org/2000/svg';
 
     // Hotkeys
@@ -418,7 +419,10 @@
         chunks: [],
         v: null,
         mime: '',
-        ext: 'webm'
+        ext: 'webm',
+        startTime: 0,
+        timerInterval: null,
+        currentVideo: null  // Track current video for HUD positioning
     };
 
     function pickRecorderMime(hasAudio) {
@@ -463,6 +467,153 @@
             if (mt) return mt;
         } catch (_) { }
         return fallback || 'video/webm';
+    }
+
+    // Recording HUD functions
+    function createRecordingHUD() {
+        let hud = document.getElementById(RECORDING_HUD_ID);
+        if (hud) return hud;
+
+        hud = document.createElement('div');
+        hud.id = RECORDING_HUD_ID;
+        hud.style.cssText = `
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.8);
+            color: #ff4444;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-family: monospace;
+            font-size: 14px;
+            font-weight: bold;
+            z-index: 2147483647;
+            display: none;
+            align-items: center;
+            gap: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.5);
+            border: 1px solid rgba(255, 68, 68, 0.6);
+            backdrop-filter: blur(4px);
+            pointer-events: none;
+            transform: translateZ(0);
+            letter-spacing: 0.5px;
+        `;
+
+        const redDot = document.createElement('span');
+        redDot.style.cssText = `
+            width: 12px;
+            height: 12px;
+            background: #ff4444;
+            border-radius: 50%;
+            display: inline-block;
+            animation: gvf-record-pulse 1.2s ease-in-out infinite;
+            box-shadow: 0 0 10px rgba(255, 68, 68, 0.8);
+        `;
+
+        const timeDisplay = document.createElement('span');
+        timeDisplay.id = 'gvf-record-time';
+        timeDisplay.textContent = '00:00';
+        timeDisplay.style.cssText = `
+            text-shadow: 0 0 5px rgba(255, 68, 68, 0.5);
+        `;
+
+        hud.appendChild(redDot);
+        hud.appendChild(timeDisplay);
+
+        // Add animation style if not already present
+        if (!document.getElementById('gvf-record-style')) {
+            const style = document.createElement('style');
+            style.id = 'gvf-record-style';
+            style.textContent = `
+                @keyframes gvf-record-pulse {
+                    0% { opacity: 1; transform: scale(1); }
+                    50% { opacity: 0.6; transform: scale(1.2); }
+                    100% { opacity: 1; transform: scale(1); }
+                }
+            `;
+            document.head.appendChild(style);
+        }
+
+        return hud;
+    }
+
+    function positionRecordingHUD(video) {
+        const hud = document.getElementById(RECORDING_HUD_ID);
+        if (!hud || !video) return;
+
+        
+        if (hud.parentNode !== video.parentNode) {
+            if (video.parentNode) {
+                video.parentNode.appendChild(hud);
+            }
+        }
+
+      
+        hud.style.position = 'absolute';
+        hud.style.top = '10px';
+        hud.style.left = '10px';
+        hud.style.right = 'auto';
+        hud.style.bottom = 'auto';
+        hud.style.transform = 'none';
+    }
+
+    function updateRecordingTimer() {
+        if (!REC.active) return;
+
+        const hud = document.getElementById(RECORDING_HUD_ID);
+        if (!hud) return;
+
+        const timeDisplay = document.getElementById('gvf-record-time');
+        if (!timeDisplay) return;
+
+        const elapsed = Math.floor((Date.now() - REC.startTime) / 1000);
+        const minutes = Math.floor(elapsed / 60);
+        const seconds = elapsed % 60;
+        timeDisplay.textContent = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+
+        
+        if (REC.currentVideo && REC.currentVideo.parentNode) {
+            positionRecordingHUD(REC.currentVideo);
+        }
+    }
+
+    function startRecordingTimer(video) {
+        REC.startTime = Date.now();
+        REC.currentVideo = video;
+
+       
+        const hud = createRecordingHUD();
+
+
+        if (video.parentNode) {
+            video.parentNode.appendChild(hud);
+            positionRecordingHUD(video);
+        }
+
+        hud.style.display = 'flex';
+
+        if (REC.timerInterval) clearInterval(REC.timerInterval);
+        REC.timerInterval = setInterval(updateRecordingTimer, 100);
+
+        log('Recording HUD gestartet');
+    }
+
+    function stopRecordingTimer() {
+        if (REC.timerInterval) {
+            clearInterval(REC.timerInterval);
+            REC.timerInterval = null;
+        }
+
+        const hud = document.getElementById(RECORDING_HUD_ID);
+        if (hud) {
+            hud.style.display = 'none';
+
+            if (hud.parentNode) {
+                hud.parentNode.removeChild(hud);
+            }
+        }
+        REC.currentVideo = null;
+        log('Recording HUD gestoppt');
     }
 
     async function takeVideoScreenshot(statusEl) {
@@ -526,6 +677,8 @@
                 } else {
                     try { REC.mr && REC.mr.stop(); } catch (_) { }
                 }
+
+                stopRecordingTimer();
             } catch (_) { }
             return;
         }
@@ -591,17 +744,20 @@
             else statusEl.textContent = `Recording... (${ext.toUpperCase()} (no audio)) — site may block audio capture.`;
         }
 
+        startRecordingTimer(v);
+
         let mr;
         try {
             const opts = {
                 mimeType: mime,
-                videoBitsPerSecond: 2_200_000,
+                videoBitsPerSecond: 6_000_000,
                 audioBitsPerSecond: 96_000
             };
             mr = new MediaRecorder(filteredStream, opts);
         } catch (_) {
             stopCanvasRecorderPipeline();
             REC.active = false;
+            stopRecordingTimer();
             if (btnEl) btnEl.textContent = 'Record';
             if (statusEl) statusEl.textContent = 'Recorder init failed.';
             return;
@@ -661,6 +817,7 @@
 
         try { mr.start(); } catch (_) {
             stopCanvasRecorderPipeline();
+            stopRecordingTimer();
             if (statusEl) statusEl.textContent = 'Recorder start failed.';
             try { mr.stop(); } catch (__) { }
         }
