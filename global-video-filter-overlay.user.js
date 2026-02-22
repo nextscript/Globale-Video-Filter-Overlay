@@ -3,7 +3,7 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.5.5
+// @version      1.5.6
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
@@ -541,14 +541,14 @@
         const hud = document.getElementById(RECORDING_HUD_ID);
         if (!hud || !video) return;
 
-        
+
         if (hud.parentNode !== video.parentNode) {
             if (video.parentNode) {
                 video.parentNode.appendChild(hud);
             }
         }
 
-      
+
         hud.style.position = 'absolute';
         hud.style.top = '10px';
         hud.style.left = '10px';
@@ -571,7 +571,7 @@
         const seconds = elapsed % 60;
         timeDisplay.textContent = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
 
-        
+
         if (REC.currentVideo && REC.currentVideo.parentNode) {
             positionRecordingHUD(REC.currentVideo);
         }
@@ -581,7 +581,7 @@
         REC.startTime = Date.now();
         REC.currentVideo = video;
 
-       
+
         const hud = createRecordingHUD();
 
 
@@ -1326,7 +1326,48 @@
                     return min(max(x, minVal), maxVal);
                 }
 
-                vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
+
+
+                // --- HDR helpers (linear-light + ACES tonemapping) ---
+                vec3 srgbToLinear(vec3 c) {
+                    c = clamp(c, 0.0, 1.0);
+                    bvec3 cutoff = lessThanEqual(c, vec3(0.04045));
+                    vec3 low = c / 12.92;
+                    vec3 high = pow((c + 0.055) / 1.055, vec3(2.4));
+                    return mix(high, low, vec3(cutoff));
+                }
+
+                vec3 linearToSrgb(vec3 c) {
+                    c = max(c, vec3(0.0));
+                    bvec3 cutoff = lessThanEqual(c, vec3(0.0031308));
+                    vec3 low = c * 12.92;
+                    vec3 high = 1.055 * pow(c, vec3(1.0/2.4)) - 0.055;
+                    return mix(high, low, vec3(cutoff));
+                }
+
+                vec3 RRTAndODTFit(vec3 v) {
+                    vec3 a = v * (v + 0.0245786) - 0.000090537;
+                    vec3 b = v * (0.983729 * v + 0.4329510) + 0.238081;
+                    return a / b;
+                }
+
+                vec3 tonemapACES(vec3 color) {
+                    const mat3 ACESInputMat = mat3(
+                        0.59719, 0.35458, 0.04823,
+                        0.07600, 0.90834, 0.01566,
+                        0.02840, 0.13383, 0.83777
+                    );
+                    const mat3 ACESOutputMat = mat3(
+                        1.60475, -0.53108, -0.07367,
+                        -0.10208, 1.10813, -0.00605,
+                        -0.00327, -0.07276, 1.07602
+                    );
+                    color = ACESInputMat * color;
+                    color = RRTAndODTFit(color);
+                    color = ACESOutputMat * color;
+                    return clamp(color, 0.0, 1.0);
+                }
+vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
                     float lr = LUMA.r, lg = LUMA.g, lb = LUMA.b;
                     float a00 = lr + cosHue*(1.0-lr) + sinHue*(-lr);
                     float a01 = lg + cosHue*(-lg) + sinHue*(-lg);
@@ -1388,11 +1429,16 @@
                     color.g = pow(color.g, gInv);
                     color.b = pow(color.b, gInv);
 
-                    // HDR
-                    float lumaHDR = dot(color, LUMA);
-                    float scale = (lumaHDR * uParams2.w + 1.0) / (lumaHDR + 1.0);
-                    color *= scale;
-
+                    // HDR (WebGL HDR-like: linear-light + ACES tonemapping)
+                    float hdr = clampFast(uParams2.w, 0.0, 1.0);
+                    if (hdr > 0.0001) {
+                        // Interpret hdr as exposure-strength (0..1) mapped to up to +1.5 stops
+                        vec3 lin = srgbToLinear(color);
+                        float exposure = pow(2.0, hdr * 1.5);
+                        lin *= exposure;
+                        lin = tonemapACES(lin);
+                        color = linearToSrgb(lin);
+                    }
                     // Grain
                     float noise = fract(sin(vTexCoord.x * 12.9898 + vTexCoord.y * 78.233) * 43758.5453);
                     noise = (noise - 0.5) * uParams2.y;
