@@ -13,8 +13,8 @@
 // @grant        GM_addValueChangeListener
 // @grant        GM_info
 // @iconURL      https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/logomes.png
-// @downloadURL https://update.greasyfork.org/scripts/561189/Global%20Video%20Filter%20Overlay.user.js
-// @updateURL https://update.greasyfork.org/scripts/561189/Global%20Video%20Filter%20Overlay.meta.js
+// @downloadURL https://github.com/nextscript/Globale-Video-Filter-Overlay/raw/refs/heads/main/global-video-filter-overlay.user.js
+// @updateURL https://github.com/nextscript/Globale-Video-Filter-Overlay/raw/refs/heads/main/global-video-filter-overlay.user.js
 // ==/UserScript==
 
 (function () {
@@ -5532,3 +5532,4 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
 
 
 })();
+
