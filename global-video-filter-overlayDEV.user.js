@@ -3,7 +3,7 @@
 // @name:de      Globale Video Filter Overlay DEV
 // @namespace    gvf
 // @author       Freak288
-// @version      1.5.5
+// @version      1.5.7
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
@@ -2438,6 +2438,7 @@
     const overlaysGrade = new WeakMap();
     const overlaysIO = new WeakMap();
     const overlaysScopes = new WeakMap();
+    const overlaysPerf = new WeakMap();
     let rafScheduled = false;
 
     function getFsEl() {
@@ -2898,7 +2899,6 @@
         const btnImportFile = mkBtn('Import .json');
         const btnShot = mkBtn('Screenshot');
         const btnRec = mkBtn('Record');
-        // NEW: Debug Toggle Button
         const btnDebug = mkBtn(debug ? 'Debug: ON' : 'Debug: OFF');
         btnDebug.style.background = debug ? 'rgba(0,255,0,0.2)' : 'rgba(255,0,0,0.2)';
         btnDebug.style.border = debug ? '1px solid #00ff00' : '1px solid #ff0000';
@@ -3004,7 +3004,6 @@
             }
         });
 
-        // Reset to defaults with debug = false
         btnReset.addEventListener('click', () => {
             const defaults = {
                 enabled: true, darkMoody: true, tealOrange: false, vibrantSat: false, iconsShown: false,
@@ -3019,16 +3018,15 @@
                     contrast: 0, black: 0, white: 0, highlights: 0, shadows: 0, saturation: 0, vibrance: 0, sharpen: 0, gamma: 0, grain: 0, hue: 0,
                     r_gain: 128, g_gain: 128, b_gain: 128
                 },
-                debug: false,  // Debug default false
+                debug: false,
                 logs: true,
-                cbFilter: 'none'  // Color blindness filter default none
+                cbFilter: 'none'
             };
             importSettings(defaults);
             setDirty(false);
             ta.value = JSON.stringify(exportSettings(), null, 2);
             status.textContent = 'Reset + applied.';
 
-            // Update Debug button
             btnDebug.textContent = 'Debug: OFF';
             btnDebug.style.background = 'rgba(255,0,0,0.2)';
             btnDebug.style.border = '1px solid #ff0000';
@@ -3062,6 +3060,7 @@
         return overlay;
     }
 
+    // ===================== SCOPES OVERLAY =====================
     function mkScopesOverlay() {
         const overlay = document.createElement('div');
         overlay.className = 'gvf-video-overlay-scopes';
@@ -3088,15 +3087,15 @@
     `;
 
         const title = document.createElement('div');
+        title.style.cssText = 'font-size:10px; font-weight:900; color:#eaeaea;';
         title.textContent = 'Scopes (S)';
-        title.style.cssText = `font-size:10px; font-weight:900; color:#eaeaea;`;
+        head.appendChild(title);
 
         const hint = document.createElement('div');
+        hint.style.cssText = 'font-size:9px;font-weight:900;color:#aaa;';
         hint.textContent = 'live';
-        hint.style.cssText = `font-size:9px;font-weight:900;color:#aaa;`;
-
-        head.appendChild(title);
         head.appendChild(hint);
+
         overlay.appendChild(head);
 
         const content = document.createElement('div');
@@ -3109,11 +3108,12 @@
       gap: 10px;
     `;
 
+        // Luma Section
         const lumaSection = document.createElement('div');
-        lumaSection.style.cssText = `display:flex;flex-direction:column;gap:2px;`;
+        lumaSection.style.cssText = 'display:flex;flex-direction:column;gap:2px;';
 
         const lumaTitle = document.createElement('div');
-        lumaTitle.style.cssText = `font-size:9px;font-weight:900;color:#cfcfcf;text-transform:uppercase;letter-spacing:0.5px;`;
+        lumaTitle.style.cssText = 'font-size:9px;font-weight:900;color:#cfcfcf;text-transform:uppercase;letter-spacing:0.5px;';
         lumaTitle.textContent = 'Luma Y';
         lumaSection.appendChild(lumaTitle);
 
@@ -3134,11 +3134,14 @@
         }
         lumaSection.appendChild(lumaBars);
 
+        content.appendChild(lumaSection);
+
+        // RGB Section
         const rgbSection = document.createElement('div');
-        rgbSection.style.cssText = `display:flex;flex-direction:column;gap:2px;`;
+        rgbSection.style.cssText = 'display:flex;flex-direction:column;gap:2px;';
 
         const rgbTitle = document.createElement('div');
-        rgbTitle.style.cssText = `font-size:9px;font-weight:900;color:#cfcfcf;text-transform:uppercase;letter-spacing:0.5px;`;
+        rgbTitle.style.cssText = 'font-size:9px;font-weight:900;color:#cfcfcf;text-transform:uppercase;letter-spacing:0.5px;';
         rgbTitle.textContent = 'RGB';
         rgbSection.appendChild(rgbTitle);
 
@@ -3148,54 +3151,63 @@
       background:rgba(20,20,20,0.6);border-radius:4px;padding:4px;
     `;
 
+        // Red
         const redCol = document.createElement('div');
-        redCol.style.cssText = `display:flex;flex-direction:column;gap:1px;`;
+        redCol.style.cssText = 'display:flex;flex-direction:column;gap:1px;';
+
         const redLabel = document.createElement('div');
-        redLabel.style.cssText = `font-size:8px;font-weight:900;color:#ff6b6b;text-align:center;`;
+        redLabel.style.cssText = 'font-size:8px;font-weight:900;color:#ff6b6b;text-align:center;';
         redLabel.textContent = 'R';
         redCol.appendChild(redLabel);
+
         const redBars = document.createElement('div');
-        redBars.style.cssText = `display:flex;align-items:flex-end;height:32px;gap:1px;`;
+        redBars.style.cssText = 'display:flex;align-items:flex-end;height:32px;gap:1px;';
         redBars.className = 'gvf-scope-red';
         for (let i = 0; i < 16; i++) {
             const bar = document.createElement('div');
-            bar.style.cssText = `flex:1;height:2px;background:#ff5252;border-radius:1px;transition:height 0.1s ease;`;
+            bar.style.cssText = 'flex:1;height:2px;background:#ff5252;border-radius:1px;transition:height 0.1s ease;';
             bar.dataset.index = i;
             redBars.appendChild(bar);
         }
         redCol.appendChild(redBars);
         rgbGrid.appendChild(redCol);
 
+        // Green
         const greenCol = document.createElement('div');
-        greenCol.style.cssText = `display:flex;flex-direction:column;gap:1px;`;
+        greenCol.style.cssText = 'display:flex;flex-direction:column;gap:1px;';
+
         const greenLabel = document.createElement('div');
-        greenLabel.style.cssText = `font-size:8px;font-weight:900;color:#6bff6b;text-align:center;`;
+        greenLabel.style.cssText = 'font-size:8px;font-weight:900;color:#6bff6b;text-align:center;';
         greenLabel.textContent = 'G';
         greenCol.appendChild(greenLabel);
+
         const greenBars = document.createElement('div');
-        greenBars.style.cssText = `display:flex;align-items:flex-end;height:32px;gap:1px;`;
+        greenBars.style.cssText = 'display:flex;align-items:flex-end;height:32px;gap:1px;';
         greenBars.className = 'gvf-scope-green';
         for (let i = 0; i < 16; i++) {
             const bar = document.createElement('div');
-            bar.style.cssText = `flex:1;height:2px;background:#52ff52;border-radius:1px;transition:height 0.1s ease;`;
+            bar.style.cssText = 'flex:1;height:2px;background:#52ff52;border-radius:1px;transition:height 0.1s ease;';
             bar.dataset.index = i;
             greenBars.appendChild(bar);
         }
         greenCol.appendChild(greenBars);
         rgbGrid.appendChild(greenCol);
 
+        // Blue
         const blueCol = document.createElement('div');
-        blueCol.style.cssText = `display:flex;flex-direction:column;gap:1px;`;
+        blueCol.style.cssText = 'display:flex;flex-direction:column;gap:1px;';
+
         const blueLabel = document.createElement('div');
-        blueLabel.style.cssText = `font-size:8px;font-weight:900;color:#6b6bff;text-align:center;`;
+        blueLabel.style.cssText = 'font-size:8px;font-weight:900;color:#6b6bff;text-align:center;';
         blueLabel.textContent = 'B';
         blueCol.appendChild(blueLabel);
+
         const blueBars = document.createElement('div');
-        blueBars.style.cssText = `display:flex;align-items:flex-end;height:32px;gap:1px;`;
+        blueBars.style.cssText = 'display:flex;align-items:flex-end;height:32px;gap:1px;';
         blueBars.className = 'gvf-scope-blue';
         for (let i = 0; i < 16; i++) {
             const bar = document.createElement('div');
-            bar.style.cssText = `flex:1;height:2px;background:#5252ff;border-radius:1px;transition:height 0.1s ease;`;
+            bar.style.cssText = 'flex:1;height:2px;background:#5252ff;border-radius:1px;transition:height 0.1s ease;';
             bar.dataset.index = i;
             blueBars.appendChild(bar);
         }
@@ -3203,12 +3215,14 @@
         rgbGrid.appendChild(blueCol);
 
         rgbSection.appendChild(rgbGrid);
+        content.appendChild(rgbSection);
 
+        // Saturation Section
         const satSection = document.createElement('div');
-        satSection.style.cssText = `display:flex;flex-direction:column;gap:2px;`;
+        satSection.style.cssText = 'display:flex;flex-direction:column;gap:2px;';
 
         const satTitle = document.createElement('div');
-        satTitle.style.cssText = `font-size:9px;font-weight:900;color:#cfcfcf;text-transform:uppercase;letter-spacing:0.5px;`;
+        satTitle.style.cssText = 'font-size:9px;font-weight:900;color:#cfcfcf;text-transform:uppercase;letter-spacing:0.5px;';
         satTitle.textContent = 'Sat';
         satSection.appendChild(satTitle);
 
@@ -3219,14 +3233,14 @@
     `;
 
         const satBarBg = document.createElement('div');
-        satBarBg.style.cssText = `flex:1;height:8px;background:#333;border-radius:4px;overflow:hidden;`;
+        satBarBg.style.cssText = 'flex:1;height:8px;background:#333;border-radius:4px;overflow:hidden;';
 
         const satBarFill = document.createElement('div');
-        satBarFill.style.cssText = `height:100%;width:0%;background:linear-gradient(90deg,#ffd700,#ff8c00);border-radius:4px;transition:width 0.1s ease;`;
+        satBarFill.style.cssText = 'height:100%;width:0%;background:linear-gradient(90deg,#ffd700,#ff8c00);border-radius:4px;transition:width 0.1s ease;';
         satBarFill.className = 'gvf-scope-sat-fill';
 
         const satValue = document.createElement('div');
-        satValue.style.cssText = `font-size:9px;font-weight:900;color:#eaeaea;min-width:36px;text-align:right;`;
+        satValue.style.cssText = 'font-size:9px;font-weight:900;color:#eaeaea;min-width:36px;text-align:right;';
         satValue.className = 'gvf-scope-sat-value';
         satValue.textContent = '0.00';
 
@@ -3235,6 +3249,9 @@
         satMeter.appendChild(satValue);
         satSection.appendChild(satMeter);
 
+        content.appendChild(satSection);
+
+        // Average Section
         const avgSection = document.createElement('div');
         avgSection.style.cssText = `
       display:grid;grid-template-columns:1fr 1fr 1fr;gap:2px;margin-top:2px;
@@ -3243,29 +3260,380 @@
 
         const avgY = document.createElement('div');
         avgY.className = 'gvf-scope-avg-y';
-        avgY.style.cssText = `text-align:center;background:rgba(30,30,30,0.6);border-radius:4px;padding:2px;`;
+        avgY.style.cssText = 'text-align:center;background:rgba(30,30,30,0.6);border-radius:4px;padding:2px;';
         avgY.textContent = 'Y: 0.00';
 
         const avgRGB = document.createElement('div');
         avgRGB.className = 'gvf-scope-avg-rgb';
-        avgRGB.style.cssText = `text-align:center;background:rgba(30,30,30,0.6);border-radius:4px;padding:2px;`;
+        avgRGB.style.cssText = 'text-align:center;background:rgba(30,30,30,0.6);border-radius:4px;padding:2px;';
         avgRGB.textContent = 'RGB: 0.00';
 
         const avgSat = document.createElement('div');
         avgSat.className = 'gvf-scope-avg-sat';
-        avgSat.style.cssText = `text-align:center;background:rgba(30,30,30,0.6);border-radius:4px;padding:2px;`;
+        avgSat.style.cssText = 'text-align:center;background:rgba(30,30,30,0.6);border-radius:4px;padding:2px;';
         avgSat.textContent = 'Sat: 0.00';
 
         avgSection.appendChild(avgY);
         avgSection.appendChild(avgRGB);
         avgSection.appendChild(avgSat);
 
-        content.appendChild(lumaSection);
-        content.appendChild(rgbSection);
-        content.appendChild(satSection);
         content.appendChild(avgSection);
-
         overlay.appendChild(content);
+
+        (document.body || document.documentElement).appendChild(overlay);
+        return overlay;
+    }
+
+    // ===================== STATS OVERLAY =====================
+    function mkPerformanceOverlay() {
+        const overlay = document.createElement('div');
+        overlay.className = 'gvf-video-overlay-performance';
+        overlay.style.cssText = `
+      position: fixed;
+      display: none;
+      flex-direction: column;
+      gap: 6px;
+      z-index: 2147483647;
+      pointer-events: none;
+      opacity: 0.95;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      transform: translateZ(0);
+      user-select: none;
+      width: 320px;
+      max-height: 90vh;
+      overflow-y: auto;
+      font-size: 13px;
+    `;
+
+        // Header
+        const head = document.createElement('div');
+        head.style.cssText = `
+      display:flex;justify-content: space-between;align-items:center;
+      padding: 8px 12px;
+      border-radius: 8px 8px 0 0;
+      background: rgba(0,0,0,0.9);
+      box-shadow: 0 0 0 1px rgba(255,255,255,0.2) inset;
+      backdrop-filter: blur(2px);
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    `;
+
+        const title = document.createElement('div');
+        title.style.cssText = 'font-size: 14px; font-weight: 900; color: #eaeaea; text-transform: uppercase; letter-spacing: 1px;';
+        title.textContent = 'VIDEO STATISTICS';
+        head.appendChild(title);
+
+        const hint = document.createElement('div');
+        hint.style.cssText = 'font-size: 11px; font-weight: 900; color: #aaa;';
+        hint.textContent = 'live';
+        head.appendChild(hint);
+
+        overlay.appendChild(head);
+
+        // Content Container
+        const content = document.createElement('div');
+        content.style.cssText = `
+      padding: 12px;
+      border-radius: 0 0 8px 8px;
+      background: rgba(0,0,0,0.85);
+      box-shadow: 0 0 0 1px rgba(255,255,255,0.2) inset;
+      backdrop-filter: blur(2px);
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    `;
+
+        // ===== FPS =====
+        const fpsSection = document.createElement('div');
+        fpsSection.style.cssText = 'display:flex;flex-direction:column;gap:8px;';
+
+        const fpsTitle = document.createElement('div');
+        fpsTitle.style.cssText = 'font-size: 12px; font-weight: 900; color: #cfcfcf; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #333; padding-bottom: 4px;';
+        fpsTitle.textContent = 'FRAME RATE';
+        fpsSection.appendChild(fpsTitle);
+
+        const fpsBig = document.createElement('div');
+        fpsBig.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;';
+
+        const fpsLabel = document.createElement('span');
+        fpsLabel.style.cssText = 'font-size: 13px; color: #aaa;';
+        fpsLabel.textContent = 'Currently:';
+        fpsBig.appendChild(fpsLabel);
+
+        const fpsValue = document.createElement('span');
+        fpsValue.className = 'gvf-perf-fps';
+        fpsValue.style.cssText = 'font-size: 28px; font-weight: 900; color: #4CAF50;';
+        fpsValue.textContent = '0';
+        fpsBig.appendChild(fpsValue);
+
+        fpsSection.appendChild(fpsBig);
+
+        content.appendChild(fpsSection);
+
+        // ===== FRAME STATISTIK =====
+        const framesSection = document.createElement('div');
+        framesSection.style.cssText = 'display:flex;flex-direction:column;gap:6px;';
+
+        const framesTitle = document.createElement('div');
+        framesTitle.style.cssText = 'font-size: 12px; font-weight: 900; color: #cfcfcf; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #333; padding-bottom: 4px;';
+        framesTitle.textContent = 'FRAME STATISTICS';
+        framesSection.appendChild(framesTitle);
+
+        const frameStats = document.createElement('div');
+        frameStats.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:6px;';
+
+        // Total
+        const totalDiv = document.createElement('div');
+        totalDiv.style.cssText = 'background:rgba(0,0,0,0.3);padding:6px 8px;border-radius:4px;font-size:12px;display:flex;justify-content:space-between;';
+
+        const totalLabel = document.createElement('span');
+        totalLabel.style.cssText = 'color:#aaa;';
+        totalLabel.textContent = 'Total:';
+        totalDiv.appendChild(totalLabel);
+
+        const totalValue = document.createElement('span');
+        totalValue.className = 'gvf-perf-total-frames';
+        totalValue.style.cssText = 'color:#4CAF50;font-weight:bold;';
+        totalValue.textContent = '0';
+        totalDiv.appendChild(totalValue);
+
+        frameStats.appendChild(totalDiv);
+
+        // Dropped
+        const droppedDiv = document.createElement('div');
+        droppedDiv.style.cssText = 'background:rgba(0,0,0,0.3);padding:6px 8px;border-radius:4px;font-size:12px;display:flex;justify-content:space-between;';
+
+        const droppedLabel = document.createElement('span');
+        droppedLabel.style.cssText = 'color:#aaa;';
+        droppedLabel.textContent = 'Dropped:';
+        droppedDiv.appendChild(droppedLabel);
+
+        const droppedValue = document.createElement('span');
+        droppedValue.className = 'gvf-perf-dropped-frames';
+        droppedValue.style.cssText = 'color:#ff5252;font-weight:bold;';
+        droppedValue.textContent = '0';
+        droppedDiv.appendChild(droppedValue);
+
+        frameStats.appendChild(droppedDiv);
+
+        // Corrupted
+        const corruptedDiv = document.createElement('div');
+        corruptedDiv.style.cssText = 'background:rgba(0,0,0,0.3);padding:6px 8px;border-radius:4px;font-size:12px;display:flex;justify-content:space-between;grid-column:span 2;';
+
+        const corruptedLabel = document.createElement('span');
+        corruptedLabel.style.cssText = 'color:#aaa;';
+        corruptedLabel.textContent = 'Corrupted:';
+        corruptedDiv.appendChild(corruptedLabel);
+
+        const corruptedValue = document.createElement('span');
+        corruptedValue.className = 'gvf-perf-corrupted-frames';
+        corruptedValue.style.cssText = 'color:#ffaa00;font-weight:bold;';
+        corruptedValue.textContent = '0';
+        corruptedDiv.appendChild(corruptedValue);
+
+        frameStats.appendChild(corruptedDiv);
+        framesSection.appendChild(frameStats);
+
+        content.appendChild(framesSection);
+
+        // ===== VIDEO =====
+        const videoSection = document.createElement('div');
+        videoSection.style.cssText = 'display:flex;flex-direction:column;gap:6px;';
+
+        const videoTitle = document.createElement('div');
+        videoTitle.style.cssText = 'font-size: 12px; font-weight: 900; color: #cfcfcf; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #333; padding-bottom: 4px;';
+        videoTitle.textContent = 'VIDEO';
+        videoSection.appendChild(videoTitle);
+
+        // Playback Rate
+        const rateDiv = document.createElement('div');
+        rateDiv.style.cssText = 'display:flex;justify-content:space-between;font-size:12px;color:#eaeaea;background:rgba(0,0,0,0.3);padding:6px 8px;border-radius:4px;';
+
+        const rateLabel = document.createElement('span');
+        rateLabel.style.cssText = 'color:#aaa;';
+        rateLabel.textContent = 'Speed:';
+        rateDiv.appendChild(rateLabel);
+
+        const rateValue = document.createElement('span');
+        rateValue.className = 'gvf-perf-playback-rate';
+        rateValue.style.cssText = 'color:#88ccff;font-weight:bold;';
+        rateValue.textContent = '1.0x';
+        rateDiv.appendChild(rateValue);
+
+        videoSection.appendChild(rateDiv);
+
+        // Auflösung
+        const resDiv = document.createElement('div');
+        resDiv.style.cssText = 'display:flex;justify-content:space-between;font-size:12px;color:#eaeaea;background:rgba(0,0,0,0.3);padding:6px 8px;border-radius:4px;';
+
+        const resLabel = document.createElement('span');
+        resLabel.style.cssText = 'color:#aaa;';
+        resLabel.textContent = 'Resolution:';
+        resDiv.appendChild(resLabel);
+
+        const resValue = document.createElement('span');
+        resValue.className = 'gvf-perf-resolution';
+        resValue.style.cssText = 'color:#88ccff;font-weight:bold;';
+        resValue.textContent = '0x0';
+        resDiv.appendChild(resValue);
+
+        videoSection.appendChild(resDiv);
+
+        content.appendChild(videoSection);
+
+        // ===== STREAMING =====
+        const streamSection = document.createElement('div');
+        streamSection.style.cssText = 'display:flex;flex-direction:column;gap:6px;';
+
+        const streamTitle = document.createElement('div');
+        streamTitle.style.cssText = 'font-size: 12px; font-weight: 900; color: #cfcfcf; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #333; padding-bottom: 4px;';
+        streamTitle.textContent = 'STREAMING';
+        streamSection.appendChild(streamTitle);
+
+        // Bitrate
+        const bitrateDiv = document.createElement('div');
+        bitrateDiv.style.cssText = 'display:flex;justify-content:space-between;font-size:12px;color:#eaeaea;background:rgba(0,0,0,0.3);padding:6px 8px;border-radius:4px;';
+
+        const bitrateLabel = document.createElement('span');
+        bitrateLabel.style.cssText = 'color:#aaa;';
+        bitrateLabel.textContent = 'Bitrate:';
+        bitrateDiv.appendChild(bitrateLabel);
+
+        const bitrateValue = document.createElement('span');
+        bitrateValue.className = 'gvf-perf-bitrate';
+        bitrateValue.style.cssText = 'color:#4CAF50;font-weight:bold;';
+        bitrateValue.textContent = '0 Mbps';
+        bitrateDiv.appendChild(bitrateValue);
+
+        streamSection.appendChild(bitrateDiv);
+
+        // Buffer
+        const bufferDiv = document.createElement('div');
+        bufferDiv.style.cssText = 'display:flex;justify-content:space-between;font-size:12px;color:#eaeaea;background:rgba(0,0,0,0.3);padding:6px 8px;border-radius:4px;';
+
+        const bufferLabel = document.createElement('span');
+        bufferLabel.style.cssText = 'color:#aaa;';
+        bufferLabel.textContent = 'Buffer:';
+        bufferDiv.appendChild(bufferLabel);
+
+        const bufferValue = document.createElement('span');
+        bufferValue.className = 'gvf-perf-buffer';
+        bufferValue.style.cssText = 'color:#4CAF50;font-weight:bold;';
+        bufferValue.textContent = '0%';
+        bufferDiv.appendChild(bufferValue);
+
+        streamSection.appendChild(bufferDiv);
+
+        content.appendChild(streamSection);
+
+        // ===== WEBGL =====
+        const webglSection = document.createElement('div');
+        webglSection.style.cssText = 'display:flex;flex-direction:column;gap:6px;';
+
+        const webglTitle = document.createElement('div');
+        webglTitle.style.cssText = 'font-size: 12px; font-weight: 900; color: #cfcfcf; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #333; padding-bottom: 4px;';
+        webglTitle.textContent = 'WEBGL';
+        webglSection.appendChild(webglTitle);
+
+        // Renderer
+        const rendererDiv = document.createElement('div');
+        rendererDiv.style.cssText = 'font-size:12px;color:#eaeaea;background:rgba(0,0,0,0.3);padding:6px 8px;border-radius:4px;word-break:break-word;display:flex;justify-content:space-between;';
+
+        const rendererLabel = document.createElement('span');
+        rendererLabel.style.cssText = 'color:#aaa;';
+        rendererLabel.textContent = 'Renderer:';
+        rendererDiv.appendChild(rendererLabel);
+
+        const rendererValue = document.createElement('span');
+        rendererValue.className = 'gvf-perf-renderer';
+        rendererValue.style.cssText = 'color:#88ccff;font-weight:bold;';
+        rendererValue.textContent = 'Unknown';
+        rendererDiv.appendChild(rendererValue);
+
+        webglSection.appendChild(rendererDiv);
+
+        // Vendor
+        const vendorDiv = document.createElement('div');
+        vendorDiv.style.cssText = 'font-size:12px;color:#eaeaea;background:rgba(0,0,0,0.3);padding:6px 8px;border-radius:4px;word-break:break-word;display:flex;justify-content:space-between;';
+
+        const vendorLabel = document.createElement('span');
+        vendorLabel.style.cssText = 'color:#aaa;';
+        vendorLabel.textContent = 'Vendor:';
+        vendorDiv.appendChild(vendorLabel);
+
+        const vendorValue = document.createElement('span');
+        vendorValue.className = 'gvf-perf-vendor';
+        vendorValue.style.cssText = 'color:#88ccff;font-weight:bold;';
+        vendorValue.textContent = 'Unknown';
+        vendorDiv.appendChild(vendorValue);
+
+        webglSection.appendChild(vendorDiv);
+
+        content.appendChild(webglSection);
+
+        // ===== SCREEN =====
+        const screenSection = document.createElement('div');
+        screenSection.style.cssText = 'display:flex;flex-direction:column;gap:6px;';
+
+        const screenTitle = document.createElement('div');
+        screenTitle.style.cssText = 'font-size: 12px; font-weight: 900; color: #cfcfcf; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #333; padding-bottom: 4px;';
+        screenTitle.textContent = 'SCREEN';
+        screenSection.appendChild(screenTitle);
+
+        // Pixel Ratio
+        const pixelDiv = document.createElement('div');
+        pixelDiv.style.cssText = 'display:flex;justify-content:space-between;font-size:12px;color:#eaeaea;background:rgba(0,0,0,0.3);padding:6px 8px;border-radius:4px;';
+
+        const pixelLabel = document.createElement('span');
+        pixelLabel.style.cssText = 'color:#aaa;';
+        pixelLabel.textContent = 'Pixel Ratio:';
+        pixelDiv.appendChild(pixelLabel);
+
+        const pixelValue = document.createElement('span');
+        pixelValue.className = 'gvf-perf-pixel-ratio';
+        pixelValue.style.cssText = 'color:#88ccff;font-weight:bold;';
+        pixelValue.textContent = '1.0';
+        pixelDiv.appendChild(pixelValue);
+
+        screenSection.appendChild(pixelDiv);
+
+        // Screen Resolution
+        const screenResDiv = document.createElement('div');
+        screenResDiv.style.cssText = 'display:flex;justify-content:space-between;font-size:12px;color:#eaeaea;background:rgba(0,0,0,0.3);padding:6px 8px;border-radius:4px;';
+
+        const screenResLabel = document.createElement('span');
+        screenResLabel.style.cssText = 'color:#aaa;';
+        screenResLabel.textContent = 'Screen:';
+        screenResDiv.appendChild(screenResLabel);
+
+        const screenResValue = document.createElement('span');
+        screenResValue.className = 'gvf-perf-screen-res';
+        screenResValue.style.cssText = 'color:#88ccff;font-weight:bold;';
+        screenResValue.textContent = '0x0';
+        screenResDiv.appendChild(screenResValue);
+
+        screenSection.appendChild(screenResDiv);
+
+        content.appendChild(screenSection);
+
+        // ===== MODE =====
+        const modeRow = document.createElement('div');
+        modeRow.style.cssText = 'display:flex;justify-content:space-between;margin-top:8px;font-size:11px;color:#888;border-top:1px solid #333;padding-top:8px;';
+
+        const modeSpan = document.createElement('span');
+        const modeText = document.createElement('span');
+        modeText.className = 'gvf-perf-mode';
+        modeText.style.cssText = `color:${renderMode === 'gpu' ? '#ffaa00' : '#88ccff'};font-weight:bold;`;
+        modeText.textContent = renderMode.toUpperCase();
+
+        modeSpan.appendChild(document.createTextNode('Render-Modus: '));
+        modeSpan.appendChild(modeText);
+        modeRow.appendChild(modeSpan);
+
+        content.appendChild(modeRow);
+        overlay.appendChild(content);
+
         (document.body || document.documentElement).appendChild(overlay);
         return overlay;
     }
@@ -3974,7 +4342,6 @@
         setRGBPair('U_G_GAIN', normRGB(u_g_gain));
         setRGBPair('U_B_GAIN', normRGB(u_b_gain));
 
-        // Update color blindness dropdown
         const cbSelect = overlay.querySelector('[data-gvf-select="cb_filter"]');
         if (cbSelect) {
             cbSelect.value = cbFilter;
@@ -4023,7 +4390,6 @@
                 }
             }
 
-            // Update Debug button
             const btnDebug = Array.from(overlay.querySelectorAll('button')).find(b => b.textContent.startsWith('Debug'));
             if (btnDebug) {
                 btnDebug.textContent = debug ? 'Debug: ON' : 'Debug: OFF';
@@ -4041,8 +4407,20 @@
     }
 
     function updateScopesOverlayState(overlay) {
-        if (!scopesHudShown) { overlay.style.display = 'none'; return; }
+        if (!scopesHudShown) {
+            overlay.style.display = 'none';
+            return;
+        }
         overlay.style.display = 'flex';
+    }
+
+    function updatePerformanceOverlayState(overlay) {
+        if (!scopesHudShown || !debug) {
+            overlay.style.display = 'none';
+            return;
+        }
+        overlay.style.display = 'flex';
+        updatePerformanceDataForOverlay(overlay);
     }
 
     const fsWraps2 = new WeakMap();
@@ -4145,7 +4523,7 @@
             }
         }
 
-        if (overlay.classList.contains('gvf-video-overlay-scopes')) {
+        if (overlay.classList.contains('gvf-video-overlay-scopes') || overlay.classList.contains('gvf-video-overlay-performance')) {
             if (isWrapFs) {
                 const cr = container.getBoundingClientRect();
                 overlay.style.top = `${Math.round((r.top - cr.top) + dy)}px`;
@@ -4178,6 +4556,7 @@
             if (!overlaysGrade.has(v)) overlaysGrade.set(v, mkGradingOverlay());
             if (!overlaysIO.has(v)) overlaysIO.set(v, mkIOOverlay());
             if (!overlaysScopes.has(v)) overlaysScopes.set(v, mkScopesOverlay());
+            if (!overlaysPerf.has(v)) overlaysPerf.set(v, mkPerformanceOverlay());
             if (debug && !overlaysAutoDot.has(v)) overlaysAutoDot.set(v, mkAutoDotOverlay());
         });
     }
@@ -4192,6 +4571,7 @@
             const oGr = overlaysGrade.get(v);
             const oIO = overlaysIO.get(v);
             const oScopes = overlaysScopes.get(v);
+            const oPerf = overlaysPerf.get(v);
             const oDot = overlaysAutoDot.get(v);
 
             if (oMain) {
@@ -4209,6 +4589,12 @@
             if (oScopes) {
                 updateScopesOverlayState(oScopes);
                 if (scopesHudShown) positionOverlayAt(v, oScopes, 10, 10);
+            }
+            if (oPerf) {
+                updatePerformanceOverlayState(oPerf);
+                if (scopesHudShown && debug) {
+                    positionOverlayAt(v, oPerf, 10, 10 + 360);
+                }
             }
 
             if (oDot) {
@@ -4981,7 +5367,6 @@
                 cbFilter = String(gmGet(K.CB_FILTER, cbFilter)).toLowerCase();
                 if (!['none', 'protanopia', 'deuteranopia', 'tritanomaly'].includes(cbFilter)) cbFilter = 'none';
 
-                // Debug/Load settings from storage
                 logs = !!gmGet(K.LOGS, logs);
                 debug = !!gmGet(K.DEBUG, debug);
                 LOG.on = logs;
@@ -5068,6 +5453,217 @@
         }
     }
 
+    // ===================== FPS & STATISTIKEN =====================
+    const fpsCounter = {
+        lastTime: typeof performance !== 'undefined' ? performance.now() : Date.now(),
+        frames: 0,
+        currentFps: 60,
+        smoothedFps: 60,
+        lastUpdate: 0,
+        frameTimes: [],
+        maxFrameTimes: 10
+    };
+
+    let lastVideoFrames = { total: 0, dropped: 0, corrupted: 0 };
+    let webglInfo = null;
+
+    function getWebGLInfo() {
+        if (webglInfo) return webglInfo;
+
+        try {
+            const canvas = document.createElement('canvas');
+            const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+            if (gl) {
+                const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+                if (debugInfo) {
+                    webglInfo = {
+                        renderer: gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL),
+                        vendor: gl.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL)
+                    };
+                } else {
+                    webglInfo = {
+                        renderer: gl.getParameter(gl.RENDERER),
+                        vendor: gl.getParameter(gl.VENDOR)
+                    };
+                }
+            } else {
+                webglInfo = { renderer: 'WebGL nicht verfügbar', vendor: 'Unbekannt' };
+            }
+        } catch (e) {
+            webglInfo = { renderer: 'Fehler beim Lesen', vendor: 'Fehler' };
+        }
+        return webglInfo;
+    }
+
+    function getVideoFrameStats(video) {
+        if (!video) return lastVideoFrames;
+
+        const stats = {
+            total: video.webkitDecodedFrameCount || video.mozDecodedFrames || 0,
+            dropped: video.webkitDroppedFrameCount || video.mozParsedFrames || 0,
+            corrupted: video.webkitCorruptedFrameCount || 0
+        };
+
+        if (stats.total !== lastVideoFrames.total ||
+            stats.dropped !== lastVideoFrames.dropped ||
+            stats.corrupted !== lastVideoFrames.corrupted) {
+            lastVideoFrames = stats;
+        }
+
+        return lastVideoFrames;
+    }
+
+    function calculateBitrate(video, fps) {
+        if (!video || !video.videoWidth || !video.videoHeight || !fps) return 0;
+        const pixels = video.videoWidth * video.videoHeight;
+        const estimatedBitrate = (pixels * fps * 0.1) / 1000000;
+        return Math.round(estimatedBitrate * 10) / 10;
+    }
+
+    function getBufferPercent(video) {
+        if (!video || !video.buffered || video.buffered.length === 0) return 0;
+        const buffered = video.buffered.end(video.buffered.length - 1);
+        const duration = video.duration || 1;
+        return Math.min(100, Math.round((buffered / duration) * 100));
+    }
+
+    function updateFPS() {
+        const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        fpsCounter.frames++;
+
+        if (fpsCounter.lastFrameTime) {
+            const frameTime = now - fpsCounter.lastFrameTime;
+            if (frameTime > 0 && frameTime < 200) {
+                fpsCounter.frameTimes.push(frameTime);
+                if (fpsCounter.frameTimes.length > fpsCounter.maxFrameTimes) {
+                    fpsCounter.frameTimes.shift();
+                }
+            }
+        }
+        fpsCounter.lastFrameTime = now;
+
+        if (now - fpsCounter.lastUpdate >= 200) {
+            if (fpsCounter.frameTimes.length > 0) {
+                let sum = 0;
+                for (let i = 0; i < fpsCounter.frameTimes.length; i++) {
+                    sum += fpsCounter.frameTimes[i];
+                }
+                const avgFrameTime = sum / fpsCounter.frameTimes.length;
+                fpsCounter.currentFps = Math.min(120, Math.max(1, Math.round(1000 / avgFrameTime)));
+            }
+
+            fpsCounter.smoothedFps = Math.round(fpsCounter.smoothedFps * 0.5 + fpsCounter.currentFps * 0.5);
+            fpsCounter.frames = 0;
+            fpsCounter.lastUpdate = now;
+        }
+
+        return Math.round(fpsCounter.smoothedFps);
+    }
+
+    let animationFrameId = null;
+    function startFPSMonitoring() {
+        if (animationFrameId) cancelAnimationFrame(animationFrameId);
+
+        function frame() {
+            updateFPS();
+            animationFrameId = requestAnimationFrame(frame);
+        }
+        animationFrameId = requestAnimationFrame(frame);
+    }
+
+    function updatePerformanceDataForOverlay(overlay) {
+        if (!overlay) return;
+
+        const v = choosePrimaryVideo();
+        const fps = Math.round(fpsCounter.smoothedFps) || 0;
+
+        const frameStats = v ? getVideoFrameStats(v) : lastVideoFrames;
+        const webgl = getWebGLInfo();
+        const bitrate = v ? calculateBitrate(v, fps) : 0;
+        const bufferPercent = v ? getBufferPercent(v) : 0;
+
+        // FPS
+        const fpsEl = overlay.querySelector('.gvf-perf-fps');
+        if (fpsEl) {
+            fpsEl.textContent = fps;
+            let fpsColor = '#4CAF50';
+            if (fps < 25) fpsColor = '#ff5252';
+            else if (fps < 40) fpsColor = '#ffaa00';
+            fpsEl.style.color = fpsColor;
+        }
+
+        // Frame Stats
+        const totalEl = overlay.querySelector('.gvf-perf-total-frames');
+        if (totalEl) totalEl.textContent = frameStats.total;
+
+        const droppedEl = overlay.querySelector('.gvf-perf-dropped-frames');
+        if (droppedEl) droppedEl.textContent = frameStats.dropped;
+
+        const corruptedEl = overlay.querySelector('.gvf-perf-corrupted-frames');
+        if (corruptedEl) corruptedEl.textContent = frameStats.corrupted;
+
+        // Video Stats
+        const playbackEl = overlay.querySelector('.gvf-perf-playback-rate');
+        if (playbackEl && v) playbackEl.textContent = v.playbackRate.toFixed(2) + 'x';
+
+        const resolutionEl = overlay.querySelector('.gvf-perf-resolution');
+        if (resolutionEl && v) {
+            resolutionEl.textContent = (v.videoWidth || 0) + 'x' + (v.videoHeight || 0);
+        }
+
+        // Streaming Stats
+        const bitrateEl = overlay.querySelector('.gvf-perf-bitrate');
+        if (bitrateEl) bitrateEl.textContent = bitrate + ' Mbps';
+
+        const bufferEl = overlay.querySelector('.gvf-perf-buffer');
+        if (bufferEl) bufferEl.textContent = bufferPercent + '%';
+
+        // WebGL Stats
+        const rendererEl = overlay.querySelector('.gvf-perf-renderer');
+        if (rendererEl) {
+            const renderer = webgl.renderer || 'Unbekannt';
+            rendererEl.textContent = renderer.length > 25 ? renderer.substring(0, 25) + '...' : renderer;
+        }
+
+        const vendorEl = overlay.querySelector('.gvf-perf-vendor');
+        if (vendorEl) {
+            const vendor = webgl.vendor || 'Unbekannt';
+            vendorEl.textContent = vendor.length > 25 ? vendor.substring(0, 25) + '...' : vendor;
+        }
+
+        // Screen Stats
+        const pixelRatioEl = overlay.querySelector('.gvf-perf-pixel-ratio');
+        if (pixelRatioEl) pixelRatioEl.textContent = window.devicePixelRatio.toFixed(2);
+
+        const screenResEl = overlay.querySelector('.gvf-perf-screen-res');
+        if (screenResEl) screenResEl.textContent = window.screen.width + 'x' + window.screen.height;
+
+        // Mode
+        const modeEl = overlay.querySelector('.gvf-perf-mode');
+        if (modeEl) {
+            modeEl.textContent = renderMode.toUpperCase();
+            modeEl.style.color = renderMode === 'gpu' ? '#ffaa00' : '#88ccff';
+        }
+    }
+
+    function updatePerformanceDisplay() {
+        const perfOverlays = document.querySelectorAll('.gvf-video-overlay-performance');
+        if (!perfOverlays.length) return;
+
+        perfOverlays.forEach(overlay => {
+            if (overlay.style.display !== 'none') {
+                updatePerformanceDataForOverlay(overlay);
+            }
+        });
+
+        setTimeout(updatePerformanceDisplay, 100);
+    }
+
+    // Start
+    startFPSMonitoring();
+    setTimeout(updatePerformanceDisplay, 100);
+
+    // Init
     function init() {
         sl = normSL(); gmSet(K.SL, sl);
         sr = normSR(); gmSet(K.SR, sr);
@@ -5134,22 +5730,7 @@
 
         if (scopesHudShown) startScopesLoop();
 
-        log('Init complete with WebGL2 Canvas Pipeline! RGB Gain now works correctly!', {
-            enabled, darkMoody, tealOrange, vibrantSat, iconsShown,
-            hdr: normHDR(), profile, renderMode,
-            autoOn, autoStrength: Number(autoStrength.toFixed(2)), autoLockWB,
-            scopesHudShown,
-            rgb: { r_gain: u_r_gain, g_gain: u_g_gain, b_gain: u_b_gain },
-            adaptiveFps: { min: ADAPTIVE_FPS.MIN, max: ADAPTIVE_FPS.MAX, current: ADAPTIVE_FPS.current },
-            motionThresh: AUTO.motionThresh,
-            motionMinFrames: AUTO.motionMinFrames,
-            statsAlpha: AUTO.statsAlpha,
-            gpuPipeline: renderMode === 'gpu',
-            branchlessShader: true,
-            debug: debug,
-            logs: logs,
-            colorBlindnessFilter: cbFilter
-        });
+        log('Init complete with WebGL2 Canvas Pipeline! RGB Gain now works correctly!');
 
         document.addEventListener('keydown', (e) => {
             const tag = (e.target && e.target.tagName || '').toLowerCase();
@@ -5257,408 +5838,5 @@
     document.readyState === 'loading'
         ? document.addEventListener('DOMContentLoaded', init, { once: true })
         : init();
-
-
-    // ===================== CPU & GPU AUSLASTUNG =====================
-    // Performance-Monitoring für CPU und GPU - IM SCOPES-OVERLAY
-    let gpuLoadInterval = null;
-    let lastGPULoad = 15;
-    let lastCPULoad = 15;
-
-    // CPU-Last Messung
-    let cpuData = {
-        lastMeasureTime: 0,
-        measureInterval: 2000,
-        baseline: null
-    };
-
-    // FPS-Messung
-    const fpsCounter = {
-        lastTime: typeof performance !== 'undefined' ? performance.now() : Date.now(),
-        frames: 0,
-        currentFps: 60,
-        smoothedFps: 60,
-        lastUpdate: 0,
-        frameTimes: [],
-        maxFrameTimes: 10
-    };
-
-    // GPU-spezifische Last basierend auf Render-Modus und Filtern
-    function calculateGPULoadFromSettings() {
-        let baseLoad = 10; // Basislast
-
-        // Erhöhe Last basierend auf aktiven Features
-        if (enabled) baseLoad += 10;
-        if (darkMoody) baseLoad += 5;
-        if (tealOrange) baseLoad += 8;
-        if (vibrantSat) baseLoad += 5;
-        if (normHDR() !== 0) baseLoad += 15;
-        if (profile !== 'off') baseLoad += 10;
-        if (cbFilter !== 'none') baseLoad += 8;
-
-        // User-Einstellungen
-        if (profile === 'user') {
-            if (u_contrast !== 0) baseLoad += 3;
-            if (u_sat !== 0) baseLoad += 3;
-            if (u_sharp !== 0) baseLoad += 5;
-            if (u_grain !== 0) baseLoad += 8;
-        }
-
-        // Render-Mode spezifisch
-        if (renderMode === 'gpu') {
-            baseLoad *= 1.5; // 50% mehr Last im GPU-Modus (GPU arbeitet härter)
-        }
-
-        // FPS-basierte Anpassung
-        const fps = fpsCounter.smoothedFps || 60;
-        if (fps < 30) {
-            baseLoad *= 1.5;
-        } else if (fps < 45) {
-            baseLoad *= 1.2;
-        }
-
-        return Math.min(95, Math.max(5, Math.round(baseLoad)));
-    }
-
-    // CPU-Last Berechnung mit Entlastung im GPU-Modus
-    function calculateCPULoadFromSettings() {
-        let baseLoad = 10; // Basislast
-
-        // CPU-Last durch aktive Features
-        if (enabled) baseLoad += 15; // Grundlast durch Filter
-        if (darkMoody) baseLoad += 5;
-        if (tealOrange) baseLoad += 5;
-        if (vibrantSat) baseLoad += 5;
-        if (normHDR() !== 0) baseLoad += 10;
-        if (profile !== 'off') baseLoad += 8;
-
-        // User-Einstellungen belasten CPU
-        if (profile === 'user') {
-            if (u_contrast !== 0) baseLoad += 5;
-            if (u_sat !== 0) baseLoad += 5;
-            if (u_sharp !== 0) baseLoad += 8;
-            if (u_grain !== 0) baseLoad += 10;
-        }
-
-        // WICHTIG: CPU-Entlastung im GPU-Modus
-        if (renderMode === 'gpu') {
-            // GPU übernimmt die Arbeit -> CPU wird entlastet
-            baseLoad = baseLoad * 0.4; // Nur 40% der Last verbleiben auf CPU
-        } else {
-            // SVG-Modus: CPU macht die Arbeit
-            baseLoad = baseLoad * 1.2; // 20% mehr Last im SVG-Modus
-        }
-
-        // FPS beeinflussen CPU-Last
-        const fps = fpsCounter.smoothedFps || 60;
-        if (fps < 30) {
-            baseLoad *= 1.3; // Bei niedrigen FPS kämpft die CPU
-        }
-
-        return Math.min(90, Math.max(5, Math.round(baseLoad)));
-    }
-
-    // EXTREM leichte CPU-Messung (nur als Referenz)
-    async function measureCPULight() {
-        return new Promise(resolve => {
-            setTimeout(() => {
-                try {
-                    const start = performance.now();
-                    let result = 0;
-
-                    for (let i = 0; i < 2000; i++) {
-                        result += Math.sqrt(i);
-                    }
-
-                    const duration = performance.now() - start;
-
-                    // Messung wird jetzt mit der berechneten Last gemischt
-                    let measuredLoad;
-                    if (duration < 0.1) {
-                        measuredLoad = 5;
-                    } else if (duration < 0.3) {
-                        measuredLoad = 15;
-                    } else if (duration < 0.8) {
-                        measuredLoad = 30;
-                    } else if (duration < 1.5) {
-                        measuredLoad = 50;
-                    } else {
-                        measuredLoad = 70;
-                    }
-
-                    // Kombiniere Messung mit berechneter Last
-                    const calculatedLoad = calculateCPULoadFromSettings();
-                    const combinedLoad = (measuredLoad + calculatedLoad) / 2;
-
-                    resolve(Math.min(90, Math.max(5, Math.round(combinedLoad))));
-                } catch (e) {
-                    resolve(calculateCPULoadFromSettings());
-                }
-            }, 5);
-        });
-    }
-
-    async function updateCPULoad() {
-        const now = Date.now();
-
-        if (now - cpuData.lastMeasureTime < 2000) {
-            // Zwischen Messungen: Verwende berechnete Werte
-            lastCPULoad = calculateCPULoadFromSettings();
-            return lastCPULoad;
-        }
-
-        cpuData.lastMeasureTime = now;
-
-        try {
-            const load = await measureCPULight();
-            // 60% Messung, 40% Berechnung für Realismus
-            lastCPULoad = load * 0.6 + calculateCPULoadFromSettings() * 0.4;
-            lastCPULoad = Math.min(90, Math.max(5, lastCPULoad));
-        } catch (e) {
-            lastCPULoad = calculateCPULoadFromSettings();
-        }
-
-        return lastCPULoad;
-    }
-
-    function updateFPS() {
-        const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-        fpsCounter.frames++;
-
-        if (fpsCounter.lastFrameTime) {
-            const frameTime = now - fpsCounter.lastFrameTime;
-            if (frameTime > 0 && frameTime < 200) {
-                fpsCounter.frameTimes.push(frameTime);
-                if (fpsCounter.frameTimes.length > fpsCounter.maxFrameTimes) {
-                    fpsCounter.frameTimes.shift();
-                }
-            }
-        }
-        fpsCounter.lastFrameTime = now;
-
-        if (now - fpsCounter.lastUpdate >= 200) {
-            if (fpsCounter.frameTimes.length > 0) {
-                let sum = 0;
-                for (let i = 0; i < fpsCounter.frameTimes.length; i++) {
-                    sum += fpsCounter.frameTimes[i];
-                }
-                const avgFrameTime = sum / fpsCounter.frameTimes.length;
-                fpsCounter.currentFps = Math.min(120, Math.max(1, Math.round(1000 / avgFrameTime)));
-            }
-
-            fpsCounter.smoothedFps = Math.round(fpsCounter.smoothedFps * 0.5 + fpsCounter.currentFps * 0.5);
-            fpsCounter.frames = 0;
-            fpsCounter.lastUpdate = now;
-
-            // GPU und CPU Last sofort aktualisieren
-            lastGPULoad = calculateGPULoadFromSettings();
-            lastCPULoad = calculateCPULoadFromSettings();
-        }
-
-        return Math.round(fpsCounter.smoothedFps);
-    }
-
-    let animationFrameId = null;
-    function startFPSMonitoring() {
-        if (animationFrameId) cancelAnimationFrame(animationFrameId);
-
-        function frame() {
-            updateFPS();
-            animationFrameId = requestAnimationFrame(frame);
-        }
-        animationFrameId = requestAnimationFrame(frame);
-    }
-
-    function startGPULoadMonitoring() {
-        if (gpuLoadInterval) clearInterval(gpuLoadInterval);
-
-        let lastFrameTime = performance.now();
-
-        const cpuInterval = setInterval(async () => {
-            if (debug) {
-                await updateCPULoad();
-            }
-        }, 2000);
-
-        function measureFrame() {
-            const now = performance.now();
-            lastFrameTime = now;
-
-            // Live-Updates basierend auf aktuellen Einstellungen
-            lastGPULoad = calculateGPULoadFromSettings();
-            lastCPULoad = lastCPULoad * 0.7 + calculateCPULoadFromSettings() * 0.3;
-
-            requestAnimationFrame(measureFrame);
-        }
-
-        requestAnimationFrame(measureFrame);
-
-        gpuLoadInterval = cpuInterval;
-    }
-
-    // Performance-Sektion zum Scopes-Overlay hinzufügen
-    function addPerformanceToScopes(overlay) {
-        if (!overlay) return;
-
-        // Prüfen ob bereits vorhanden
-        if (overlay.querySelector('.gvf-performance-section')) return;
-
-        const perfSection = document.createElement('div');
-        perfSection.className = 'gvf-performance-section';
-        perfSection.style.cssText = `
-            margin-top: 8px;
-            padding: 8px;
-            border-radius: 6px;
-            background: rgba(0,0,0,0.8);
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-            border: 1px solid rgba(255,255,255,0.1);
-        `;
-
-        const title = document.createElement('div');
-        title.style.cssText = 'font-size:8px;color:#aaa;text-transform:uppercase;margin-bottom:2px;';
-        title.textContent = 'PERFORMANCE';
-        perfSection.appendChild(title);
-
-        // CPU
-        const cpuRow = document.createElement('div');
-        cpuRow.style.cssText = `display:flex;align-items:center;gap:4px;`;
-        cpuRow.innerHTML = `
-            <span style="color:#aaa;width:30px;">CPU</span>
-            <div style="flex:1;height:6px;background:#333;border-radius:3px;overflow:hidden;">
-                <div class="gvf-cpu-bar" style="height:100%;width:0%;background:#4CAF50;transition:width 0.1s ease;"></div>
-            </div>
-            <span class="gvf-cpu-value" style="color:#4CAF50;width:35px;text-align:right;font-weight:bold;">0%</span>
-        `;
-
-        // GPU
-        const gpuRow = document.createElement('div');
-        gpuRow.style.cssText = `display:flex;align-items:center;gap:4px;`;
-        gpuRow.innerHTML = `
-            <span style="color:#aaa;width:30px;">GPU</span>
-            <div style="flex:1;height:6px;background:#333;border-radius:3px;overflow:hidden;">
-                <div class="gvf-gpu-bar" style="height:100%;width:0%;background:#ffaa00;transition:width 0.1s ease;"></div>
-            </div>
-            <span class="gvf-gpu-value" style="color:#ffaa00;width:35px;text-align:right;font-weight:bold;">0%</span>
-        `;
-
-        // FPS
-        const fpsRow = document.createElement('div');
-        fpsRow.style.cssText = `display:flex;align-items:center;gap:4px;`;
-        fpsRow.innerHTML = `
-            <span style="color:#aaa;width:30px;">FPS</span>
-            <div style="flex:1;height:6px;background:#333;border-radius:3px;overflow:hidden;">
-                <div class="gvf-fps-bar" style="height:100%;width:0%;background:#4CAF50;transition:width 0.1s ease;"></div>
-            </div>
-            <span class="gvf-fps-value" style="color:#4CAF50;width:35px;text-align:right;font-weight:bold;">0</span>
-        `;
-
-        // Mode Info mit CPU-Entlastungshinweis
-        const modeRow = document.createElement('div');
-        modeRow.style.cssText = 'display:flex;justify-content:space-between;margin-top:4px;font-size:8px;color:#888;';
-        modeRow.innerHTML = `
-            <span>Mode: <span class="gvf-mode-text" style="color:${renderMode === 'gpu' ? '#ffaa00' : '#88ccff'}">${renderMode.toUpperCase()}</span></span>
-            <span class="gvf-cpu-note" style="color:${renderMode === 'gpu' ? '#4CAF50' : '#ffaa00'}">${renderMode === 'gpu' ? 'CPU↓' : 'CPU↑'}</span>
-        `;
-
-        perfSection.appendChild(cpuRow);
-        perfSection.appendChild(gpuRow);
-        perfSection.appendChild(fpsRow);
-        perfSection.appendChild(modeRow);
-
-        // Zum Overlay hinzufügen
-        overlay.appendChild(perfSection);
-
-        // Update-Funktion für die Anzeige
-        function updateDisplay() {
-            if (!perfSection.parentNode) return;
-
-            const fps = Math.round(fpsCounter.smoothedFps) || 60;
-            const fpsPercent = Math.min(100, (fps / 60) * 100);
-
-            // CPU Update
-            const cpuBar = perfSection.querySelector('.gvf-cpu-bar');
-            const cpuVal = perfSection.querySelector('.gvf-cpu-value');
-            const cpuLoad = Math.round(lastCPULoad);
-            cpuBar.style.width = cpuLoad + '%';
-            cpuVal.textContent = cpuLoad + '%';
-
-            let cpuColor = '#4CAF50';
-            if (cpuLoad > 70) cpuColor = '#ff5252';
-            else if (cpuLoad > 40) cpuColor = '#ffaa00';
-            cpuBar.style.background = cpuColor;
-            cpuVal.style.color = cpuColor;
-
-            // GPU Update
-            const gpuBar = perfSection.querySelector('.gvf-gpu-bar');
-            const gpuVal = perfSection.querySelector('.gvf-gpu-value');
-            const gpuLoad = Math.round(lastGPULoad);
-            gpuBar.style.width = gpuLoad + '%';
-            gpuVal.textContent = gpuLoad + '%';
-
-            let gpuColor = '#4CAF50';
-            if (gpuLoad > 70) gpuColor = '#ff5252';
-            else if (gpuLoad > 40) gpuColor = '#ffaa00';
-            gpuBar.style.background = gpuColor;
-            gpuVal.style.color = gpuColor;
-
-            // FPS Update
-            const fpsBar = perfSection.querySelector('.gvf-fps-bar');
-            const fpsVal = perfSection.querySelector('.gvf-fps-value');
-            fpsBar.style.width = fpsPercent + '%';
-            fpsVal.textContent = fps;
-
-            let fpsColor = '#4CAF50';
-            if (fps < 25) fpsColor = '#ff5252';
-            else if (fps < 40) fpsColor = '#ffaa00';
-            fpsBar.style.background = fpsColor;
-            fpsVal.style.color = fpsColor;
-
-            // Mode Update mit CPU-Entlastungshinweis
-            const modeText = perfSection.querySelector('.gvf-mode-text');
-            const cpuNote = perfSection.querySelector('.gvf-cpu-note');
-            if (modeText) {
-                modeText.textContent = renderMode.toUpperCase();
-                modeText.style.color = renderMode === 'gpu' ? '#ffaa00' : '#88ccff';
-            }
-            if (cpuNote) {
-                cpuNote.textContent = renderMode === 'gpu' ? 'CPU↓' : 'CPU↑';
-                cpuNote.style.color = renderMode === 'gpu' ? '#4CAF50' : '#ffaa00';
-            }
-
-            setTimeout(updateDisplay, 100);
-        }
-
-        setTimeout(updateDisplay, 100);
-    }
-
-    // Originale mkScopesOverlay Funktion erweitern
-    const originalMkScopesOverlay = mkScopesOverlay;
-    mkScopesOverlay = function() {
-        const overlay = originalMkScopesOverlay();
-        // Performance-Sektion nur im Debug-Modus hinzufügen
-        if (debug) {
-            // Kleine Verzögerung damit das Overlay im DOM ist
-            setTimeout(() => {
-                addPerformanceToScopes(overlay);
-            }, 50);
-        }
-        return overlay;
-    };
-
-    // FPS-Monitoring starten
-    startFPSMonitoring();
-    startGPULoadMonitoring();
-
-    // Beim Start prüfen ob Scopes-Overlay schon existiert
-    setTimeout(() => {
-        if (debug) {
-            const scopesOverlay = document.querySelector('.gvf-video-overlay-scopes');
-            if (scopesOverlay) {
-                addPerformanceToScopes(scopesOverlay);
-            }
-        }
-    }, 1000);
 
 })();
