@@ -3,9 +3,9 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.5.9
-// @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads. FIX: Firefox-optimized defaults!
-// @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern. FIX: Firefox-optimierte Standardwerte!
+// @version      1.6.0
+// @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
+// @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern. 
 // @match        *://*/*
 // @run-at       document-idle
 // @grant        GM_getValue
@@ -418,7 +418,11 @@
                 ctx.restore();
             } catch (e) {
                 if (statusEl) statusEl.textContent = 'Recording stopped: blocked (DRM/cross-origin).';
-                try { REC.stopRequested = true; REC.mr && REC.mr.stop(); } catch (_) { }
+                // FIX: REC.stopRequested auswerten
+                REC.stopRequested = true;
+                if (REC.mr && REC.mr.state === 'recording') {
+                    try { REC.mr.stop(); } catch (_) { }
+                }
                 return;
             }
 
@@ -1175,7 +1179,11 @@
             const nodes = svg.querySelectorAll('feColorMatrix[data-gvf-auto="1"]');
             if (!nodes || !nodes.length) return;
             nodes.forEach(n => {
-                try { n.setAttribute('values', valuesStr); } catch (_) { }
+                try {
+                    if (n) {
+                        n.setAttribute('values', valuesStr);
+                    }
+                } catch (_) { }
             });
         } catch (_) { }
     }
@@ -2442,6 +2450,7 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
                 AUTO.tBoostUntil = AUTO.tBoostStart + AUTO.boostMs;
                 AUTO.drmBlocked = false;
                 AUTO.blockUntilMs = 0;
+                AUTO.blink = false; // FIX: blink zurücksetzen
                 ADAPTIVE_FPS.current = ADAPTIVE_FPS.MIN;
                 ADAPTIVE_FPS.history = [];
             };
@@ -2458,6 +2467,7 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
                 AUTO.statsEma = null;
                 AUTO.drmBlocked = false;
                 AUTO.blockUntilMs = 0;
+                AUTO.blink = false;
                 ADAPTIVE_FPS.current = ADAPTIVE_FPS.MIN;
                 ADAPTIVE_FPS.history = [];
             }, true);
@@ -2518,6 +2528,7 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
                 AUTO.drmBlocked = false;
                 AUTO.blockUntilMs = 0;
                 AUTO.lastAppliedMs = 0;
+                AUTO.blink = false;
                 setAutoDotState('off');
                 scheduleNext(ADAPTIVE_FPS.MIN);
                 return;
@@ -2629,6 +2640,7 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
                 AUTO.motionEma = 0;
                 AUTO.motionFrames = 0;
                 AUTO.statsEma = null;
+                AUTO.blink = false; // FIX: blink zurücksetzen
 
                 const keep = AUTO.lastGoodMatrixStr || _autoLastMatrixStr || autoMatrixStr || matToSvgValues(matIdentity4x5());
                 autoMatrixStr = keep;
@@ -2680,6 +2692,7 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
             AUTO.drmBlocked = false;
             AUTO.blockUntilMs = 0;
             AUTO.lastAppliedMs = 0;
+            AUTO.blink = false;
 
             autoMatrixStr = matToSvgValues(matIdentity4x5());
             _autoLastMatrixStr = autoMatrixStr;
@@ -3289,13 +3302,13 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
 
         // Reset to defaults
         btnReset.addEventListener('click', () => {
-           
+
             const firefoxDetected = isFirefox();
-            
+
             let defaults;
-            
+
             if (firefoxDetected) {
-              
+
                 defaults = {
                     enabled: true, darkMoody: true, tealOrange: false, vibrantSat: false, iconsShown: false,
                     sl: 1.3, sr: -1.1, bl: 0.3, wl: 0.2, dn: 0.6,
@@ -3314,7 +3327,7 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
                     cbFilter: 'none'
                 };
             } else {
-                
+
                 defaults = {
                     enabled: true, darkMoody: true, tealOrange: false, vibrantSat: false, iconsShown: false,
                     sl: 1.0, sr: 0.5, bl: -1.2, wl: 0.2, dn: -0.6,
@@ -3333,7 +3346,7 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
                     cbFilter: 'none'
                 };
             }
-            
+
             importSettings(defaults);
             setDirty(false);
             ta.value = JSON.stringify(exportSettings(), null, 2);
@@ -3765,7 +3778,7 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
     function exportSettings() {
         return {
             schema: 'gvf-settings',
-            ver: '1.9',
+            ver: '1.10',
             enabled: !!enabled,
             darkMoody: !!darkMoody,
             tealOrange: !!tealOrange,
@@ -5460,7 +5473,8 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
             debug: debug,
             logs: logs,
             colorBlindnessFilter: cbFilter,
-            isFirefox: isFirefoxBrowser
+            isFirefox: isFirefoxBrowser,
+            bugfixes: 'REC.stopRequested ausgewertet, AUTO.blink zurückgesetzt, null-check in updateAutoMatrixInSvg'
         });
 
         document.addEventListener('keydown', (e) => {
@@ -5572,4 +5586,3 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
 
 
 })();
-
