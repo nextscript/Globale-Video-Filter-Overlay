@@ -1419,11 +1419,10 @@
                 // --- HDR helpers (linear-light + ACES tonemapping) ---
                 vec3 srgbToLinear(vec3 c) {
                     c = clamp(c, 0.0, 1.0);
-                    bvec3 cutoff = lessThanEqual(c, vec3(0.04045));
                     vec3 low = c / 12.92;
-                    vec3 high = pow((c + 0.055) / 1.055, vec3(2.4)),
-                    step(0.04045, c));
-                    return mix(high, low, vec3(cutoff));
+                    vec3 high = pow((c + 0.055) / 1.055, vec3(2.4));
+                    vec3 t = step(vec3(0.04045), c);
+                    return mix(low, high, t);
                 }
 
                 vec3 linearToSrgb(vec3 c) {
@@ -5587,4 +5586,3 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
 
 
 })();
-
