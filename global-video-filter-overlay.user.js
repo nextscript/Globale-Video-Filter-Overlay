@@ -3,7 +3,7 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.5.8-firefox-fixed
+// @version      1.5.9
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads. FIX: Firefox-optimized defaults!
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern. FIX: Firefox-optimierte Standardwerte!
 // @match        *://*/*
@@ -5572,3 +5572,4 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
 
 
 })();
+
