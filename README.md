@@ -200,11 +200,12 @@ The GPU Pipeline Mode is an alternative rendering mode for maximum performance. 
 <h2>Recommended starting presets</h2>
 <b>Clean / natural</b>
 <ul>
-<li>SL: +0.6</li>
-<li>SR: +1.0</li>
-<li>BL: 0.0</li>
-<li>WL: 0.0</li>
-<li>DN: +0.5</li>
+<li>SL: +1.0</li>
+<li>SR: +0.6</li>
+<li>BL: -1.3</li>
+<li>WL: 0.3</li>
+<li>DN: -0.8</li>
+<li>HDR: 0.0</li>
 </ul>
 <b>Stronger sharpness</b>
 <ul>
