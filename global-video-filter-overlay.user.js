@@ -3,9 +3,9 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.6.0
+// @version      1.6.1
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
-// @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern. 
+// @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
 // @run-at       document-idle
 // @grant        GM_getValue
@@ -1180,7 +1180,7 @@
             if (!nodes || !nodes.length) return;
             nodes.forEach(n => {
                 try {
-                    if (n) {
+                    if (n) { // FIX: null-check hinzugefügt
                         n.setAttribute('values', valuesStr);
                     }
                 } catch (_) { }
@@ -1441,14 +1441,14 @@
 
                 vec3 tonemapACES(vec3 color) {
                     const mat3 ACESInputMat = mat3(
-                        0.59719, 0.35458, 0.04823,
-                        0.07600, 0.90834, 0.01566,
-                        0.02840, 0.13383, 0.83777
+                      0.59719, 0.07600, 0.02840,
+                      0.35458, 0.90834, 0.13383,
+                      0.04823, 0.01566, 0.83777
                     );
                     const mat3 ACESOutputMat = mat3(
-                        1.60475, -0.53108, -0.07367,
-                        -0.10208, 1.10813, -0.00605,
-                        -0.00327, -0.07276, 1.07602
+                        1.60475, -0.10208, -0.00327,
+                        -0.53108, 1.10813, -0.07276,
+                        -0.07367, -0.00605, 1.07602
                     );
                     color = ACESInputMat * color;
                     color = RRTAndODTFit(color);
