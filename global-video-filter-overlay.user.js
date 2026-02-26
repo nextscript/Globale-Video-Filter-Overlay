@@ -4,8 +4,8 @@
 // @namespace    gvf
 // @author       Freak288
 // @version      1.6.1
-// @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
-// @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
+// @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads. FIX: Bugfixes für Recording und Auto-Match!
+// @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern. FIX: Bugfixes für Recording und Auto-Match!
 // @match        *://*/*
 // @run-at       document-idle
 // @grant        GM_getValue
@@ -1421,7 +1421,8 @@
                     c = clamp(c, 0.0, 1.0);
                     bvec3 cutoff = lessThanEqual(c, vec3(0.04045));
                     vec3 low = c / 12.92;
-                    vec3 high = pow((c + 0.055) / 1.055, vec3(2.4));
+                    vec3 high = pow((c + 0.055) / 1.055, vec3(2.4)),
+                    step(0.04045, c));
                     return mix(high, low, vec3(cutoff));
                 }
 
