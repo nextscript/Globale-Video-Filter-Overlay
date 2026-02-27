@@ -3,9 +3,9 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.6.2
-// @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads. FIX: Bugfixes für Recording und Auto-Match!
-// @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern. FIX: Bugfixes für Recording und Auto-Match!
+// @version      1.6.3
+// @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
+// @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
 // @run-at       document-idle
 // @grant        GM_getValue
@@ -33,6 +33,8 @@
     const GPU_PROFILE_FILTER_ID = 'gvf-gpu-profile-filter';
     const WEBGL_CANVAS_ID = 'gvf-webgl-canvas';
     const RECORDING_HUD_ID = 'gvf-recording-hud';
+    const CONFIG_MENU_ID = 'gvf-config-menu';
+    const NOTIFICATION_ID = 'gvf-profile-notification';
     const svgNS = 'http://www.w3.org/2000/svg';
 
     // Hotkeys
@@ -43,6 +45,7 @@
     const AUTO_KEY = 'a';
     const SCOPES_KEY = 's';
     const GPU_MODE_KEY = 'x';
+    const PROFILE_CYCLE_KEY = 'q'; // Shift+Q for profile cycling
 
     // -------------------------
     // Throttling for less computationally intensive operations
@@ -123,7 +126,11 @@
         DEBUG: 'gvf_debug',
 
         // Color blindness filter
-        CB_FILTER: 'gvf_cb_filter'
+        CB_FILTER: 'gvf_cb_filter',
+
+        // Profile Management
+        ACTIVE_USER_PROFILE: 'gvf_active_user_profile',
+        USER_PROFILES: 'gvf_user_profiles'
     };
 
     // -------------------------
@@ -147,6 +154,414 @@
     // Debug/Load settings from storage
     logs = !!gmGet(K.LOGS, true);
     debug = !!gmGet(K.DEBUG, false); // Default false
+
+    // -------------------------
+    // User Profile Management
+    // -------------------------
+    let userProfiles = [];
+    let activeUserProfile = null;
+
+    // Standard-User-Profile
+    const DEFAULT_USER_PROFILE = {
+        id: 'default',
+        name: 'Default',
+        createdAt: Date.now(),
+        settings: {
+            enabled: true,
+            darkMoody: true,
+            tealOrange: false,
+            vibrantSat: false,
+            sl: 1.0,
+            sr: 0.5,
+            bl: -1.2,
+            wl: 0.2,
+            dn: -0.6,
+            hdr: 0.0,
+            profile: 'user',
+            renderMode: 'svg',
+            autoOn: true,
+            autoStrength: 0.65,
+            autoLockWB: true,
+            u_contrast: 0,
+            u_black: 0,
+            u_white: 0,
+            u_highlights: 0,
+            u_shadows: 0,
+            u_sat: 0,
+            u_vib: 0,
+            u_sharp: 0,
+            u_gamma: 0,
+            u_grain: 0,
+            u_hue: 0,
+            u_r_gain: 128,
+            u_g_gain: 128,
+            u_b_gain: 128,
+            cbFilter: 'none'
+        }
+    };
+
+    // Firefox-specific default profile
+    const DEFAULT_USER_PROFILE_FIREFOX = {
+        id: 'default',
+        name: 'Default',
+        createdAt: Date.now(),
+        settings: {
+            enabled: true,
+            darkMoody: true,
+            tealOrange: false,
+            vibrantSat: false,
+            sl: 1.3,
+            sr: -1.1,
+            bl: 0.3,
+            wl: 0.2,
+            dn: 0.6,
+            hdr: 0.0,
+            profile: 'off',
+            renderMode: 'svg',
+            autoOn: true,
+            autoStrength: 0.65,
+            autoLockWB: true,
+            u_contrast: 0,
+            u_black: 0,
+            u_white: 0,
+            u_highlights: 0,
+            u_shadows: 0,
+            u_sat: 0,
+            u_vib: 0,
+            u_sharp: 0,
+            u_gamma: 0,
+            u_grain: 0,
+            u_hue: 0,
+            u_r_gain: 128,
+            u_g_gain: 128,
+            u_b_gain: 128,
+            cbFilter: 'none'
+        }
+    };
+
+    // Profile Management Functions
+    function loadUserProfiles() {
+        try {
+            const stored = gmGet(K.USER_PROFILES, null);
+            if (stored && Array.isArray(stored) && stored.length > 0) {
+                userProfiles = stored;
+            } else {
+                // Create default profile based on browser
+                const isFirefoxBrowser = isFirefox();
+                const defaultProfile = isFirefoxBrowser ? DEFAULT_USER_PROFILE_FIREFOX : DEFAULT_USER_PROFILE;
+                userProfiles = [defaultProfile];
+            }
+
+            // Load active profile
+            const activeId = gmGet(K.ACTIVE_USER_PROFILE, 'default');
+            activeUserProfile = userProfiles.find(p => p.id === activeId) || userProfiles[0];
+
+            log('User profiles loaded:', userProfiles.length, 'Active:', activeUserProfile?.name);
+        } catch (e) {
+            logW('Error loading user profiles:', e);
+            const isFirefoxBrowser = isFirefox();
+            const defaultProfile = isFirefoxBrowser ? DEFAULT_USER_PROFILE_FIREFOX : DEFAULT_USER_PROFILE;
+            userProfiles = [defaultProfile];
+            activeUserProfile = defaultProfile;
+        }
+    }
+
+    function saveUserProfiles() {
+        try {
+            gmSet(K.USER_PROFILES, userProfiles);
+            if (activeUserProfile) {
+                gmSet(K.ACTIVE_USER_PROFILE, activeUserProfile.id);
+            }
+        } catch (e) {
+            logW('Error saving user profiles:', e);
+        }
+    }
+
+    function createNewUserProfile(name) {
+        const newProfile = {
+            id: 'profile_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
+            name: name || 'New profile',
+            createdAt: Date.now(),
+            settings: { ...getCurrentSettings() }
+        };
+        userProfiles.push(newProfile);
+        saveUserProfiles();
+        return newProfile;
+    }
+
+    function deleteUserProfile(profileId) {
+        if (profileId === 'default') {
+            log('Cannot delete standard profile');
+            return false;
+        }
+
+        const index = userProfiles.findIndex(p => p.id === profileId);
+        if (index !== -1) {
+            userProfiles.splice(index, 1);
+
+            // If active profile has been deleted, switch to default
+            if (activeUserProfile && activeUserProfile.id === profileId) {
+                switchToUserProfile('default');
+            }
+
+            saveUserProfiles();
+            return true;
+        }
+        return false;
+    }
+
+    function switchToUserProfile(profileId) {
+        const profile = userProfiles.find(p => p.id === profileId);
+        if (!profile) {
+            logW('Profile not found:', profileId);
+            return false;
+        }
+
+        // Save current settings (if desired)
+        if (activeUserProfile) {
+            updateCurrentProfileSettings();
+        }
+
+        // Switch profile
+        activeUserProfile = profile;
+        applyUserProfileSettings(profile.settings);
+        saveUserProfiles();
+
+        log('Switched to profile:', profile.name);
+
+        // Show notification
+        showProfileNotification(profile.name);
+
+        return true;
+    }
+
+    // Cycle to next profile (for Shift+Q)
+    function cycleToNextProfile() {
+        if (!userProfiles || userProfiles.length === 0) return;
+
+        const currentIndex = userProfiles.findIndex(p => p.id === activeUserProfile?.id);
+        if (currentIndex === -1) return;
+
+        const nextIndex = (currentIndex + 1) % userProfiles.length;
+        const nextProfile = userProfiles[nextIndex];
+
+        switchToUserProfile(nextProfile.id);
+    }
+
+    // Profile notification system
+    let notificationTimeout = null;
+
+    function createNotificationElement() {
+        let notif = document.getElementById(NOTIFICATION_ID);
+        if (notif) return notif;
+
+        notif = document.createElement('div');
+        notif.id = NOTIFICATION_ID;
+        notif.style.cssText = `
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.85);
+            color: #fff;
+            padding: 12px 24px;
+            border-radius: 30px;
+            font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+            font-size: 16px;
+            font-weight: 900;
+            z-index: 2147483647;
+            display: none;
+            align-items: center;
+            gap: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+            border: 2px solid #2a6fdb;
+            backdrop-filter: blur(5px);
+            pointer-events: none;
+            transform: translateZ(0);
+            letter-spacing: 0.5px;
+        `;
+
+        const icon = document.createElement('span');
+        icon.textContent = '🎬';
+        icon.style.cssText = `
+            font-size: 20px;
+            filter: drop-shadow(0 0 5px #2a6fdb);
+        `;
+
+        const text = document.createElement('span');
+        text.id = 'gvf-notification-text';
+        text.textContent = 'Profile: Default';
+
+        notif.appendChild(icon);
+        notif.appendChild(text);
+        document.body.appendChild(notif);
+
+        return notif;
+    }
+
+    function showProfileNotification(profileName) {
+        const notif = createNotificationElement();
+        const textEl = document.getElementById('gvf-notification-text');
+
+        if (textEl) {
+            textEl.textContent = `Profile: ${profileName}`;
+        }
+
+        // Clear any existing timeout
+        if (notificationTimeout) {
+            clearTimeout(notificationTimeout);
+        }
+
+        // Show notification
+        notif.style.display = 'flex';
+
+        // Set timeout to hide after 3 seconds
+        notificationTimeout = setTimeout(() => {
+            notif.style.display = 'none';
+            notificationTimeout = null;
+        }, 3000);
+    }
+
+    function updateCurrentProfileSettings() {
+        if (!activeUserProfile) return;
+
+        const currentSettings = getCurrentSettings();
+        activeUserProfile.settings = { ...currentSettings };
+        saveUserProfiles();
+    }
+
+    function getCurrentSettings() {
+        return {
+            enabled: enabled,
+            darkMoody: darkMoody,
+            tealOrange: tealOrange,
+            vibrantSat: vibrantSat,
+            sl: sl,
+            sr: sr,
+            bl: bl,
+            wl: wl,
+            dn: dn,
+            hdr: hdr,
+            profile: profile,
+            renderMode: renderMode,
+            autoOn: autoOn,
+            autoStrength: autoStrength,
+            autoLockWB: autoLockWB,
+            u_contrast: u_contrast,
+            u_black: u_black,
+            u_white: u_white,
+            u_highlights: u_highlights,
+            u_shadows: u_shadows,
+            u_sat: u_sat,
+            u_vib: u_vib,
+            u_sharp: u_sharp,
+            u_gamma: u_gamma,
+            u_grain: u_grain,
+            u_hue: u_hue,
+            u_r_gain: u_r_gain,
+            u_g_gain: u_g_gain,
+            u_b_gain: u_b_gain,
+            cbFilter: cbFilter
+        };
+    }
+
+    function applyUserProfileSettings(settings) {
+        _suspendSync = true;
+        _inSync = true;
+
+        try {
+            enabled = settings.enabled ?? enabled;
+            darkMoody = settings.darkMoody ?? darkMoody;
+            tealOrange = settings.tealOrange ?? tealOrange;
+            vibrantSat = settings.vibrantSat ?? vibrantSat;
+
+            sl = settings.sl ?? sl;
+            sr = settings.sr ?? sr;
+            bl = settings.bl ?? bl;
+            wl = settings.wl ?? wl;
+            dn = settings.dn ?? dn;
+
+            hdr = settings.hdr ?? hdr;
+            profile = settings.profile ?? profile;
+            renderMode = settings.renderMode ?? renderMode;
+
+            autoOn = settings.autoOn ?? autoOn;
+            autoStrength = settings.autoStrength ?? autoStrength;
+            autoLockWB = settings.autoLockWB ?? autoLockWB;
+
+            u_contrast = settings.u_contrast ?? u_contrast;
+            u_black = settings.u_black ?? u_black;
+            u_white = settings.u_white ?? u_white;
+            u_highlights = settings.u_highlights ?? u_highlights;
+            u_shadows = settings.u_shadows ?? u_shadows;
+            u_sat = settings.u_sat ?? u_sat;
+            u_vib = settings.u_vib ?? u_vib;
+            u_sharp = settings.u_sharp ?? u_sharp;
+            u_gamma = settings.u_gamma ?? u_gamma;
+            u_grain = settings.u_grain ?? u_grain;
+            u_hue = settings.u_hue ?? u_hue;
+
+            u_r_gain = settings.u_r_gain ?? u_r_gain;
+            u_g_gain = settings.u_g_gain ?? u_g_gain;
+            u_b_gain = settings.u_b_gain ?? u_b_gain;
+
+            cbFilter = settings.cbFilter ?? cbFilter;
+
+            // Save in GM
+            gmSet(K.enabled, enabled);
+            gmSet(K.moody, darkMoody);
+            gmSet(K.teal, tealOrange);
+            gmSet(K.vib, vibrantSat);
+
+            gmSet(K.SL, sl);
+            gmSet(K.SR, sr);
+            gmSet(K.BL, bl);
+            gmSet(K.WL, wl);
+            gmSet(K.DN, dn);
+
+            gmSet(K.HDR, hdr);
+            if (hdr !== 0) gmSet(K.HDR_LAST, hdr);
+
+            gmSet(K.PROF, profile);
+            gmSet(K.RENDER_MODE, renderMode);
+
+            gmSet(K.AUTO_ON, autoOn);
+            gmSet(K.AUTO_STRENGTH, autoStrength);
+            gmSet(K.AUTO_LOCK_WB, autoLockWB);
+
+            gmSet(K.U_CONTRAST, u_contrast);
+            gmSet(K.U_BLACK, u_black);
+            gmSet(K.U_WHITE, u_white);
+            gmSet(K.U_HIGHLIGHTS, u_highlights);
+            gmSet(K.U_SHADOWS, u_shadows);
+            gmSet(K.U_SAT, u_sat);
+            gmSet(K.U_VIB, u_vib);
+            gmSet(K.U_SHARP, u_sharp);
+            gmSet(K.U_GAMMA, u_gamma);
+            gmSet(K.U_GRAIN, u_grain);
+            gmSet(K.U_HUE, u_hue);
+
+            gmSet(K.U_R_GAIN, u_r_gain);
+            gmSet(K.U_G_GAIN, u_g_gain);
+            gmSet(K.U_B_GAIN, u_b_gain);
+
+            gmSet(K.CB_FILTER, cbFilter);
+
+            // Apply filter
+            if (renderMode === 'gpu') {
+                applyGpuFilter();
+            } else {
+                regenerateSvgImmediately();
+            }
+
+            setAutoOn(autoOn, { silent: true });
+            scheduleOverlayUpdate();
+
+            log('Profile settings applied');
+        } finally {
+            _inSync = false;
+            _suspendSync = false;
+        }
+    }
 
     // -------------------------
     // INSTANT SVG REGENERATION
@@ -188,7 +603,7 @@
                 return `url("#${comboId}")${getBaseToneString()}${getProfileToneString()}${getUserToneString()}`;
             }
         } catch (e) {
-            logW('Fehler beim Ermitteln des Filter-Strings:', e);
+            logW('Error determining the filter string:', e);
             return 'none';
         }
     }
@@ -398,7 +813,7 @@
 
         // FIX: Use the correct filter string for recording
         const filterString = getCurrentFilterString();
-        log('Verwende Filter für Recording:', filterString);
+        log('Using filter for recording:', filterString);
 
         const draw = (t) => {
             if (!REC_PIPE.active) return;
@@ -418,7 +833,7 @@
                 ctx.restore();
             } catch (e) {
                 if (statusEl) statusEl.textContent = 'Recording stopped: blocked (DRM/cross-origin).';
-                // FIX: REC.stopRequested auswerten
+                // FIX: Evaluate REC.stopRequested
                 REC.stopRequested = true;
                 if (REC.mr && REC.mr.state === 'recording') {
                     try { REC.mr.stop(); } catch (_) { }
@@ -665,7 +1080,7 @@
         if (REC.timerInterval) clearInterval(REC.timerInterval);
         REC.timerInterval = setInterval(updateRecordingTimer, 100);
 
-        log('Recording HUD gestartet');
+        log('Recording HUD started');
     }
 
     function stopRecordingTimer() {
@@ -683,7 +1098,7 @@
             }
         }
         REC.currentVideo = null;
-        log('Recording HUD gestoppt');
+        log('Recording HUD stopped');
     }
 
     async function takeVideoScreenshot(statusEl) {
@@ -708,7 +1123,7 @@
 
         // FIX: Use the correct filter string for screenshots
         const filterString = getCurrentFilterString();
-        log('Verwende Filter für Screenshot:', filterString);
+        log('Using filter for screenshot:', filterString);
 
         try {
             ctx.save();
@@ -999,6 +1414,9 @@
     let cbFilter = String(gmGet(K.CB_FILTER, 'none')).toLowerCase();
     if (!['none', 'protanopia', 'deuteranopia', 'tritanomaly'].includes(cbFilter)) cbFilter = 'none';
 
+    // Initialize Profile Management
+    loadUserProfiles();
+
     const HK = { base: 'b', moody: 'd', teal: 'o', vib: 'v', icons: 'h' };
 
     function normSL() { return snap0(roundTo(clamp(Number(sl) || 0, -2, 2), 0.1), 0.05); }
@@ -1180,7 +1598,7 @@
             if (!nodes || !nodes.length) return;
             nodes.forEach(n => {
                 try {
-                    if (n) { // FIX: null-check hinzugefügt
+                    if (n) {
                         n.setAttribute('values', valuesStr);
                     }
                 } catch (_) { }
@@ -1361,7 +1779,9 @@
                     });
                 }
 
-                if (!gl) {
+                                this._isWebGL2 = (typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext);
+
+if (!gl) {
                     logW('WebGL not available');
                     return false;
                 }
@@ -1383,7 +1803,7 @@
         }
 
         getVertexShader() {
-            return `#version 100
+            const src100 = `#version 100
                 attribute vec2 aPosition;
                 attribute vec2 aTexCoord;
                 varying vec2 vTexCoord;
@@ -1392,10 +1812,18 @@
                     vTexCoord = aTexCoord;
                 }
             `;
+            if (!this._isWebGL2) return src100;
+
+            // WebGL2: upgrade GLSL100 -> GLSL300 ES
+            return src100
+                .replace('#version 100', '#version 300 es')
+                .replace(/\battribute\b/g, 'in')
+                .replace(/\bvarying\b/g, 'out')
+                .replace(/\btexture2D\b/g, 'texture');
         }
 
         getFragmentShader() {
-            return `#version 100
+            const src100 = `#version 100
                 precision highp float;
                 varying vec2 vTexCoord;
                 uniform sampler2D uVideoTex;
@@ -1455,7 +1883,7 @@
                     color = ACESOutputMat * color;
                     return clamp(color, 0.0, 1.0);
                 }
-vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
+                vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
                     float lr = LUMA.r, lg = LUMA.g, lb = LUMA.b;
                     float a00 = lr + cosHue*(1.0-lr) + sinHue*(-lr);
                     float a01 = lg + cosHue*(-lg) + sinHue*(-lg);
@@ -1547,6 +1975,23 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
                                         texColor.a);
                 }
             `;
+            if (!this._isWebGL2) return src100;
+
+            // WebGL2: upgrade GLSL100 -> GLSL300 ES
+            // - varying -> in
+            // - gl_FragColor -> outColor
+            // - texture2D -> texture
+            let s = src100
+                .replace('#version 100', '#version 300 es')
+                .replace(/\bvarying\b/g, 'in')
+                .replace(/\btexture2D\b/g, 'texture')
+                .replace(/\bgl_FragColor\b/g, 'outColor');
+
+            // Ensure fragment output exists
+            if (!/\bout\s+vec4\s+outColor\s*;/.test(s)) {
+                s = s.replace(/precision\s+highp\s+float\s*;\s*/m, (m) => m + '\n                out vec4 outColor;\n');
+            }
+            return s;
         }
 
         setupShaders() {
@@ -1975,6 +2420,8 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
             filters.push('brightness(1.01) contrast(1.08) saturate(1.08)');
         } else if (profile === 'anime') {
             filters.push('brightness(1.03) contrast(1.10) saturate(1.16)');
+            // SANFTE CSS-Filter für GPU-Modus (keine Flecken)
+            filters.push('contrast(1.15) brightness(0.98)');
         } else if (profile === 'gaming') {
             filters.push('brightness(1.01) contrast(1.12) saturate(1.06)');
         } else if (profile === 'eyecare') {
@@ -2450,7 +2897,7 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
                 AUTO.tBoostUntil = AUTO.tBoostStart + AUTO.boostMs;
                 AUTO.drmBlocked = false;
                 AUTO.blockUntilMs = 0;
-                AUTO.blink = false; // FIX: blink zurücksetzen
+                AUTO.blink = false; // FIX: Reset blink
                 ADAPTIVE_FPS.current = ADAPTIVE_FPS.MIN;
                 ADAPTIVE_FPS.history = [];
             };
@@ -2640,7 +3087,7 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
                 AUTO.motionEma = 0;
                 AUTO.motionFrames = 0;
                 AUTO.statsEma = null;
-                AUTO.blink = false; // FIX: blink zurücksetzen
+                AUTO.blink = false; // FIX: Reset blink
 
                 const keep = AUTO.lastGoodMatrixStr || _autoLastMatrixStr || autoMatrixStr || matToSvgValues(matIdentity4x5());
                 autoMatrixStr = keep;
@@ -2724,6 +3171,466 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
             _autoLastMatrixStr = autoMatrixStr;
             AUTO.lastGoodMatrixStr = autoMatrixStr;
             updateAutoMatrixInSvg(autoMatrixStr);
+        }
+    }
+
+    // -------------------------
+    // Config Menu (User Profile Management)
+    // -------------------------
+    let configMenuVisible = false;
+
+    function createConfigMenu() {
+        // Remove existing menu, if any
+        let existingMenu = document.getElementById(CONFIG_MENU_ID);
+        if (existingMenu) {
+            existingMenu.remove();
+        }
+
+        const menu = document.createElement('div');
+        menu.id = CONFIG_MENU_ID;
+        menu.style.cssText = `
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 500px;
+            max-width: 90vw;
+            max-height: 80vh;
+            background: rgba(20, 20, 20, 0.98);
+            backdrop-filter: blur(10px);
+            border: 2px solid #2a6fdb;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(255,255,255,0.1) inset;
+            color: #eaeaea;
+            font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+            z-index: 2147483647;
+            display: none;
+            flex-direction: column;
+            padding: 20px;
+            user-select: none;
+            pointer-events: auto;
+        `;
+
+        // Header
+        const header = document.createElement('div');
+        header.style.cssText = `
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #2a6fdb;
+        `;
+
+        const title = document.createElement('div');
+        title.style.cssText = `
+            font-size: 20px;
+            font-weight: 900;
+            color: #fff;
+            text-shadow: 0 0 10px #2a6fdb;
+        `;
+        title.textContent = '👤 User Profile Manager';
+
+        const closeBtn = document.createElement('button');
+        closeBtn.textContent = '✕';
+        closeBtn.style.cssText = `
+            background: rgba(255, 255, 255, 0.1);
+            border: none;
+            color: #fff;
+            font-size: 20px;
+            cursor: pointer;
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+            border: 1px solid rgba(255,255,255,0.2);
+        `;
+        closeBtn.addEventListener('mouseenter', () => {
+            closeBtn.style.background = 'rgba(255, 68, 68, 0.3)';
+            closeBtn.style.borderColor = '#ff4444';
+        });
+        closeBtn.addEventListener('mouseleave', () => {
+            closeBtn.style.background = 'rgba(255, 255, 255, 0.1)';
+            closeBtn.style.borderColor = 'rgba(255,255,255,0.2)';
+        });
+        closeBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            toggleConfigMenu();
+        });
+
+        header.appendChild(title);
+        header.appendChild(closeBtn);
+        menu.appendChild(header);
+
+        // Aktives Profil anzeigen
+        const activeInfo = document.createElement('div');
+        activeInfo.id = 'gvf-active-profile-info';
+        activeInfo.style.cssText = `
+            background: rgba(42, 111, 219, 0.2);
+            border: 1px solid #2a6fdb;
+            border-radius: 8px;
+            padding: 10px;
+            margin-bottom: 15px;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        `;
+
+        function setActiveProfileInfo(el, profileName) {
+            if (!el) return;
+            while (el.firstChild) el.removeChild(el.firstChild);
+
+            const name = profileName || 'Default';
+            el.append('🔵 Active profile: ');
+
+            const strong = document.createElement('strong');
+            strong.textContent = name;
+            el.appendChild(strong);
+        }
+
+        setActiveProfileInfo(activeInfo, activeUserProfile?.name);
+        menu.appendChild(activeInfo);
+
+        // Profile List Container
+        const listContainer = document.createElement('div');
+        listContainer.style.cssText = `
+            flex: 1;
+            overflow-y: auto;
+            margin-bottom: 20px;
+            max-height: 300px;
+            background: rgba(0,0,0,0.3);
+            border-radius: 8px;
+            padding: 5px;
+        `;
+
+        const profileList = document.createElement('div');
+        profileList.id = 'gvf-profile-list';
+        profileList.style.cssText = `
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        `;
+
+        listContainer.appendChild(profileList);
+        menu.appendChild(listContainer);
+
+        // Input for new profile
+        const inputContainer = document.createElement('div');
+        inputContainer.style.cssText = `
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+        `;
+
+        const newProfileInput = document.createElement('input');
+        newProfileInput.type = 'text';
+        newProfileInput.placeholder = 'New profile name...';
+        newProfileInput.id = 'gvf-new-profile-name';
+        newProfileInput.style.cssText = `
+            flex: 1;
+            background: rgba(0, 0, 0, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 8px;
+            padding: 10px 12px;
+            color: #fff;
+            font-size: 14px;
+            outline: none;
+            transition: border 0.2s;
+        `;
+        newProfileInput.addEventListener('focus', () => {
+            newProfileInput.style.borderColor = '#2a6fdb';
+        });
+        newProfileInput.addEventListener('blur', () => {
+            newProfileInput.style.borderColor = 'rgba(255, 255, 255, 0.2)';
+        });
+
+        const addBtn = document.createElement('button');
+        addBtn.textContent = '+ Add';
+        addBtn.style.cssText = `
+            background: #2a6fdb;
+            border: none;
+            color: #fff;
+            padding: 10px 16px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 900;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 1px solid transparent;
+        `;
+        addBtn.addEventListener('mouseenter', () => {
+            addBtn.style.background = '#3a7feb';
+            addBtn.style.transform = 'scale(1.02)';
+        });
+        addBtn.addEventListener('mouseleave', () => {
+            addBtn.style.background = '#2a6fdb';
+            addBtn.style.transform = 'scale(1)';
+        });
+        addBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const name = newProfileInput.value.trim();
+            if (name) {
+                createNewUserProfile(name);
+                updateProfileList();
+                newProfileInput.value = '';
+
+                // Update active info
+                const activeInfo = document.getElementById('gvf-active-profile-info');
+                if (activeInfo) {
+                    setActiveProfileInfo(activeInfo, activeUserProfile?.name);
+                }
+            } else {
+                alert('Please enter a name!');
+            }
+        });
+
+        inputContainer.appendChild(newProfileInput);
+        inputContainer.appendChild(addBtn);
+        menu.appendChild(inputContainer);
+
+        // Buttons
+        const buttonContainer = document.createElement('div');
+        buttonContainer.style.cssText = `
+            display: flex;
+            gap: 8px;
+            justify-content: flex-end;
+            margin-top: 10px;
+        `;
+
+        const saveCurrentBtn = document.createElement('button');
+        saveCurrentBtn.textContent = '💾 Save current profile';
+        saveCurrentBtn.style.cssText = `
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: #fff;
+            padding: 10px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 900;
+            cursor: pointer;
+            transition: all 0.2s;
+            flex: 1;
+        `;
+        saveCurrentBtn.addEventListener('mouseenter', () => {
+            saveCurrentBtn.style.background = 'rgba(255, 255, 255, 0.2)';
+            saveCurrentBtn.style.borderColor = '#2a6fdb';
+        });
+        saveCurrentBtn.addEventListener('mouseleave', () => {
+            saveCurrentBtn.style.background = 'rgba(255, 255, 255, 0.1)';
+            saveCurrentBtn.style.borderColor = 'rgba(255,255,255,0.2)';
+        });
+        saveCurrentBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            updateCurrentProfileSettings();
+            updateProfileList();
+
+            // Brief feedback
+            saveCurrentBtn.textContent = '✓ Saved!';
+            setTimeout(() => {
+                saveCurrentBtn.textContent = '💾 Save current profile';
+            }, 1000);
+        });
+
+
+        buttonContainer.appendChild(saveCurrentBtn);
+        menu.appendChild(buttonContainer);
+
+        // Add to body
+        if (document.body) {
+            document.body.appendChild(menu);
+            log('Config menu created and added to the body');
+        }
+
+        return menu;
+    }
+
+    function updateProfileList() {
+        const list = document.getElementById('gvf-profile-list');
+        if (!list) {
+            logW('Profile list not found');
+            return;
+        }
+
+        while (list.firstChild) list.removeChild(list.firstChild);
+
+        userProfiles.forEach(profile => {
+            const isActive = activeUserProfile && activeUserProfile.id === profile.id;
+
+            const item = document.createElement('div');
+            item.style.cssText = `
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 12px 15px;
+                background: ${isActive ? 'rgba(42, 111, 219, 0.3)' : 'rgba(255, 255, 255, 0.05)'};
+                border: 2px solid ${isActive ? '#2a6fdb' : 'rgba(255, 255, 255, 0.1)'};
+                border-radius: 8px;
+                cursor: pointer;
+                transition: all 0.2s;
+                margin: 2px 0;
+            `;
+
+            item.addEventListener('mouseenter', () => {
+                if (!isActive) {
+                    item.style.background = 'rgba(255, 255, 255, 0.1)';
+                    item.style.borderColor = 'rgba(255,255,255,0.3)';
+                }
+            });
+            item.addEventListener('mouseleave', () => {
+                if (!isActive) {
+                    item.style.background = 'rgba(255, 255, 255, 0.05)';
+                    item.style.borderColor = 'rgba(255,255,255,0.1)';
+                }
+            });
+
+            // Profil-Info
+            const info = document.createElement('div');
+            info.style.cssText = `
+                display: flex;
+                flex-direction: column;
+                gap: 4px;
+                flex: 1;
+            `;
+
+            const nameSpan = document.createElement('span');
+            nameSpan.style.cssText = `
+                font-weight: ${isActive ? '900' : '600'};
+                color: ${isActive ? '#fff' : '#ccc'};
+                font-size: 14px;
+            `;
+            nameSpan.textContent = profile.name + (isActive ? ' (active)' : '');
+
+            const dateSpan = document.createElement('span');
+            dateSpan.style.cssText = `
+                font-size: 11px;
+                color: #888;
+            `;
+            dateSpan.textContent = 'Created: ' + new Date(profile.createdAt).toLocaleDateString('en-US');
+
+            info.appendChild(nameSpan);
+            info.appendChild(dateSpan);
+
+            // Actions
+            const actions = document.createElement('div');
+            actions.style.cssText = `
+                display: flex;
+                gap: 8px;
+            `;
+
+            // Activate button (only if inactive)
+            if (!isActive) {
+                const activateBtn = document.createElement('button');
+                activateBtn.textContent = 'Activate';
+                activateBtn.style.cssText = `
+                    background: rgba(42, 111, 219, 0.3);
+                    border: 1px solid #2a6fdb;
+                    color: #fff;
+                    padding: 6px 12px;
+                    border-radius: 6px;
+                    font-size: 12px;
+                    font-weight: 900;
+                    cursor: pointer;
+                    transition: all 0.2s;
+                `;
+                activateBtn.addEventListener('mouseenter', () => {
+                    activateBtn.style.background = 'rgba(42, 111, 219, 0.5)';
+                });
+                activateBtn.addEventListener('mouseleave', () => {
+                    activateBtn.style.background = 'rgba(42, 111, 219, 0.3)';
+                });
+                activateBtn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    switchToUserProfile(profile.id);
+                    updateProfileList();
+
+                    // Update active info
+                    const activeInfo = document.getElementById('gvf-active-profile-info');
+                    if (activeInfo) {
+                        setActiveProfileInfo(activeInfo, activeUserProfile?.name);
+                    }
+                });
+                actions.appendChild(activateBtn);
+            }
+
+            // Delete button (not for default)
+            if (profile.id !== 'default') {
+                const deleteBtn = document.createElement('button');
+                deleteBtn.textContent = '✕ Delete';
+                deleteBtn.style.cssText = `
+                    background: rgba(255, 68, 68, 0.2);
+                    border: 1px solid #ff4444;
+                    color: #ff8888;
+                    padding: 6px 12px;
+                    border-radius: 6px;
+                    font-size: 12px;
+                    font-weight: 900;
+                    cursor: pointer;
+                    transition: all 0.2s;
+                `;
+                deleteBtn.addEventListener('mouseenter', () => {
+                    deleteBtn.style.background = 'rgba(255, 68, 68, 0.4)';
+                    deleteBtn.style.color = '#fff';
+                });
+                deleteBtn.addEventListener('mouseleave', () => {
+                    deleteBtn.style.background = 'rgba(255, 68, 68, 0.2)';
+                    deleteBtn.style.color = '#ff8888';
+                });
+                deleteBtn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (confirm(`Really delete profile "${profile.name}"?`)) {
+                        deleteUserProfile(profile.id);
+                        updateProfileList();
+
+                        // Update active info
+                        const activeInfo = document.getElementById('gvf-active-profile-info');
+                        if (activeInfo) {
+                            setActiveProfileInfo(activeInfo, activeUserProfile?.name);
+                        }
+                    }
+                });
+                actions.appendChild(deleteBtn);
+            }
+
+            item.appendChild(info);
+            item.appendChild(actions);
+            list.appendChild(item);
+        });
+    }
+
+    function toggleConfigMenu() {
+        log('toggleConfigMenu called, currently:', configMenuVisible);
+
+        configMenuVisible = !configMenuVisible;
+        const menu = document.getElementById(CONFIG_MENU_ID);
+
+        if (!menu) {
+            log('Menu does not exist, creating new one...');
+            const newMenu = createConfigMenu();
+            if (configMenuVisible) {
+                setTimeout(() => {
+                    updateProfileList();
+                    newMenu.style.display = 'flex';
+                }, 10);
+            }
+            return;
+        }
+
+        if (configMenuVisible) {
+            log('Showing menu');
+            updateProfileList();
+            menu.style.display = 'flex';
+        } else {
+            log('Hiding menu');
+            menu.style.display = 'none';
         }
     }
 
@@ -2864,6 +3771,9 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
                 gmSet(gmKey, getVal());
                 if (gmKey === K.HDR && getVal() !== 0) gmSet(K.HDR_LAST, getVal());
 
+                // Save current settings in active profile
+                updateCurrentProfileSettings();
+
                 if (renderMode === 'gpu') {
                     applyGpuFilter();
                 } else {
@@ -2951,6 +3861,9 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
                 val.textContent = Number(keyGet()).toFixed(1);
                 gmSet(gmKey, keyGet());
 
+                // Save current settings in active profile
+                updateCurrentProfileSettings();
+
                 if (renderMode === 'gpu') {
                     applyGpuFilter();
                 } else {
@@ -3001,6 +3914,9 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
                 rng.value = String(keyGet());
                 val.textContent = String(Math.round(keyGet()));
                 gmSet(gmKey, keyGet());
+
+                // Save current settings in active profile
+                updateCurrentProfileSettings();
 
                 if (renderMode === 'gpu') {
                     applyGpuFilter();
@@ -3090,6 +4006,9 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
             gmSet(K.CB_FILTER, cbFilter);
             log('Color blindness filter:', cbFilter);
 
+            // Save current settings in active profile
+            updateCurrentProfileSettings();
+
             if (renderMode === 'gpu') {
                 applyGpuFilter();
             } else {
@@ -3176,7 +4095,17 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
         border: 1px solid rgba(255,255,255,0.14);
         background: rgba(255,255,255,0.08);
         color:#eaeaea;font-size: 11px;font-weight: 900;
+        transition: all 0.2s ease;
       `;
+
+            // hover effect
+            b.addEventListener('mouseenter', () => {
+                b.style.background = 'rgba(255,255,255,0.15)';
+            });
+            b.addEventListener('mouseleave', () => {
+                b.style.background = 'rgba(255,255,255,0.08)';
+            });
+
             stopEventsOn(b);
             return b;
         };
@@ -3194,15 +4123,32 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
         const btnImportFile = mkBtn('Import .json');
         const btnShot = mkBtn('Screenshot');
         const btnRec = mkBtn('Record');
-        // NEW: Debug Toggle Button
-        const btnDebug = mkBtn(debug ? 'Debug: ON' : 'Debug: OFF');
+
+        // CONFIG BUTTON - Improved version
+        const btnConfig = mkBtn('⚙️ Config');
+        btnConfig.style.background = 'rgba(42, 111, 219, 0.4)';
+        btnConfig.style.border = '2px solid #2a6fdb';
+        btnConfig.style.color = '#fff';
+        btnConfig.style.fontWeight = 'bold';
+        btnConfig.style.padding = '6px 12px';
+
+        // Important: Direct event listener with console.log for testing
+        btnConfig.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            log('Config button clicked!');
+            toggleConfigMenu();
+        });
+
+        // Debug Button
+        const btnDebug = mkBtn(debug ? '🐞 Debug: ON' : '🐞 Debug: OFF');
         btnDebug.style.background = debug ? 'rgba(0,255,0,0.2)' : 'rgba(255,0,0,0.2)';
         btnDebug.style.border = debug ? '1px solid #00ff00' : '1px solid #ff0000';
         btnDebug.style.color = debug ? '#00ff00' : '#ff6666';
 
         btnDebug.addEventListener('click', () => {
             toggleDebug();
-            btnDebug.textContent = debug ? 'Debug: ON' : 'Debug: OFF';
+            btnDebug.textContent = debug ? '🐞 Debug: ON' : '🐞 Debug: OFF';
             btnDebug.style.background = debug ? 'rgba(0,255,0,0.2)' : 'rgba(255,0,0,0.2)';
             btnDebug.style.border = debug ? '1px solid #00ff00' : '1px solid #ff0000';
             btnDebug.style.color = debug ? '#00ff00' : '#ff6666';
@@ -3353,7 +4299,7 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
             status.textContent = 'Reset + applied.';
 
             // Update Debug button
-            btnDebug.textContent = 'Debug: OFF';
+            btnDebug.textContent = '🐞 Debug: OFF';
             btnDebug.style.background = 'rgba(255,0,0,0.2)';
             btnDebug.style.border = '1px solid #ff0000';
             btnDebug.style.color = '#ff6666';
@@ -3366,6 +4312,7 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
             await toggleVideoRecord(status, btnRec);
         });
 
+        // Add buttons in the correct order
         row.appendChild(btnRefresh);
         row.appendChild(btnSave);
         row.appendChild(btnSelect);
@@ -3373,6 +4320,7 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
         row.appendChild(btnImportFile);
         row.appendChild(btnShot);
         row.appendChild(btnRec);
+        row.appendChild(btnConfig);  // Config Button
         row.appendChild(btnDebug);
         row.appendChild(btnReset);
 
@@ -3382,7 +4330,15 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
         box.appendChild(fileInput);
 
         overlay.appendChild(box);
-        (document.body || document.documentElement).appendChild(overlay);
+
+        // Direkt zum body hinzufügen
+        if (document.body) {
+            document.body.appendChild(overlay);
+            log('IO overlay created and added to the body');
+        } else {
+            logW('Body not yet available');
+        }
+
         return overlay;
     }
 
@@ -3973,6 +4929,9 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
             }
             scheduleOverlayUpdate();
 
+            // Update current profile
+            updateCurrentProfileSettings();
+
             return true;
         } catch (_) {
             return false;
@@ -3986,6 +4945,9 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
         renderMode = renderMode === 'svg' ? 'gpu' : 'svg';
         gmSet(K.RENDER_MODE, renderMode);
         logToggle('Render Mode (Ctrl+Alt+X)', renderMode === 'gpu', `Mode: ${renderMode === 'gpu' ? 'WebGL2 Canvas Pipeline' : 'SVG'}`);
+
+        // Save current settings in active profile
+        updateCurrentProfileSettings();
 
         if (renderMode === 'gpu') {
             deactivateSVGMode();
@@ -4112,6 +5074,71 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
             hue.setAttribute('type', 'hueRotate');
             hue.setAttribute('values', '-22');
             f.appendChild(hue);
+        }
+
+        if (profile === 'anime') {
+
+            const blur = document.createElementNS(svgNS, 'feGaussianBlur');
+            blur.setAttribute('stdDeviation', '0.8');
+            blur.setAttribute('in', 'SourceGraphic');
+            blur.setAttribute('result', 'denoised');
+            f.appendChild(blur);
+
+
+            const sobel = document.createElementNS(svgNS, 'feConvolveMatrix');
+            sobel.setAttribute('order', '3');
+            sobel.setAttribute('kernelMatrix',
+                '-1 -2 -1 ' +
+                ' 0  0  0 ' +
+                ' 1  2  1'
+            );
+            sobel.setAttribute('divisor', '1');
+            sobel.setAttribute('in', 'denoised');
+            sobel.setAttribute('result', 'edges');
+            f.appendChild(sobel);
+
+            const componentTransfer = document.createElementNS(svgNS, 'feComponentTransfer');
+            componentTransfer.setAttribute('in', 'edges');
+            componentTransfer.setAttribute('result', 'darkEdges');
+
+            const funcR = document.createElementNS(svgNS, 'feFuncR');
+            funcR.setAttribute('type', 'linear');
+            funcR.setAttribute('slope', '2.2');
+            funcR.setAttribute('intercept', '-0.3');
+            componentTransfer.appendChild(funcR);
+
+            const funcG = funcR.cloneNode();
+            const funcB = funcR.cloneNode();
+            componentTransfer.appendChild(funcG);
+            componentTransfer.appendChild(funcB);
+            f.appendChild(componentTransfer);
+
+            const threshold = document.createElementNS(svgNS, 'feComponentTransfer');
+            threshold.setAttribute('in', 'darkEdges');
+            threshold.setAttribute('result', 'thresholdEdges');
+
+            const tFuncR = document.createElementNS(svgNS, 'feFuncR');
+            tFuncR.setAttribute('type', 'linear');
+            tFuncR.setAttribute('slope', '3');
+            tFuncR.setAttribute('intercept', '-0.4');
+            threshold.appendChild(tFuncR);
+
+            const tFuncG = tFuncR.cloneNode();
+            const tFuncB = tFuncR.cloneNode();
+            threshold.appendChild(tFuncG);
+            threshold.appendChild(tFuncB);
+            f.appendChild(threshold);
+
+            const blend = document.createElementNS(svgNS, 'feComposite');
+            blend.setAttribute('operator', 'arithmetic');
+            blend.setAttribute('k1', '0');
+            blend.setAttribute('k2', '1');
+            blend.setAttribute('k3', '0.3');
+            blend.setAttribute('k4', '0');
+            blend.setAttribute('in', 'SourceGraphic');
+            blend.setAttribute('in2', 'thresholdEdges');
+            blend.setAttribute('result', 'final');
+            f.appendChild(blend);
         }
     }
 
@@ -4348,12 +5375,22 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
             }
 
             // Update Debug button
-            const btnDebug = Array.from(overlay.querySelectorAll('button')).find(b => b.textContent.startsWith('Debug'));
+            const btnDebug = Array.from(overlay.querySelectorAll('button')).find(b => b.textContent.startsWith('🐞') || b.textContent.startsWith('Debug'));
             if (btnDebug) {
-                btnDebug.textContent = debug ? 'Debug: ON' : 'Debug: OFF';
+                btnDebug.textContent = debug ? '🐞 Debug: ON' : '🐞 Debug: OFF';
                 btnDebug.style.background = debug ? 'rgba(0,255,0,0.2)' : 'rgba(255,0,0,0.2)';
                 btnDebug.style.border = debug ? '1px solid #00ff00' : '1px solid #ff0000';
                 btnDebug.style.color = debug ? '#00ff00' : '#ff6666';
+            }
+
+            // Config Button Status
+            const btnConfig = Array.from(overlay.querySelectorAll('button')).find(b => b.textContent.includes('Config'));
+            if (btnConfig) {
+                if (configMenuVisible) {
+                    btnConfig.style.background = 'rgba(42, 111, 219, 0.6)';
+                } else {
+                    btnConfig.style.background = 'rgba(42, 111, 219, 0.4)';
+                }
             }
         } catch (_) { }
 
@@ -5053,6 +6090,72 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
             }
         }
 
+        if (prof === 'anime') {
+
+            const blur = document.createElementNS(svgNS, 'feGaussianBlur');
+            blur.setAttribute('stdDeviation', '0.8');
+            blur.setAttribute('in', last);
+            blur.setAttribute('result', 'anime_denoised');
+            filter.appendChild(blur);
+
+            const sobel = document.createElementNS(svgNS, 'feConvolveMatrix');
+            sobel.setAttribute('order', '3');
+            sobel.setAttribute('kernelMatrix',
+                '-1 -2 -1 ' +
+                ' 0  0  0 ' +
+                ' 1  2  1'
+            );
+            sobel.setAttribute('divisor', '1');
+            sobel.setAttribute('in', 'anime_denoised');
+            sobel.setAttribute('result', 'anime_edges');
+            filter.appendChild(sobel);
+
+            const componentTransfer = document.createElementNS(svgNS, 'feComponentTransfer');
+            componentTransfer.setAttribute('in', 'anime_edges');
+            componentTransfer.setAttribute('result', 'anime_darkEdges');
+
+            const funcR = document.createElementNS(svgNS, 'feFuncR');
+            funcR.setAttribute('type', 'linear');
+            funcR.setAttribute('slope', '2.2');
+            funcR.setAttribute('intercept', '-0.3');
+            componentTransfer.appendChild(funcR);
+
+            const funcG = funcR.cloneNode();
+            const funcB = funcR.cloneNode();
+            componentTransfer.appendChild(funcG);
+            componentTransfer.appendChild(funcB);
+            filter.appendChild(componentTransfer);
+
+            const threshold = document.createElementNS(svgNS, 'feComponentTransfer');
+            threshold.setAttribute('in', 'anime_darkEdges');
+            threshold.setAttribute('result', 'anime_threshold');
+
+            const tFuncR = document.createElementNS(svgNS, 'feFuncR');
+            tFuncR.setAttribute('type', 'linear');
+            tFuncR.setAttribute('slope', '3');
+            tFuncR.setAttribute('intercept', '-0.4');
+            threshold.appendChild(tFuncR);
+
+            const tFuncG = tFuncR.cloneNode();
+            const tFuncB = tFuncR.cloneNode();
+            threshold.appendChild(tFuncG);
+            threshold.appendChild(tFuncB);
+            filter.appendChild(threshold);
+
+            const blend = document.createElementNS(svgNS, 'feComposite');
+            blend.setAttribute('operator', 'arithmetic');
+            blend.setAttribute('k1', '0');
+            blend.setAttribute('k2', '1');
+            blend.setAttribute('k3', '0.3');
+            blend.setAttribute('k4', '0');
+            blend.setAttribute('in', last);
+            blend.setAttribute('in2', 'anime_threshold');
+            blend.setAttribute('result', 'r_anime_lines');
+            filter.appendChild(blend);
+
+            last = 'r_anime_lines';
+        }
+
         const autoCM = document.createElementNS(svgNS, 'feColorMatrix');
         autoCM.setAttribute('type', 'matrix');
         autoCM.setAttribute('in', last);
@@ -5335,6 +6438,9 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
         gmSet(K.PROF, profile);
         log('Profile cycled:', profile);
 
+        // Save current settings in active profile
+        updateCurrentProfileSettings();
+
         if (renderMode === 'gpu') {
             applyGpuFilter();
         } else {
@@ -5436,6 +6542,9 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
         gmSet(K.LOGS, logs);
         gmSet(K.DEBUG, debug);
 
+        // Save user profiles
+        saveUserProfiles();
+
         setAutoDotState(autoOn ? (debug ? 'idle' : 'off') : 'off');
 
         autoMatrixStr = matToSvgValues(autoOn ? buildAutoMatrixValues() : matIdentity4x5());
@@ -5458,6 +6567,9 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
 
         if (scopesHudShown) startScopesLoop();
 
+        // Initialize config menu (but do not display)
+        createConfigMenu();
+
         log('Init complete with WebGL2 Canvas Pipeline! RGB Gain now works correctly!', {
             enabled, darkMoody, tealOrange, vibrantSat, iconsShown,
             hdr: normHDR(), profile, renderMode,
@@ -5474,7 +6586,10 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
             logs: logs,
             colorBlindnessFilter: cbFilter,
             isFirefox: isFirefoxBrowser,
-            bugfixes: 'REC.stopRequested ausgewertet, AUTO.blink zurückgesetzt, null-check in updateAutoMatrixInSvg'
+            bugfixes: 'REC.stopRequested evaluated, AUTO.blink reset, null check in updateAutoMatrixInSvg',
+            userProfiles: userProfiles.length,
+            activeProfile: activeUserProfile?.name,
+            newFeatures: 'Shift+Q profile cycling, 3-second on-screen notification, clean edge detection for anime'
         });
 
         document.addEventListener('keydown', (e) => {
@@ -5482,6 +6597,14 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
             if (tag === 'input' || tag === 'textarea' || e.isComposing) return;
 
             const k = (e.key || '').toLowerCase();
+
+            // NEW: Shift+Q for profile cycling
+            if (e.shiftKey && !e.ctrlKey && !e.altKey && k === PROFILE_CYCLE_KEY) {
+                e.preventDefault();
+                log('Shift+Q pressed - cycling to next profile');
+                cycleToNextProfile();
+                return;
+            }
 
             if (e.ctrlKey && e.altKey && !e.shiftKey && k === SCOPES_KEY) {
                 e.preventDefault();
@@ -5527,6 +6650,9 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
                 }
                 gmSet(K.HDR, normHDR());
 
+                // Save current settings in active profile
+                updateCurrentProfileSettings();
+
                 if (renderMode === 'gpu') {
                     applyGpuFilter();
                 } else {
@@ -5545,18 +6671,22 @@ vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
 
             if (k === HK.base) {
                 enabled = !enabled; gmSet(K.enabled, enabled); e.preventDefault(); logToggle('Base (Ctrl+Alt+B)', enabled);
+                updateCurrentProfileSettings();
                 if (renderMode === 'gpu') applyGpuFilter(); else regenerateSvgImmediately(); return;
             }
             if (k === HK.moody) {
                 darkMoody = !darkMoody; gmSet(K.moody, darkMoody); e.preventDefault(); logToggle('Dark&Moody (Ctrl+Alt+D)', darkMoody);
+                updateCurrentProfileSettings();
                 if (renderMode === 'gpu') applyGpuFilter(); else regenerateSvgImmediately(); return;
             }
             if (k === HK.teal) {
                 tealOrange = !tealOrange; gmSet(K.teal, tealOrange); e.preventDefault(); logToggle('Teal&Orange (Ctrl+Alt+O)', tealOrange);
+                updateCurrentProfileSettings();
                 if (renderMode === 'gpu') applyGpuFilter(); else regenerateSvgImmediately(); return;
             }
             if (k === HK.vib) {
                 vibrantSat = !vibrantSat; gmSet(K.vib, vibrantSat); e.preventDefault(); logToggle('Vibrant (Ctrl+Alt+V)', vibrantSat);
+                updateCurrentProfileSettings();
                 if (renderMode === 'gpu') applyGpuFilter(); else regenerateSvgImmediately(); return;
             }
             if (k === HK.icons) {
