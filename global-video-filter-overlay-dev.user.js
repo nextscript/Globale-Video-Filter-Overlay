@@ -4,8 +4,8 @@
 // @namespace    gvf
 // @author       Freak288
 // @version      1.6.3
-// @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
-// @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
+// @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads. Now with multi-user profile management! (Config via IO-HUD Button)
+// @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern. Jetzt mit Multi-User-Profilverwaltung! (Config über IO-HUD Button)
 // @match        *://*/*
 // @run-at       document-idle
 // @grant        GM_getValue
@@ -198,7 +198,7 @@
         }
     };
 
-    // Firefox-spezifisches Standard-Profil
+    // Firefox-specific default profile
     const DEFAULT_USER_PROFILE_FIREFOX = {
         id: 'default',
         name: 'Default',
@@ -237,26 +237,26 @@
         }
     };
 
-    // Profile Management Funktionen
+    // Profile Management Functions
     function loadUserProfiles() {
         try {
             const stored = gmGet(K.USER_PROFILES, null);
             if (stored && Array.isArray(stored) && stored.length > 0) {
                 userProfiles = stored;
             } else {
-                // Erstelle Standard-Profil basierend auf Browser
+                // Create default profile based on browser
                 const isFirefoxBrowser = isFirefox();
                 const defaultProfile = isFirefoxBrowser ? DEFAULT_USER_PROFILE_FIREFOX : DEFAULT_USER_PROFILE;
                 userProfiles = [defaultProfile];
             }
 
-            // Lade aktives Profil
+            // Load active profile
             const activeId = gmGet(K.ACTIVE_USER_PROFILE, 'default');
             activeUserProfile = userProfiles.find(p => p.id === activeId) || userProfiles[0];
 
-            log('User Profiles geladen:', userProfiles.length, 'Aktiv:', activeUserProfile?.name);
+            log('User profiles loaded:', userProfiles.length, 'Active:', activeUserProfile?.name);
         } catch (e) {
-            logW('Fehler beim Laden der User Profiles:', e);
+            logW('Error loading user profiles:', e);
             const isFirefoxBrowser = isFirefox();
             const defaultProfile = isFirefoxBrowser ? DEFAULT_USER_PROFILE_FIREFOX : DEFAULT_USER_PROFILE;
             userProfiles = [defaultProfile];
@@ -271,14 +271,14 @@
                 gmSet(K.ACTIVE_USER_PROFILE, activeUserProfile.id);
             }
         } catch (e) {
-            logW('Fehler beim Speichern der User Profiles:', e);
+            logW('Error saving user profiles:', e);
         }
     }
 
     function createNewUserProfile(name) {
         const newProfile = {
             id: 'profile_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
-            name: name || 'Neues Profil',
+            name: name || 'New profile',
             createdAt: Date.now(),
             settings: { ...getCurrentSettings() }
         };
@@ -289,7 +289,7 @@
 
     function deleteUserProfile(profileId) {
         if (profileId === 'default') {
-            log('Kann Standard-Profil nicht löschen');
+            log('Cannot delete standard profile');
             return false;
         }
 
@@ -297,7 +297,7 @@
         if (index !== -1) {
             userProfiles.splice(index, 1);
 
-            // Wenn aktives Profil gelöscht wurde, auf Default wechseln
+            // If active profile has been deleted, switch to default
             if (activeUserProfile && activeUserProfile.id === profileId) {
                 switchToUserProfile('default');
             }
@@ -311,21 +311,21 @@
     function switchToUserProfile(profileId) {
         const profile = userProfiles.find(p => p.id === profileId);
         if (!profile) {
-            logW('Profil nicht gefunden:', profileId);
+            logW('Profile not found:', profileId);
             return false;
         }
 
-        // Aktuelle Einstellungen speichern (falls gewünscht)
+        // Save current settings (if desired)
         if (activeUserProfile) {
             updateCurrentProfileSettings();
         }
 
-        // Profil wechseln
+        // Switch profile
         activeUserProfile = profile;
         applyUserProfileSettings(profile.settings);
         saveUserProfiles();
 
-        log('Zu Profil gewechselt:', profile.name);
+        log('Switched to profile:', profile.name);
         return true;
     }
 
@@ -414,7 +414,7 @@
 
             cbFilter = settings.cbFilter ?? cbFilter;
 
-            // In GM speichern
+            // Save in GM
             gmSet(K.enabled, enabled);
             gmSet(K.moody, darkMoody);
             gmSet(K.teal, tealOrange);
@@ -454,7 +454,7 @@
 
             gmSet(K.CB_FILTER, cbFilter);
 
-            // Filter anwenden
+            // Apply filter
             if (renderMode === 'gpu') {
                 applyGpuFilter();
             } else {
@@ -464,7 +464,7 @@
             setAutoOn(autoOn, { silent: true });
             scheduleOverlayUpdate();
 
-            log('Profil-Einstellungen angewendet');
+            log('Profile settings applied');
         } finally {
             _inSync = false;
             _suspendSync = false;
@@ -511,7 +511,7 @@
                 return `url("#${comboId}")${getBaseToneString()}${getProfileToneString()}${getUserToneString()}`;
             }
         } catch (e) {
-            logW('Fehler beim Ermitteln des Filter-Strings:', e);
+            logW('Error determining the filter string:', e);
             return 'none';
         }
     }
@@ -741,7 +741,7 @@
                 ctx.restore();
             } catch (e) {
                 if (statusEl) statusEl.textContent = 'Recording stopped: blocked (DRM/cross-origin).';
-                // FIX: REC.stopRequested auswerten
+                // FIX: Evaluate REC.stopRequested
                 REC.stopRequested = true;
                 if (REC.mr && REC.mr.state === 'recording') {
                     try { REC.mr.stop(); } catch (_) { }
@@ -1322,7 +1322,7 @@
     let cbFilter = String(gmGet(K.CB_FILTER, 'none')).toLowerCase();
     if (!['none', 'protanopia', 'deuteranopia', 'tritanomaly'].includes(cbFilter)) cbFilter = 'none';
 
-    // Profile Management initialisieren
+    // Initialize Profile Management
     loadUserProfiles();
 
     const HK = { base: 'b', moody: 'd', teal: 'o', vib: 'v', icons: 'h' };
@@ -1687,7 +1687,9 @@
                     });
                 }
 
-                if (!gl) {
+                                this._isWebGL2 = (typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext);
+
+if (!gl) {
                     logW('WebGL not available');
                     return false;
                 }
@@ -1709,7 +1711,7 @@
         }
 
         getVertexShader() {
-            return `#version 100
+            const src100 = `#version 100
                 attribute vec2 aPosition;
                 attribute vec2 aTexCoord;
                 varying vec2 vTexCoord;
@@ -1718,10 +1720,18 @@
                     vTexCoord = aTexCoord;
                 }
             `;
+            if (!this._isWebGL2) return src100;
+
+            // WebGL2: upgrade GLSL100 -> GLSL300 ES
+            return src100
+                .replace('#version 100', '#version 300 es')
+                .replace(/\battribute\b/g, 'in')
+                .replace(/\bvarying\b/g, 'out')
+                .replace(/\btexture2D\b/g, 'texture');
         }
 
         getFragmentShader() {
-            return `#version 100
+            const src100 = `#version 100
                 precision highp float;
                 varying vec2 vTexCoord;
                 uniform sampler2D uVideoTex;
@@ -1873,6 +1883,23 @@
                                         texColor.a);
                 }
             `;
+            if (!this._isWebGL2) return src100;
+
+            // WebGL2: upgrade GLSL100 -> GLSL300 ES
+            // - varying -> in
+            // - gl_FragColor -> outColor
+            // - texture2D -> texture
+            let s = src100
+                .replace('#version 100', '#version 300 es')
+                .replace(/\bvarying\b/g, 'in')
+                .replace(/\btexture2D\b/g, 'texture')
+                .replace(/\bgl_FragColor\b/g, 'outColor');
+
+            // Ensure fragment output exists
+            if (!/\bout\s+vec4\s+outColor\s*;/.test(s)) {
+                s = s.replace(/precision\s+highp\s+float\s*;\s*/m, (m) => m + '\n                out vec4 outColor;\n');
+            }
+            return s;
         }
 
         setupShaders() {
@@ -2776,7 +2803,7 @@
                 AUTO.tBoostUntil = AUTO.tBoostStart + AUTO.boostMs;
                 AUTO.drmBlocked = false;
                 AUTO.blockUntilMs = 0;
-                AUTO.blink = false; // FIX: blink zurücksetzen
+                AUTO.blink = false; // FIX: Reset blink
                 ADAPTIVE_FPS.current = ADAPTIVE_FPS.MIN;
                 ADAPTIVE_FPS.history = [];
             };
@@ -2966,7 +2993,7 @@
                 AUTO.motionEma = 0;
                 AUTO.motionFrames = 0;
                 AUTO.statsEma = null;
-                AUTO.blink = false; // FIX: blink zurücksetzen
+                AUTO.blink = false; // FIX: Reset blink
 
                 const keep = AUTO.lastGoodMatrixStr || _autoLastMatrixStr || autoMatrixStr || matToSvgValues(matIdentity4x5());
                 autoMatrixStr = keep;
@@ -3159,7 +3186,20 @@
             align-items: center;
             gap: 8px;
         `;
-        activeInfo.innerHTML = `🔵 Active profile: <strong>${activeUserProfile?.name || 'Default'}</strong>`;
+
+        function setActiveProfileInfo(el, profileName) {
+            if (!el) return;
+            while (el.firstChild) el.removeChild(el.firstChild);
+
+            const name = profileName || 'Default';
+            el.append('🔵 Active profile: ');
+
+            const strong = document.createElement('strong');
+            strong.textContent = name;
+            el.appendChild(strong);
+        }
+
+        setActiveProfileInfo(activeInfo, activeUserProfile?.name);
         menu.appendChild(activeInfo);
 
         // Profile List Container
@@ -3249,7 +3289,7 @@
                 // Update active info
                 const activeInfo = document.getElementById('gvf-active-profile-info');
                 if (activeInfo) {
-                    activeInfo.innerHTML = `🔵 Active profile: <strong>${activeUserProfile?.name || 'Default'}</strong>`;
+                    setActiveProfileInfo(activeInfo, activeUserProfile?.name);
                 }
             } else {
                 alert('Please enter a name!');
@@ -3297,7 +3337,7 @@
             updateCurrentProfileSettings();
             updateProfileList();
 
-            // Kurze Rückmeldung
+            // Brief feedback
             saveCurrentBtn.textContent = '✓ Saved!';
             setTimeout(() => {
                 saveCurrentBtn.textContent = '💾 Save current profile';
@@ -3351,7 +3391,7 @@
             return;
         }
 
-        list.innerHTML = '';
+        while (list.firstChild) list.removeChild(list.firstChild);
 
         userProfiles.forEach(profile => {
             const isActive = activeUserProfile && activeUserProfile.id === profile.id;
@@ -3447,7 +3487,7 @@
                     // Update active info
                     const activeInfo = document.getElementById('gvf-active-profile-info');
                     if (activeInfo) {
-                        activeInfo.innerHTML = `🔵 Active profile: <strong>${activeUserProfile?.name || 'Default'}</strong>`;
+                        setActiveProfileInfo(activeInfo, activeUserProfile?.name);
                     }
                 });
                 actions.appendChild(activateBtn);
@@ -3486,7 +3526,7 @@
                         // Update active info
                         const activeInfo = document.getElementById('gvf-active-profile-info');
                         if (activeInfo) {
-                            activeInfo.innerHTML = `🔵 Active profile: <strong>${activeUserProfile?.name || 'Default'}</strong>`;
+                            setActiveProfileInfo(activeInfo, activeUserProfile?.name);
                         }
                     }
                 });
@@ -3500,13 +3540,13 @@
     }
 
     function toggleConfigMenu() {
-        log('toggleConfigMenu aufgerufen, aktuell:', configMenuVisible);
+        log('toggleConfigMenu called up, currently:', configMenuVisible);
 
         configMenuVisible = !configMenuVisible;
         const menu = document.getElementById(CONFIG_MENU_ID);
 
         if (!menu) {
-            log('Menü existiert nicht, erstelle neues...');
+            log('Menu does not exist, create new one...');
             const newMenu = createConfigMenu();
             if (configMenuVisible) {
                 setTimeout(() => {
@@ -3518,11 +3558,11 @@
         }
 
         if (configMenuVisible) {
-            log('Zeige Menü an');
+            log('Display menu');
             updateProfileList();
             menu.style.display = 'flex';
         } else {
-            log('Verstecke Menü');
+            log('Hide menu');
             menu.style.display = 'none';
         }
     }
