@@ -1,0 +1,6471 @@
+// ==UserScript==
+// @name         Global Video Filter Overlay DEV
+// @name:de      Globale Video Filter Overlay DEV
+// @namespace    gvf
+// @author       Freak288
+// @version      1.6.3
+// @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads. Now with multi-user profile management! (Config via IO-HUD Button)
+// @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern. Jetzt mit Multi-User-Profilverwaltung! (Config über IO-HUD Button)
+// @match        *://*/*
+// @run-at       document-idle
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_addValueChangeListener
+// @grant        GM_info
+// @iconURL      https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/logomes.png
+// @downloadURL https://update.greasyfork.org/scripts/561189/Global%20Video%20Filter%20Overlay.user.js
+// @updateURL https://update.greasyfork.org/scripts/561189/Global%20Video%20Filter%20Overlay.meta.js
+// ==/UserScript==
+
+(function () {
+    'use strict';
+    if (typeof window === 'undefined') return;
+    if (window.__GLOBAL_VIDEO_FILTER__) return;
+    window.__GLOBAL_VIDEO_FILTER__ = true;
+
+    // -------------------------
+    // IDs / Constants
+    // -------------------------
+    const STYLE_ID = 'global-video-filter-style';
+    const SVG_ID = 'global-video-filter-svg';
+    const GPU_SVG_ID = 'gvf-gpu-svg';
+    const GPU_GAIN_FILTER_ID = 'gvf-gpu-gain-filter';
+    const GPU_PROFILE_FILTER_ID = 'gvf-gpu-profile-filter';
+    const WEBGL_CANVAS_ID = 'gvf-webgl-canvas';
+    const RECORDING_HUD_ID = 'gvf-recording-hud';
+    const CONFIG_MENU_ID = 'gvf-config-menu';
+    const svgNS = 'http://www.w3.org/2000/svg';
+
+    // Hotkeys
+    const HDR_TOGGLE_KEY = 'p';
+    const PROF_TOGGLE_KEY = 'c';
+    const GRADE_HUD_KEY = 'g';
+    const IO_HUD_KEY = 'i';
+    const AUTO_KEY = 'a';
+    const SCOPES_KEY = 's';
+    const GPU_MODE_KEY = 'x';
+
+    // -------------------------
+    // Throttling for less computationally intensive operations
+    // -------------------------
+    let lastRenderTime = 0;
+    const RENDER_THROTTLE = 16; // ~60fps
+
+    function throttledRender(timestamp) {
+        if (timestamp - lastRenderTime >= RENDER_THROTTLE) {
+            lastRenderTime = timestamp;
+            render();
+        }
+        requestAnimationFrame(throttledRender);
+    }
+
+    // -------------------------
+    // LOG + DEBUG SWITCH
+    // -------------------------
+    let logs = true;    // console logs
+    let debug = false;    // visual debug (Auto-dot) - DEFAULT FALSE
+
+    // -------------------------
+    // CSS.escape Polyfill
+    // -------------------------
+    const cssEscape = (s) => {
+        try {
+            if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(String(s));
+        } catch (_) { }
+        return String(s).replace(/[^a-zA-Z0-9_-]/g, (m) => '\\' + m);
+    };
+
+    // GM keys
+    const K = {
+        enabled: 'gvf_enabled',
+        moody: 'gvf_moody',
+        teal: 'gvf_teal',
+        vib: 'gvf_vib',
+        icons: 'gvf_icons',
+
+        SL: 'gvf_sl',
+        SR: 'gvf_sr',
+        BL: 'gvf_bl',
+        WL: 'gvf_wl',
+        DN: 'gvf_dn',
+
+        HDR: 'gvf_hdr',
+        HDR_LAST: 'gvf_hdr_last',
+
+        PROF: 'gvf_profile',
+
+        G_HUD: 'gvf_g_hud',
+        I_HUD: 'gvf_i_hud',
+        S_HUD: 'gvf_s_hud',
+
+        RENDER_MODE: 'gvf_render_mode',
+
+        U_CONTRAST: 'gvf_u_contrast',
+        U_BLACK: 'gvf_u_black',
+        U_WHITE: 'gvf_u_white',
+        U_HIGHLIGHTS: 'gvf_u_highlights',
+        U_SHADOWS: 'gvf_u_shadows',
+        U_SAT: 'gvf_u_saturation',
+        U_VIB: 'gvf_u_vibrance',
+        U_SHARP: 'gvf_u_sharpen',
+        U_GAMMA: 'gvf_u_gamma',
+        U_GRAIN: 'gvf_u_grain',
+        U_HUE: 'gvf_u_hue',
+
+        U_R_GAIN: 'gvf_u_r_gain',
+        U_G_GAIN: 'gvf_u_g_gain',
+        U_B_GAIN: 'gvf_u_b_gain',
+
+        AUTO_ON: 'gvf_auto_on',
+        AUTO_STRENGTH: 'gvf_auto_strength',
+        AUTO_LOCK_WB: 'gvf_auto_lock_wb',
+
+        LOGS: 'gvf_logs',
+        DEBUG: 'gvf_debug',
+
+        // Color blindness filter
+        CB_FILTER: 'gvf_cb_filter',
+
+        // Profile Management
+        ACTIVE_USER_PROFILE: 'gvf_active_user_profile',
+        USER_PROFILES: 'gvf_user_profiles'
+    };
+
+    // -------------------------
+    // Helpers
+    // -------------------------
+    const clamp = (n, a, b) => Math.min(b, Math.max(a, n));
+    const roundTo = (n, step) => Math.round(n / step) * step;
+    const snap0 = (n, eps) => (Math.abs(n) <= eps ? 0 : n);
+    const nFix = (n, digits = 1) => Number((Number(n) || 0).toFixed(digits));
+    const gmGet = (key, fallback) => { try { return GM_getValue(key, fallback); } catch (_) { return fallback; } };
+    const gmSet = (key, val) => { try { GM_setValue(key, val); } catch (_) { } };
+    const nowMs = () => (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    const isFirefox = () => { try { return /firefox/i.test(navigator.userAgent || ''); } catch (_) { return false; } };
+
+    // -------------------------
+    // Bulk-update guard
+    // -------------------------
+    let _inSync = false;
+    let _suspendSync = false;
+
+    // Debug/Load settings from storage
+    logs = !!gmGet(K.LOGS, true);
+    debug = !!gmGet(K.DEBUG, false); // Default false
+
+    // -------------------------
+    // User Profile Management
+    // -------------------------
+    let userProfiles = [];
+    let activeUserProfile = null;
+
+    // Standard-User-Profile
+    const DEFAULT_USER_PROFILE = {
+        id: 'default',
+        name: 'Default',
+        createdAt: Date.now(),
+        settings: {
+            enabled: true,
+            darkMoody: true,
+            tealOrange: false,
+            vibrantSat: false,
+            sl: 1.0,
+            sr: 0.5,
+            bl: -1.2,
+            wl: 0.2,
+            dn: -0.6,
+            hdr: 0.0,
+            profile: 'user',
+            renderMode: 'svg',
+            autoOn: true,
+            autoStrength: 0.65,
+            autoLockWB: true,
+            u_contrast: 0,
+            u_black: 0,
+            u_white: 0,
+            u_highlights: 0,
+            u_shadows: 0,
+            u_sat: 0,
+            u_vib: 0,
+            u_sharp: 0,
+            u_gamma: 0,
+            u_grain: 0,
+            u_hue: 0,
+            u_r_gain: 128,
+            u_g_gain: 128,
+            u_b_gain: 128,
+            cbFilter: 'none'
+        }
+    };
+
+    // Firefox-spezifisches Standard-Profil
+    const DEFAULT_USER_PROFILE_FIREFOX = {
+        id: 'default',
+        name: 'Default',
+        createdAt: Date.now(),
+        settings: {
+            enabled: true,
+            darkMoody: true,
+            tealOrange: false,
+            vibrantSat: false,
+            sl: 1.3,
+            sr: -1.1,
+            bl: 0.3,
+            wl: 0.2,
+            dn: 0.6,
+            hdr: 0.0,
+            profile: 'off',
+            renderMode: 'svg',
+            autoOn: true,
+            autoStrength: 0.65,
+            autoLockWB: true,
+            u_contrast: 0,
+            u_black: 0,
+            u_white: 0,
+            u_highlights: 0,
+            u_shadows: 0,
+            u_sat: 0,
+            u_vib: 0,
+            u_sharp: 0,
+            u_gamma: 0,
+            u_grain: 0,
+            u_hue: 0,
+            u_r_gain: 128,
+            u_g_gain: 128,
+            u_b_gain: 128,
+            cbFilter: 'none'
+        }
+    };
+
+    // Profile Management Funktionen
+    function loadUserProfiles() {
+        try {
+            const stored = gmGet(K.USER_PROFILES, null);
+            if (stored && Array.isArray(stored) && stored.length > 0) {
+                userProfiles = stored;
+            } else {
+                // Erstelle Standard-Profil basierend auf Browser
+                const isFirefoxBrowser = isFirefox();
+                const defaultProfile = isFirefoxBrowser ? DEFAULT_USER_PROFILE_FIREFOX : DEFAULT_USER_PROFILE;
+                userProfiles = [defaultProfile];
+            }
+
+            // Lade aktives Profil
+            const activeId = gmGet(K.ACTIVE_USER_PROFILE, 'default');
+            activeUserProfile = userProfiles.find(p => p.id === activeId) || userProfiles[0];
+
+            log('User Profiles geladen:', userProfiles.length, 'Aktiv:', activeUserProfile?.name);
+        } catch (e) {
+            logW('Fehler beim Laden der User Profiles:', e);
+            const isFirefoxBrowser = isFirefox();
+            const defaultProfile = isFirefoxBrowser ? DEFAULT_USER_PROFILE_FIREFOX : DEFAULT_USER_PROFILE;
+            userProfiles = [defaultProfile];
+            activeUserProfile = defaultProfile;
+        }
+    }
+
+    function saveUserProfiles() {
+        try {
+            gmSet(K.USER_PROFILES, userProfiles);
+            if (activeUserProfile) {
+                gmSet(K.ACTIVE_USER_PROFILE, activeUserProfile.id);
+            }
+        } catch (e) {
+            logW('Fehler beim Speichern der User Profiles:', e);
+        }
+    }
+
+    function createNewUserProfile(name) {
+        const newProfile = {
+            id: 'profile_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
+            name: name || 'Neues Profil',
+            createdAt: Date.now(),
+            settings: { ...getCurrentSettings() }
+        };
+        userProfiles.push(newProfile);
+        saveUserProfiles();
+        return newProfile;
+    }
+
+    function deleteUserProfile(profileId) {
+        if (profileId === 'default') {
+            log('Kann Standard-Profil nicht löschen');
+            return false;
+        }
+
+        const index = userProfiles.findIndex(p => p.id === profileId);
+        if (index !== -1) {
+            userProfiles.splice(index, 1);
+
+            // Wenn aktives Profil gelöscht wurde, auf Default wechseln
+            if (activeUserProfile && activeUserProfile.id === profileId) {
+                switchToUserProfile('default');
+            }
+
+            saveUserProfiles();
+            return true;
+        }
+        return false;
+    }
+
+    function switchToUserProfile(profileId) {
+        const profile = userProfiles.find(p => p.id === profileId);
+        if (!profile) {
+            logW('Profil nicht gefunden:', profileId);
+            return false;
+        }
+
+        // Aktuelle Einstellungen speichern (falls gewünscht)
+        if (activeUserProfile) {
+            updateCurrentProfileSettings();
+        }
+
+        // Profil wechseln
+        activeUserProfile = profile;
+        applyUserProfileSettings(profile.settings);
+        saveUserProfiles();
+
+        log('Zu Profil gewechselt:', profile.name);
+        return true;
+    }
+
+    function updateCurrentProfileSettings() {
+        if (!activeUserProfile) return;
+
+        const currentSettings = getCurrentSettings();
+        activeUserProfile.settings = { ...currentSettings };
+        saveUserProfiles();
+    }
+
+    function getCurrentSettings() {
+        return {
+            enabled: enabled,
+            darkMoody: darkMoody,
+            tealOrange: tealOrange,
+            vibrantSat: vibrantSat,
+            sl: sl,
+            sr: sr,
+            bl: bl,
+            wl: wl,
+            dn: dn,
+            hdr: hdr,
+            profile: profile,
+            renderMode: renderMode,
+            autoOn: autoOn,
+            autoStrength: autoStrength,
+            autoLockWB: autoLockWB,
+            u_contrast: u_contrast,
+            u_black: u_black,
+            u_white: u_white,
+            u_highlights: u_highlights,
+            u_shadows: u_shadows,
+            u_sat: u_sat,
+            u_vib: u_vib,
+            u_sharp: u_sharp,
+            u_gamma: u_gamma,
+            u_grain: u_grain,
+            u_hue: u_hue,
+            u_r_gain: u_r_gain,
+            u_g_gain: u_g_gain,
+            u_b_gain: u_b_gain,
+            cbFilter: cbFilter
+        };
+    }
+
+    function applyUserProfileSettings(settings) {
+        _suspendSync = true;
+        _inSync = true;
+
+        try {
+            enabled = settings.enabled ?? enabled;
+            darkMoody = settings.darkMoody ?? darkMoody;
+            tealOrange = settings.tealOrange ?? tealOrange;
+            vibrantSat = settings.vibrantSat ?? vibrantSat;
+
+            sl = settings.sl ?? sl;
+            sr = settings.sr ?? sr;
+            bl = settings.bl ?? bl;
+            wl = settings.wl ?? wl;
+            dn = settings.dn ?? dn;
+
+            hdr = settings.hdr ?? hdr;
+            profile = settings.profile ?? profile;
+            renderMode = settings.renderMode ?? renderMode;
+
+            autoOn = settings.autoOn ?? autoOn;
+            autoStrength = settings.autoStrength ?? autoStrength;
+            autoLockWB = settings.autoLockWB ?? autoLockWB;
+
+            u_contrast = settings.u_contrast ?? u_contrast;
+            u_black = settings.u_black ?? u_black;
+            u_white = settings.u_white ?? u_white;
+            u_highlights = settings.u_highlights ?? u_highlights;
+            u_shadows = settings.u_shadows ?? u_shadows;
+            u_sat = settings.u_sat ?? u_sat;
+            u_vib = settings.u_vib ?? u_vib;
+            u_sharp = settings.u_sharp ?? u_sharp;
+            u_gamma = settings.u_gamma ?? u_gamma;
+            u_grain = settings.u_grain ?? u_grain;
+            u_hue = settings.u_hue ?? u_hue;
+
+            u_r_gain = settings.u_r_gain ?? u_r_gain;
+            u_g_gain = settings.u_g_gain ?? u_g_gain;
+            u_b_gain = settings.u_b_gain ?? u_b_gain;
+
+            cbFilter = settings.cbFilter ?? cbFilter;
+
+            // In GM speichern
+            gmSet(K.enabled, enabled);
+            gmSet(K.moody, darkMoody);
+            gmSet(K.teal, tealOrange);
+            gmSet(K.vib, vibrantSat);
+
+            gmSet(K.SL, sl);
+            gmSet(K.SR, sr);
+            gmSet(K.BL, bl);
+            gmSet(K.WL, wl);
+            gmSet(K.DN, dn);
+
+            gmSet(K.HDR, hdr);
+            if (hdr !== 0) gmSet(K.HDR_LAST, hdr);
+
+            gmSet(K.PROF, profile);
+            gmSet(K.RENDER_MODE, renderMode);
+
+            gmSet(K.AUTO_ON, autoOn);
+            gmSet(K.AUTO_STRENGTH, autoStrength);
+            gmSet(K.AUTO_LOCK_WB, autoLockWB);
+
+            gmSet(K.U_CONTRAST, u_contrast);
+            gmSet(K.U_BLACK, u_black);
+            gmSet(K.U_WHITE, u_white);
+            gmSet(K.U_HIGHLIGHTS, u_highlights);
+            gmSet(K.U_SHADOWS, u_shadows);
+            gmSet(K.U_SAT, u_sat);
+            gmSet(K.U_VIB, u_vib);
+            gmSet(K.U_SHARP, u_sharp);
+            gmSet(K.U_GAMMA, u_gamma);
+            gmSet(K.U_GRAIN, u_grain);
+            gmSet(K.U_HUE, u_hue);
+
+            gmSet(K.U_R_GAIN, u_r_gain);
+            gmSet(K.U_G_GAIN, u_g_gain);
+            gmSet(K.U_B_GAIN, u_b_gain);
+
+            gmSet(K.CB_FILTER, cbFilter);
+
+            // Filter anwenden
+            if (renderMode === 'gpu') {
+                applyGpuFilter();
+            } else {
+                regenerateSvgImmediately();
+            }
+
+            setAutoOn(autoOn, { silent: true });
+            scheduleOverlayUpdate();
+
+            log('Profil-Einstellungen angewendet');
+        } finally {
+            _inSync = false;
+            _suspendSync = false;
+        }
+    }
+
+    // -------------------------
+    // INSTANT SVG REGENERATION
+    // -------------------------
+    let _svgNeedsRegeneration = false;
+
+    function regenerateSvgImmediately() {
+        if (_svgNeedsRegeneration) return;
+        _svgNeedsRegeneration = true;
+
+        queueMicrotask(() => {
+            _svgNeedsRegeneration = false;
+            ensureSvgFilter(true);
+            applyFilter();
+        });
+    }
+
+
+    /**
+     * Determines the currently active filter string for screenshots/recordings
+     */
+    function getCurrentFilterString() {
+        try {
+            // First, try to extract the current CSS filter from the style element.
+            const style = document.getElementById(STYLE_ID);
+            if (style && style.textContent) {
+                const match = style.textContent.match(/filter:\s*([^!;]+)/);
+                if (match && match[1]) {
+                    return match[1].trim();
+                }
+            }
+
+            // Fallback: Create the filter string based on the current settings
+            if (renderMode === 'gpu') {
+                return getGpuFilterString();
+            } else {
+                // For SVG mode: Return the URL filter
+                const comboId = pickComboId();
+                return `url("#${comboId}")${getBaseToneString()}${getProfileToneString()}${getUserToneString()}`;
+            }
+        } catch (e) {
+            logW('Fehler beim Ermitteln des Filter-Strings:', e);
+            return 'none';
+        }
+    }
+
+    function getBaseToneString() {
+        return enabled ? ' brightness(1.02) contrast(1.05) saturate(1.21)' : '';
+    }
+
+    function getProfileToneString() {
+        if (profile === 'film') return ' brightness(1.01) contrast(1.08) saturate(1.08)';
+        if (profile === 'anime') return ' brightness(1.03) contrast(1.10) saturate(1.16)';
+        if (profile === 'gaming') return ' brightness(1.01) contrast(1.12) saturate(1.06)';
+        if (profile === 'eyecare') return ' brightness(1.05) contrast(0.96) saturate(0.88) hue-rotate(-12deg)';
+        return '';
+    }
+
+    function getUserToneString() {
+        if (profile !== 'user') return '';
+
+        const c = clamp(1.0 + (uDelta(u_contrast) * 0.04), 0.60, 1.60);
+        const sat = clamp(1.0 + (uDelta(u_sat) * 0.05), 0.40, 1.80);
+        const vib = clamp(1.0 + (uDelta(u_vib) * 0.02), 0.70, 1.35);
+        const hue = clamp(uDelta(u_hue) * 3.0, -30, 30);
+
+        const blk = clamp(uDelta(u_black) * 0.012, -0.12, 0.12);
+        const wht = clamp(uDelta(u_white) * 0.012, -0.12, 0.12);
+        const sh = clamp(uDelta(u_shadows) * 0.010, -0.10, 0.10);
+        const hi = clamp(uDelta(u_highlights) * 0.010, -0.10, 0.10);
+
+        const br = clamp(1.0 + (-blk + wht + sh + hi) * 0.6, 0.70, 1.35);
+
+        const g = clamp(1.0 + (uDelta(u_gamma) * 0.025), 0.60, 1.60);
+        const gBr = clamp(1.0 + (1.0 - g) * 0.18, 0.85, 1.20);
+        const gCt = clamp(1.0 + (g - 1.0) * 0.10, 0.90, 1.15);
+
+        return ` brightness(${(br * gBr).toFixed(3)}) contrast(${(c * gCt).toFixed(3)}) saturate(${(sat * vib).toFixed(3)}) hue-rotate(${hue.toFixed(1)}deg)`;
+    }
+
+
+    // -------------------------
+    // Screenshot / Recording helpers
+    // -------------------------
+    function dlBlob(blob, filename) {
+        try {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 1500);
+        } catch (_) { }
+    }
+
+    function tsName(prefix, ext) {
+        const d = new Date();
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${prefix}_${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}.${ext}`;
+    }
+
+    function getActiveVideoForCapture() {
+        try {
+            const v = (typeof choosePrimaryVideo === 'function') ? choosePrimaryVideo() : null;
+            if (v) return v;
+        } catch (_) { }
+        return document.querySelector('video');
+    }
+
+    function getAppliedCssFilterString(video) {
+        try {
+            const cs = window.getComputedStyle(video);
+            let f = String(cs.filter || '').trim();
+            if (!f || f === 'none') return '';
+            f = f.replace(/url\([^)]+\)/g, '').replace(/\s+/g, ' ').trim();
+            if (!f || f === 'none') return '';
+            return f;
+        } catch (_) {
+            return '';
+        }
+    }
+
+    function canBakeToCanvas(video) {
+        try {
+            const w = Math.max(2, video.videoWidth || 0);
+            const h = Math.max(2, video.videoHeight || 0);
+            if (!w || !h) return { ok: false, reason: 'Video not ready.' };
+
+            const c = document.createElement('canvas');
+            c.width = 2; c.height = 2;
+            const ctx = c.getContext('2d');
+            ctx.drawImage(video, 0, 0, 2, 2);
+            ctx.getImageData(0, 0, 1, 1);
+            return { ok: true, reason: '' };
+        } catch (_) {
+            return { ok: false, reason: 'Blocked (DRM/cross-origin).' };
+        }
+    }
+
+    // -------------------------
+    // Firefox audio tap
+    // -------------------------
+    const AUDIO_TAPS = new WeakMap();
+
+    function ensureAudioTap(video) {
+        try {
+            if (!video) return null;
+
+            const existing = AUDIO_TAPS.get(video);
+            if (existing && existing.dest && existing.dest.stream) {
+                const tracks = existing.dest.stream.getAudioTracks ? existing.dest.stream.getAudioTracks() : [];
+                if (tracks && tracks.length) return { tracks, note: 'webaudio' };
+            }
+
+            const AC = window.AudioContext || window.webkitAudioContext;
+            if (!AC) return null;
+
+            const ctx = new AC({ latencyHint: 'interactive' });
+            const src = ctx.createMediaElementSource(video);
+            const gain = ctx.createGain();
+            gain.gain.value = 1.0;
+
+            const dest = ctx.createMediaStreamDestination();
+
+            src.connect(gain);
+            gain.connect(ctx.destination);
+            gain.connect(dest);
+
+            const tap = { ctx, src, gain, dest };
+            AUDIO_TAPS.set(video, tap);
+
+            const tracks = dest.stream.getAudioTracks ? dest.stream.getAudioTracks() : [];
+            if (!tracks || !tracks.length) return null;
+
+            tracks.forEach(t => { try { t.__gvfNoStop = true; } catch (_) { } });
+            return { tracks, note: 'webaudio' };
+        } catch (_) {
+            return null;
+        }
+    }
+
+    async function resumeAudioContextsFor(video) {
+        try {
+            const tap = AUDIO_TAPS.get(video);
+            if (tap && tap.ctx && tap.ctx.state === 'suspended') {
+                await tap.ctx.resume();
+            }
+        } catch (_) { }
+    }
+
+    // ---------- Canvas pipeline for recording ----------
+    const REC_PIPE = {
+        active: false,
+        v: null,
+        canvas: null,
+        ctx: null,
+        raf: 0,
+        stream: null,
+        lastDraw: 0,
+        fps: 60,
+        audioTracks: [],
+        stopFn: null
+    };
+
+    function stopCanvasRecorderPipeline() {
+        try { if (REC_PIPE.raf) cancelAnimationFrame(REC_PIPE.raf); } catch (_) { }
+        REC_PIPE.raf = 0;
+
+        try {
+            REC_PIPE.audioTracks.forEach(t => {
+                try { if (t && !t.__gvfNoStop) t.stop(); } catch (_) { }
+            });
+        } catch (_) { }
+        REC_PIPE.audioTracks = [];
+
+        try {
+            if (REC_PIPE.stream) {
+                REC_PIPE.stream.getTracks().forEach(t => {
+                    try { if (t && !t.__gvfNoStop) t.stop(); } catch (_) { }
+                });
+            }
+        } catch (_) { }
+
+        REC_PIPE.active = false;
+        REC_PIPE.v = null;
+        REC_PIPE.stream = null;
+        REC_PIPE.canvas = null;
+        REC_PIPE.ctx = null;
+        REC_PIPE.lastDraw = 0;
+        REC_PIPE.stopFn = null;
+    }
+
+    function startCanvasRecorderPipeline(video, statusEl) {
+        const w = Math.max(2, video.videoWidth || 0);
+        const h = Math.max(2, video.videoHeight || 0);
+        if (!w || !h) return null;
+
+        const c = document.createElement('canvas');
+        c.width = w;
+        c.height = h;
+
+        const ctx = c.getContext('2d', { alpha: false, desynchronized: true });
+        if (!ctx) return null;
+
+        ctx.imageSmoothingEnabled = true;
+        try { ctx.imageSmoothingQuality = 'high'; } catch (_) { }
+
+        // FIX: Use the correct filter string for recording
+        const filterString = getCurrentFilterString();
+        log('Verwende Filter für Recording:', filterString);
+
+        const draw = (t) => {
+            if (!REC_PIPE.active) return;
+
+            const dt = t - (REC_PIPE.lastDraw || 0);
+            const minDt = 1000 / Math.max(10, REC_PIPE.fps);
+            if (dt < (minDt * 0.55)) {
+                REC_PIPE.raf = requestAnimationFrame(draw);
+                return;
+            }
+            REC_PIPE.lastDraw = t;
+
+            try {
+                ctx.save();
+                ctx.filter = filterString || 'none';
+                ctx.drawImage(video, 0, 0, w, h);
+                ctx.restore();
+            } catch (e) {
+                if (statusEl) statusEl.textContent = 'Recording stopped: blocked (DRM/cross-origin).';
+                // FIX: REC.stopRequested auswerten
+                REC.stopRequested = true;
+                if (REC.mr && REC.mr.state === 'recording') {
+                    try { REC.mr.stop(); } catch (_) { }
+                }
+                return;
+            }
+
+            REC_PIPE.raf = requestAnimationFrame(draw);
+        };
+
+        let stream = null;
+        try { stream = c.captureStream(REC_PIPE.fps); } catch (_) { return null; }
+
+        let audioTracks = [];
+        let audioNote = '';
+        try {
+            if (isFirefox()) {
+                const tap = ensureAudioTap(video);
+                if (tap && tap.tracks && tap.tracks.length) {
+                    audioTracks = tap.tracks.slice();
+                    audioNote = 'Audio: WebAudio tap';
+                }
+            }
+            if (!audioTracks.length) {
+                const vs = (video.captureStream && video.captureStream()) || (video.mozCaptureStream && video.mozCaptureStream());
+                if (vs) {
+                    const at = vs.getAudioTracks ? vs.getAudioTracks() : [];
+                    if (at && at.length) {
+                        audioTracks = at.slice();
+                        audioNote = 'Audio: captureStream';
+                    }
+                }
+            }
+        } catch (_) { }
+
+        try {
+            (audioTracks || []).forEach(at => {
+                try {
+                    stream.addTrack(at);
+                    REC_PIPE.audioTracks.push(at);
+                } catch (_) { }
+            });
+        } catch (_) { }
+
+        REC_PIPE.active = true;
+        REC_PIPE.v = video;
+        REC_PIPE.canvas = c;
+        REC_PIPE.ctx = ctx;
+        REC_PIPE.stream = stream;
+        REC_PIPE.lastDraw = 0;
+
+        REC_PIPE.raf = requestAnimationFrame(draw);
+
+        if (statusEl && audioTracks.length && audioNote) {
+            if (statusEl.textContent && statusEl.textContent.startsWith('Tip:')) {
+                statusEl.textContent = audioNote;
+            }
+        }
+
+        return stream;
+    }
+
+    // ---------- Robust recorder ----------
+    const REC = {
+        active: false,
+        stopRequested: false,
+        mr: null,
+        chunks: [],
+        v: null,
+        mime: '',
+        ext: 'webm',
+        startTime: 0,
+        timerInterval: null,
+        currentVideo: null  // Track current video for HUD positioning
+    };
+
+    function pickRecorderMime(hasAudio) {
+        const mp4Audio = [
+            'video/mp4;codecs=avc1.4D401F,mp4a.40.2',
+            'video/mp4;codecs=avc1.4D401F,mp4a.40.2',
+            'video/mp4'
+        ];
+        const webmAudio = [
+            'video/webm;codecs=vp9,opus',
+            'video/webm;codecs=vp8,opus',
+            'video/webm;codecs=vp9',
+            'video/webm;codecs=vp8',
+            'video/webm'
+        ];
+        const mp4NoAudio = [
+            'video/mp4;codecs=avc1.4D401F',
+            'video/mp4;codecs=avc1.4D401F',
+            'video/mp4'
+        ];
+        const webmNoAudio = [
+            'video/webm;codecs=vp9',
+            'video/webm;codecs=vp8',
+            'video/webm'
+        ];
+        const cands = hasAudio ? [...mp4Audio, ...webmAudio] : [...mp4NoAudio, ...webmNoAudio];
+        for (const m of cands) {
+            try { if (window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) return m; } catch (_) { }
+        }
+        return '';
+    }
+
+    function getExtFromMime(mime) {
+        const m = String(mime || '').toLowerCase();
+        if (m.includes('video/mp4')) return 'mp4';
+        return 'webm';
+    }
+
+    function safeBlobTypeFromRecorder(mr, fallback) {
+        try {
+            const mt = (mr && mr.mimeType) ? String(mr.mimeType) : '';
+            if (mt) return mt;
+        } catch (_) { }
+        return fallback || 'video/webm';
+    }
+
+    // Recording HUD functions
+    function createRecordingHUD() {
+        let hud = document.getElementById(RECORDING_HUD_ID);
+        if (hud) return hud;
+
+        hud = document.createElement('div');
+        hud.id = RECORDING_HUD_ID;
+        hud.style.cssText = `
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.8);
+            color: #ff4444;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-family: monospace;
+            font-size: 14px;
+            font-weight: bold;
+            z-index: 2147483647;
+            display: none;
+            align-items: center;
+            gap: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.5);
+            border: 1px solid rgba(255, 68, 68, 0.6);
+            backdrop-filter: blur(4px);
+            pointer-events: none;
+            transform: translateZ(0);
+            letter-spacing: 0.5px;
+        `;
+
+        const redDot = document.createElement('span');
+        redDot.style.cssText = `
+            width: 12px;
+            height: 12px;
+            background: #ff4444;
+            border-radius: 50%;
+            display: inline-block;
+            animation: gvf-record-pulse 1.2s ease-in-out infinite;
+            box-shadow: 0 0 10px rgba(255, 68, 68, 0.8);
+        `;
+
+        const timeDisplay = document.createElement('span');
+        timeDisplay.id = 'gvf-record-time';
+        timeDisplay.textContent = '00:00';
+        timeDisplay.style.cssText = `
+            text-shadow: 0 0 5px rgba(255, 68, 68, 0.5);
+        `;
+
+        hud.appendChild(redDot);
+        hud.appendChild(timeDisplay);
+
+        // Add animation style if not already present
+        if (!document.getElementById('gvf-record-style')) {
+            const style = document.createElement('style');
+            style.id = 'gvf-record-style';
+            style.textContent = `
+                @keyframes gvf-record-pulse {
+                    0% { opacity: 1; transform: scale(1); }
+                    50% { opacity: 0.6; transform: scale(1.2); }
+                    100% { opacity: 1; transform: scale(1); }
+                }
+            `;
+            document.head.appendChild(style);
+        }
+
+        return hud;
+    }
+
+    function positionRecordingHUD(video) {
+        const hud = document.getElementById(RECORDING_HUD_ID);
+        if (!hud || !video) return;
+
+
+        if (hud.parentNode !== video.parentNode) {
+            if (video.parentNode) {
+                video.parentNode.appendChild(hud);
+            }
+        }
+
+
+        hud.style.position = 'absolute';
+        hud.style.top = '10px';
+        hud.style.left = '10px';
+        hud.style.right = 'auto';
+        hud.style.bottom = 'auto';
+        hud.style.transform = 'none';
+    }
+
+    function updateRecordingTimer() {
+        if (!REC.active) return;
+
+        const hud = document.getElementById(RECORDING_HUD_ID);
+        if (!hud) return;
+
+        const timeDisplay = document.getElementById('gvf-record-time');
+        if (!timeDisplay) return;
+
+        const elapsed = Math.floor((Date.now() - REC.startTime) / 1000);
+        const minutes = Math.floor(elapsed / 60);
+        const seconds = elapsed % 60;
+        timeDisplay.textContent = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+
+
+        if (REC.currentVideo && REC.currentVideo.parentNode) {
+            positionRecordingHUD(REC.currentVideo);
+        }
+    }
+
+    function startRecordingTimer(video) {
+        REC.startTime = Date.now();
+        REC.currentVideo = video;
+
+
+        const hud = createRecordingHUD();
+
+
+        if (video.parentNode) {
+            video.parentNode.appendChild(hud);
+            positionRecordingHUD(video);
+        }
+
+        hud.style.display = 'flex';
+
+        if (REC.timerInterval) clearInterval(REC.timerInterval);
+        REC.timerInterval = setInterval(updateRecordingTimer, 100);
+
+        log('Recording HUD gestartet');
+    }
+
+    function stopRecordingTimer() {
+        if (REC.timerInterval) {
+            clearInterval(REC.timerInterval);
+            REC.timerInterval = null;
+        }
+
+        const hud = document.getElementById(RECORDING_HUD_ID);
+        if (hud) {
+            hud.style.display = 'none';
+
+            if (hud.parentNode) {
+                hud.parentNode.removeChild(hud);
+            }
+        }
+        REC.currentVideo = null;
+        log('Recording HUD gestoppt');
+    }
+
+    async function takeVideoScreenshot(statusEl) {
+        const v = getActiveVideoForCapture();
+        if (!v) { if (statusEl) statusEl.textContent = 'No video found.'; return; }
+
+        const w = Math.max(2, v.videoWidth || 0);
+        const h = Math.max(2, v.videoHeight || 0);
+        if (!w || !h) { if (statusEl) statusEl.textContent = 'Video not ready.'; return; }
+
+        const chk = canBakeToCanvas(v);
+        if (!chk.ok) { if (statusEl) statusEl.textContent = `Screenshot blocked: ${chk.reason}`; return; }
+
+        const c = document.createElement('canvas');
+        c.width = w;
+        c.height = h;
+        const ctx = c.getContext('2d', { alpha: false, desynchronized: true });
+        if (!ctx) { if (statusEl) statusEl.textContent = 'Canvas unavailable.'; return; }
+
+        ctx.imageSmoothingEnabled = true;
+        try { ctx.imageSmoothingQuality = 'high'; } catch (_) { }
+
+        // FIX: Use the correct filter string for screenshots
+        const filterString = getCurrentFilterString();
+        log('Verwende Filter für Screenshot:', filterString);
+
+        try {
+            ctx.save();
+            ctx.filter = filterString || 'none';
+            ctx.drawImage(v, 0, 0, w, h);
+            ctx.restore();
+            ctx.getImageData(0, 0, 1, 1);
+        } catch (_) {
+            if (statusEl) statusEl.textContent = 'Screenshot blocked (cross-origin/DRM).';
+            return;
+        }
+
+        c.toBlob((blob) => {
+            if (!blob) { if (statusEl) statusEl.textContent = 'Screenshot failed.'; return; }
+            const name = tsName('gvf_screenshot', 'png');
+            dlBlob(blob, name);
+            if (statusEl) statusEl.textContent = `Screenshot saved: ${name}`;
+        }, 'image/png');
+    }
+
+    async function toggleVideoRecord(statusEl, btnEl) {
+        if (REC.active) {
+            try {
+                REC.stopRequested = true;
+
+                if (btnEl) {
+                    btnEl.textContent = 'Stopping...';
+                    btnEl.disabled = true;
+                    btnEl.style.opacity = '0.6';
+                    btnEl.style.cursor = 'not-allowed';
+                }
+                if (statusEl) statusEl.textContent = 'Finalizing recording...';
+
+                if (REC.mr && REC.mr.state === 'recording') {
+                    try { REC.mr.requestData(); } catch (_) { }
+                    setTimeout(() => {
+                        try { REC.mr.stop(); } catch (_) { }
+                    }, 700);
+                } else {
+                    try { REC.mr && REC.mr.stop(); } catch (_) { }
+                }
+
+                stopRecordingTimer();
+            } catch (_) { }
+            return;
+        }
+
+        const v = getActiveVideoForCapture();
+        if (!v) { if (statusEl) statusEl.textContent = 'No video found.'; return; }
+
+        const chk = canBakeToCanvas(v);
+        if (!chk.ok) {
+            if (statusEl) statusEl.textContent = `Recording disabled: ${chk.reason}`;
+            if (btnEl) {
+                btnEl.disabled = true;
+                btnEl.textContent = 'DRM blocked';
+                btnEl.style.opacity = '0.55';
+                btnEl.style.cursor = 'not-allowed';
+            }
+            return;
+        }
+
+        if (!window.MediaRecorder) {
+            if (statusEl) statusEl.textContent = 'MediaRecorder not supported.';
+            return;
+        }
+
+        try { if (isFirefox()) await resumeAudioContextsFor(v); } catch (_) { }
+
+        const filteredStream = startCanvasRecorderPipeline(v, statusEl);
+        if (!filteredStream) {
+            if (statusEl) statusEl.textContent = 'Recording not supported (canvas capture failed).';
+            return;
+        }
+
+        const hasAudio = (() => {
+            try { return filteredStream.getAudioTracks && filteredStream.getAudioTracks().length > 0; } catch (_) { }
+            return false;
+        })();
+
+        const mime = pickRecorderMime(hasAudio);
+        if (!mime) {
+            stopCanvasRecorderPipeline();
+            if (statusEl) statusEl.textContent = 'No supported recording format (mp4/webm).';
+            return;
+        }
+
+        const ext = getExtFromMime(mime);
+
+        REC.active = true;
+        REC.stopRequested = false;
+        REC.v = v;
+        REC.mime = mime;
+        REC.ext = ext;
+        REC.chunks = [];
+
+        if (btnEl) {
+            btnEl.disabled = false;
+            btnEl.textContent = 'Stop Record';
+            btnEl.style.opacity = '1';
+            btnEl.style.cursor = 'pointer';
+        }
+
+        if (statusEl) {
+            if (hasAudio) statusEl.textContent = `Recording... (${ext.toUpperCase()})`;
+            else statusEl.textContent = `Recording... (${ext.toUpperCase()} (no audio)) — site may block audio capture.`;
+        }
+
+        startRecordingTimer(v);
+
+        let mr;
+        try {
+            const opts = {
+                mimeType: mime,
+                videoBitsPerSecond: 6_000_000,
+                audioBitsPerSecond: 96_000
+            };
+            mr = new MediaRecorder(filteredStream, opts);
+        } catch (_) {
+            stopCanvasRecorderPipeline();
+            REC.active = false;
+            stopRecordingTimer();
+            if (btnEl) btnEl.textContent = 'Record';
+            if (statusEl) statusEl.textContent = 'Recorder init failed.';
+            return;
+        }
+
+        REC.mr = mr;
+
+        mr.ondataavailable = (ev) => {
+            if (ev && ev.data && ev.data.size > 0) REC.chunks.push(ev.data);
+        };
+
+        mr.onerror = () => {
+            try { mr.stop(); } catch (_) { }
+        };
+
+        mr.onstop = () => {
+            setTimeout(() => {
+                try {
+                    const type = safeBlobTypeFromRecorder(mr, (REC.ext === 'mp4' ? 'video/mp4' : 'video/webm'));
+                    const blob = new Blob(REC.chunks, { type });
+
+                    if (!blob || blob.size < 50_000) {
+                        if (statusEl) statusEl.textContent = 'Save failed (empty/too small). DRM/cross-origin or tab slept.';
+                    } else {
+                        const name = tsName('gvf_record', REC.ext);
+                        dlBlob(blob, name);
+
+                        if (statusEl) {
+                            const note = (REC.ext === 'webm')
+                                ? 'Saved (WebM). If Windows player refuses: open with VLC.'
+                                : 'Saved (MP4).';
+                            statusEl.textContent = `Saved: ${name} — ${note}`;
+                        }
+                    }
+                } catch (e) {
+                    if (statusEl) statusEl.textContent = 'Save failed.';
+                }
+
+                stopCanvasRecorderPipeline();
+
+                REC.active = false;
+                REC.mr = null;
+                REC.chunks = [];
+                REC.v = null;
+                REC.mime = '';
+                REC.ext = 'webm';
+                REC.stopRequested = false;
+
+                if (btnEl) {
+                    btnEl.disabled = false;
+                    btnEl.style.opacity = '1';
+                    btnEl.style.cursor = 'pointer';
+                    btnEl.textContent = 'Record';
+                }
+            }, 250);
+        };
+
+        try { mr.start(); } catch (_) {
+            stopCanvasRecorderPipeline();
+            stopRecordingTimer();
+            if (statusEl) statusEl.textContent = 'Recorder start failed.';
+            try { mr.stop(); } catch (__) { }
+        }
+    }
+
+    // -------------------------
+    // DEBUG / LOGGING
+    // -------------------------
+    const LOG = {
+        on: !!logs,
+        tag: '[GVF]',
+        lastTickMs: 0,
+        tickEveryMs: 1000,
+        lastToneMs: 0,
+        toneEveryMs: 800
+    };
+
+    function log(...a) { if (!LOG.on) return; try { console.log(LOG.tag, ...a); } catch (_) { } }
+    function logW(...a) { if (!LOG.on) return; try { console.warn(LOG.tag, ...a); } catch (_) { } }
+    function logToggle(name, state, extra) { log(`${name}:`, state ? 'ON' : 'OFF', extra || ''); }
+
+    // Debug Toggle Function
+    function toggleDebug() {
+        debug = !debug;
+        logs = debug; // Sync logs with debug
+        gmSet(K.DEBUG, debug);
+        gmSet(K.LOGS, logs);
+
+        LOG.on = logs;
+
+        logToggle('Debug Mode', debug);
+        logToggle('Console Logs', logs);
+
+        // Update Auto-Dot immediately
+        setAutoDotState(autoOn ? (debug ? 'idle' : 'off') : 'off');
+        scheduleOverlayUpdate();
+
+        // Short confirmation in console
+        if (debug) {
+            console.log('%c[GVF] Debug Mode ACTIVATED - Visual debug dots visible', 'color: #00ff00; font-weight: bold');
+        } else {
+            console.log('%c[GVF] Debug Mode DEACTIVATED - Visual debug dots hidden', 'color: #ff6666; font-weight: bold');
+        }
+    }
+
+    // -------------------------
+    // Global state
+    // -------------------------
+    let enabled = !!gmGet(K.enabled, true);
+    let darkMoody = !!gmGet(K.moody, true);
+    let tealOrange = !!gmGet(K.teal, false);
+    let vibrantSat = !!gmGet(K.vib, false);
+    let iconsShown = !!gmGet(K.icons, false);
+
+    const isFirefoxBrowser = isFirefox();
+
+    if (isFirefoxBrowser) {
+        var sl = Number(gmGet(K.SL, 1.3));
+        var sr = Number(gmGet(K.SR, -1.1));
+        var bl = Number(gmGet(K.BL, 0.3));
+        var wl = Number(gmGet(K.WL, 0.2));
+        var dn = Number(gmGet(K.DN, 0.6));
+        var profile = String(gmGet(K.PROF, 'off')).toLowerCase();
+    } else {
+        var sl = Number(gmGet(K.SL, 1.0));
+        var sr = Number(gmGet(K.SR, 0.5));
+        var bl = Number(gmGet(K.BL, -1.2));
+        var wl = Number(gmGet(K.WL, 0.2));
+        var dn = Number(gmGet(K.DN, -0.6));
+        var profile = String(gmGet(K.PROF, 'user')).toLowerCase();
+    }
+
+    let hdr = Number(gmGet(K.HDR, 0.0));
+
+    if (!['off', 'film', 'anime', 'gaming', 'eyecare', 'user'].includes(profile)) profile = 'off';
+
+    let renderMode = String(gmGet(K.RENDER_MODE, 'svg')).toLowerCase();
+    if (!['svg', 'gpu'].includes(renderMode)) renderMode = 'svg';
+
+    let gradingHudShown = !!gmGet(K.G_HUD, false);
+    let ioHudShown = !!gmGet(K.I_HUD, false);
+    let scopesHudShown = !!gmGet(K.S_HUD, false);
+
+    let u_contrast = Number(gmGet(K.U_CONTRAST, 0.0));
+    let u_black = Number(gmGet(K.U_BLACK, 0.0));
+    let u_white = Number(gmGet(K.U_WHITE, 0.0));
+    let u_highlights = Number(gmGet(K.U_HIGHLIGHTS, 0.0));
+    let u_shadows = Number(gmGet(K.U_SHADOWS, 0.0));
+    let u_sat = Number(gmGet(K.U_SAT, 0.0));
+    let u_vib = Number(gmGet(K.U_VIB, 0.0));
+    let u_sharp = Number(gmGet(K.U_SHARP, 0.0));
+    let u_gamma = Number(gmGet(K.U_GAMMA, 0.0));
+    let u_grain = Number(gmGet(K.U_GRAIN, 0.0));
+    let u_hue = Number(gmGet(K.U_HUE, 0.0));
+
+    let u_r_gain = Number(gmGet(K.U_R_GAIN, 128));
+    let u_g_gain = Number(gmGet(K.U_G_GAIN, 128));
+    let u_b_gain = Number(gmGet(K.U_B_GAIN, 128));
+
+    let autoOn = !!gmGet(K.AUTO_ON, true);
+    let autoStrength = Number(gmGet(K.AUTO_STRENGTH, 0.65));
+    autoStrength = clamp(autoStrength, 0, 1);
+    let autoLockWB = !!gmGet(K.AUTO_LOCK_WB, true);
+
+    // Color blindness filter
+    let cbFilter = String(gmGet(K.CB_FILTER, 'none')).toLowerCase();
+    if (!['none', 'protanopia', 'deuteranopia', 'tritanomaly'].includes(cbFilter)) cbFilter = 'none';
+
+    // Profile Management initialisieren
+    loadUserProfiles();
+
+    const HK = { base: 'b', moody: 'd', teal: 'o', vib: 'v', icons: 'h' };
+
+    function normSL() { return snap0(roundTo(clamp(Number(sl) || 0, -2, 2), 0.1), 0.05); }
+    function normSR() { return snap0(roundTo(clamp(Number(sr) || 0, -2, 2), 0.1), 0.05); }
+    function normBL() { return snap0(roundTo(clamp(Number(bl) || 0, -2, 2), 0.1), 0.05); }
+    function normWL() { return snap0(roundTo(clamp(Number(wl) || 0, -2, 2), 0.1), 0.05); }
+    function normDN() { return snap0(roundTo(clamp(Number(dn) || 0, -1.5, 1.5), 0.1), 0.05); }
+    function normHDR() { return snap0(roundTo(clamp(Number(hdr) || 0, -1.0, 2.0), 0.1), 0.05); }
+    function normU(v) { return roundTo(clamp(Number(v) || 0, -10, 10), 0.1); }
+    function uDelta(v) { return normU(v); }
+    function normRGB(v) { return clamp(Math.round(Number(v) || 128), 0, 255); }
+    function rgbGainToFactor(v) { return (normRGB(v) / 128); }
+
+    function getSharpenA() { return Math.max(0, normSL()) * 1.0; }
+    function getBlurSigma() { return Math.max(0, -normSL()) * 1.0; }
+    function getRadius() { return Math.max(0.1, Math.abs(normSR())); }
+    function blackToOffset(v) { return clamp(v, -2, 2) * 0.04; }
+    function whiteToHiAdj(v) { return clamp(v, -2, 2) * 0.06; }
+    function dnToDenoiseMix(v) { return clamp(v, 0, 1.5) * 0.5; }
+    function dnToDenoiseSigma(v) { return clamp(v, 0, 1.5) * 0.8; }
+    function dnToGrainAlpha(v) { return clamp(-v, 0, 1.5) * (0.20 / 1.5); }
+
+    const PROF = {
+        off: { name: 'Off', color: 'transparent' },
+        film: { name: 'Movie', color: '#00b050' },
+        anime: { name: 'Anime', color: '#1e6fff' },
+        gaming: { name: 'Gaming', color: '#ff2a2a' },
+        eyecare: { name: 'EyeCare', color: '#ffaa33' },
+        user: { name: 'User', color: '#bfbfbf' }
+    };
+
+    const PROFILE_VIDEO_OUTLINE = false;
+
+    // -------------------------
+    // Color blindness filter matrices
+    // -------------------------
+    function getColorBlindnessMatrix(type, strength = 1.0) {
+
+    const k = Math.max(0, Math.min(1, strength));
+
+    // Helper: lerp a matrix towards identity by strength (so k=0 => no change)
+    const I = matIdentity4x5();
+    const mix = (M) => M.map((v, i) => I[i] + (v - I[i]) * k);
+
+    if (type === 'protanopia') {
+
+        const M = [
+            0.90, 0.10, 0.00, 0, 0,
+            0.15, 0.85, 0.00, 0, 0,
+            0.35,-0.35, 1.00, 0, 0,
+            0,    0,    0,    1, 0
+        ];
+        return mix(M);
+    }
+
+    if (type === 'deuteranopia') {
+
+        const M = [
+            0.85, 0.15, 0.00, 0, 0,
+            0.05, 0.95, 0.00, 0, 0,
+           -0.35, 0.35, 1.00, 0, 0,
+            0,    0,    0,    1, 0
+        ];
+        return mix(M);
+    }
+
+    if (type === 'tritanomaly' || type === 'tritanopia') {
+
+        const M = [
+            1.00, 0.00, 0.35, 0, 0,
+            0.00, 1.00, 0.35, 0, 0,
+            0.00, 0.00, 1.00, 0, 0,
+            0,    0,    0,    1, 0
+        ];
+        return mix(M);
+    }
+
+
+    return matIdentity4x5();
+    }
+
+    // -------------------------
+    // 5x5 Color Matrix utils
+    // -------------------------
+    const LUMA = { r: 0.2126, g: 0.7152, b: 0.0722 };
+
+    function matIdentity4x5() {
+        return [
+            1, 0, 0, 0, 0,
+            0, 1, 0, 0, 0,
+            0, 0, 1, 0, 0,
+            0, 0, 0, 1, 0
+        ];
+    }
+
+    function matMul4x5(a, b) {
+        const out = new Array(20);
+        for (let row = 0; row < 4; row++) {
+            for (let col = 0; col < 4; col++) {
+                let s = 0;
+                for (let k = 0; k < 4; k++) s += a[row * 5 + k] * b[k * 5 + col];
+                out[row * 5 + col] = s;
+            }
+            let o = a[row * 5 + 4];
+            for (let k = 0; k < 4; k++) o += a[row * 5 + k] * b[k * 5 + 4];
+            out[row * 5 + 4] = o;
+        }
+        return out;
+    }
+
+    function matBrightnessContrast(br, ct) {
+        const g = br * ct;
+        const off = br * 0.5 * (1 - ct);
+        return [
+            g, 0, 0, 0, off,
+            0, g, 0, 0, off,
+            0, 0, g, 0, off,
+            0, 0, 0, 1, 0
+        ];
+    }
+
+    function matSaturation(s) {
+        const ir = (1 - s) * LUMA.r;
+        const ig = (1 - s) * LUMA.g;
+        const ib = (1 - s) * LUMA.b;
+        return [
+            ir + s, ig, ib, 0, 0,
+            ir, ig + s, ib, 0, 0,
+            ir, ig, ib + s, 0, 0,
+            0, 0, 0, 1, 0
+        ];
+    }
+
+    function matHueRotate(deg) {
+        const rad = (deg * Math.PI) / 180;
+        const cosA = Math.cos(rad);
+        const sinA = Math.sin(rad);
+        const lr = LUMA.r, lg = LUMA.g, lb = LUMA.b;
+
+        const a00 = lr + cosA * (1 - lr) + sinA * (-lr);
+        const a01 = lg + cosA * (-lg) + sinA * (-lg);
+        const a02 = lb + cosA * (-lb) + sinA * (1 - lb);
+        const a10 = lr + cosA * (-lr) + sinA * (0.143);
+        const a11 = lg + cosA * (1 - lg) + sinA * (0.140);
+        const a12 = lb + cosA * (-lb) + sinA * (-0.283);
+        const a20 = lr + cosA * (-lr) + sinA * (-(1 - lr));
+        const a21 = lg + cosA * (-lg) + sinA * (lg);
+        const a22 = lb + cosA * (1 - lb) + sinA * (lb);
+
+        return [
+            a00, a01, a02, 0, 0,
+            a10, a11, a12, 0, 0,
+            a20, a21, a22, 0, 0,
+            0, 0, 0, 1, 0
+        ];
+    }
+
+    function matRGBGain(rGain, gGain, bGain) {
+        return [
+            rGain, 0, 0, 0, 0,
+            0, gGain, 0, 0, 0,
+            0, 0, bGain, 0, 0,
+            0, 0, 0, 1, 0
+        ];
+    }
+
+    function matToSvgValues(m) {
+        return m.map(x => (Math.abs(x) < 1e-10 ? '0' : Number(x).toFixed(6))).join(' ');
+    }
+
+    let autoMatrixStr = matToSvgValues(matIdentity4x5());
+    let _autoLastMatrixStr = autoMatrixStr;
+
+    function updateAutoMatrixInSvg(valuesStr) {
+        try {
+            const svg = document.getElementById(SVG_ID);
+            if (!svg) return;
+            const nodes = svg.querySelectorAll('feColorMatrix[data-gvf-auto="1"]');
+            if (!nodes || !nodes.length) return;
+            nodes.forEach(n => {
+                try {
+                    if (n) {
+                        n.setAttribute('values', valuesStr);
+                    }
+                } catch (_) { }
+            });
+        } catch (_) { }
+    }
+
+    // -------------------------
+    // BRANCHLESS SHADER LOGIC
+    // -------------------------
+    function branchlessClamp(x, min, max) {
+        return Math.min(max, Math.max(min, x));
+    }
+
+    function branchlessSign(x) {
+        return (x > 0) - (x < 0);
+    }
+
+    function branchlessStep(edge, x) {
+        return (x >= edge) | 0;
+    }
+
+    function branchlessMix(a, b, t) {
+        return a + (b - a) * t;
+    }
+
+    function branchlessSmoothStep(edge0, edge1, x) {
+        const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
+        return t * t * (3 - 2 * t);
+    }
+
+    function branchlessGamma(x, gamma) {
+        const g = branchlessClamp(gamma, 0.5, 2.0);
+        if (g < 1.0) {
+            return x * (1.0 + (1.0 - g) * (1.0 - x) * 0.5);
+        } else {
+            return x * (1.0 - (g - 1.0) * x * 0.3);
+        }
+    }
+
+    function branchlessRGBGain(r, g, b, rGain, gGain, bGain) {
+        return [
+            r * rGain / 128.0,
+            g * gGain / 128.0,
+            b * bGain / 128.0
+        ];
+    }
+
+    function branchlessSaturation(r, g, b, sat) {
+        const luma = LUMA.r * r + LUMA.g * g + LUMA.b * b;
+        return [
+            branchlessMix(luma, r, sat),
+            branchlessMix(luma, g, sat),
+            branchlessMix(luma, b, sat)
+        ];
+    }
+
+    function branchlessContrast(r, g, b, contrast) {
+        const factor = (259.0 * (contrast * 255.0 + 255.0)) / (255.0 * (259.0 - contrast * 255.0));
+        return [
+            branchlessClamp(factor * (r - 128) + 128, 0, 255),
+            branchlessClamp(factor * (g - 128) + 128, 0, 255),
+            branchlessClamp(factor * (b - 128) + 128, 0, 255)
+        ];
+    }
+
+    function branchlessHDRToneMap(r, g, b, exposure) {
+        const luma = LUMA.r * r + LUMA.g * g + LUMA.b * b;
+        const scale = (luma * exposure + 1.0) / (luma + 1.0);
+        return [r * scale, g * scale, b * scale];
+    }
+
+    function branchlessSharpen(original, blurred, amount) {
+        return [
+            branchlessClamp(original[0] * (1.0 + amount) - blurred[0] * amount, 0, 255),
+            branchlessClamp(original[1] * (1.0 + amount) - blurred[1] * amount, 0, 255),
+            branchlessClamp(original[2] * (1.0 + amount) - blurred[2] * amount, 0, 255)
+        ];
+    }
+
+    function branchlessMotionDetect(curr, prev) {
+        let diff = 0;
+        for (let i = 0; i < curr.length; i++) {
+            diff += Math.abs(curr[i] - prev[i]);
+        }
+        return diff / curr.length;
+    }
+
+    function branchlessAdaptiveFps(motionScore, currentFps, minFps, maxFps) {
+        const targetFps = minFps + motionScore * (maxFps - minFps);
+        const alpha = 0.2;
+        return currentFps * (1 - alpha) + targetFps * alpha;
+    }
+
+    // ===================== REAL WEBGL2 CANVAS PIPELINE =====================
+    let webglPipeline = null;
+
+    class WebGL2Pipeline {
+        constructor() {
+            this.canvas = null;
+            this.gl = null;
+            this.program = null;
+            this.videoTexture = null;
+            this.video = null;
+            this.active = false;
+            this.rafId = null;
+
+            // Uniform locations
+            this.uResolution = null;
+            this.uVideoTex = null;
+            this.uParams = null;
+            this.uParams2 = null;
+            this.uRGBGain = null;
+            this.uHueRotate = null;
+            this.uProfileMatrix = null;
+            this.uAutoMatrix = null;
+
+            // Attribute locations
+            this.aPosition = null;
+            this.aTexCoord = null;
+
+            // Buffers
+            this.vertexBuffer = null;
+            this.texCoordBuffer = null;
+
+            // Original video parent and styles
+            this.originalParent = null;
+            this.originalNextSibling = null;
+            this.originalStyle = null;
+
+            // Parameter cache
+            this.params = {
+                contrast: 1.0,
+                saturation: 1.0,
+                brightness: 1.0,
+                sharpen: 0.0,
+                gamma: 1.0,
+                grain: 0.0,
+                hdr: 0.0,
+                rGain: 1.0,
+                gGain: 1.0,
+                bGain: 1.0,
+                hue: 0.0,
+                cosHue: 1.0,
+                sinHue: 0.0,
+                vibrance: 1.0,
+                black: 0.0,
+                white: 1.0
+            };
+        }
+
+        init() {
+            try {
+                // Create visible canvas that will replace the video
+                this.canvas = document.createElement('canvas');
+                this.canvas.id = WEBGL_CANVAS_ID;
+                this.canvas.style.width = '100%';
+                this.canvas.style.height = '100%';
+                this.canvas.style.objectFit = 'contain';
+                this.canvas.style.display = 'block';
+
+                // Try WebGL2 first, fallback to WebGL1
+                let gl = this.canvas.getContext('webgl2', {
+                    alpha: false,
+                    antialias: false,
+                    preserveDrawingBuffer: true,
+                    powerPreference: 'high-performance'
+                });
+
+                if (!gl) {
+                    gl = this.canvas.getContext('webgl', {
+                        alpha: false,
+                        antialias: false,
+                        preserveDrawingBuffer: true
+                    }) || this.canvas.getContext('experimental-webgl', {
+                        alpha: false,
+                        antialias: false
+                    });
+                }
+
+                if (!gl) {
+                    logW('WebGL not available');
+                    return false;
+                }
+
+                this.gl = gl;
+
+                if (!this.setupShaders()) {
+                    return false;
+                }
+
+                this.setupBuffers();
+                this.active = true;
+                log('WebGL2 Canvas Pipeline initialized successfully');
+                return true;
+            } catch (e) {
+                logW('WebGL init error:', e);
+                return false;
+            }
+        }
+
+        getVertexShader() {
+            return `#version 100
+                attribute vec2 aPosition;
+                attribute vec2 aTexCoord;
+                varying vec2 vTexCoord;
+                void main() {
+                    gl_Position = vec4(aPosition, 0.0, 1.0);
+                    vTexCoord = aTexCoord;
+                }
+            `;
+        }
+
+        getFragmentShader() {
+            return `#version 100
+                precision highp float;
+                varying vec2 vTexCoord;
+                uniform sampler2D uVideoTex;
+                uniform vec2 uResolution;
+
+                uniform vec4 uParams;      // x:contrast, y:saturation, z:brightness, w:sharpen
+                uniform vec4 uParams2;      // x:gamma, y:grain, z:vibrance, w:hdr
+                uniform vec4 uRGBGain;      // x:rGain, y:gGain, z:bGain, w:unused
+                uniform vec2 uHueRotate;    // x:cosHue, y:sinHue
+                uniform mat4 uProfileMatrix;
+                uniform mat4 uAutoMatrix;
+
+                const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+
+                float clampFast(float x, float minVal, float maxVal) {
+                    return min(max(x, minVal), maxVal);
+                }
+
+
+
+                // --- HDR helpers (linear-light + ACES tonemapping) ---
+                vec3 srgbToLinear(vec3 c) {
+                    c = clamp(c, 0.0, 1.0);
+                    vec3 low = c / 12.92;
+                    vec3 high = pow((c + 0.055) / 1.055, vec3(2.4));
+                    vec3 t = step(vec3(0.04045), c);
+                    return mix(low, high, t);
+                }
+
+                vec3 linearToSrgb(vec3 c) {
+                    c = max(c, vec3(0.0));
+                    vec3 low = c * 12.92;
+                    vec3 high = 1.055 * pow(c, vec3(1.0/2.4)) - 0.055;
+                    vec3 t = step(vec3(0.0031308), c);
+                    return clamp(mix(low, high, t), 0.0, 1.0);
+                }
+
+                vec3 RRTAndODTFit(vec3 v) {
+                    vec3 a = v * (v + 0.0245786) - 0.000090537;
+                    vec3 b = v * (0.983729 * v + 0.4329510) + 0.238081;
+                    return a / b;
+                }
+
+                vec3 tonemapACES(vec3 color) {
+                    const mat3 ACESInputMat = mat3(
+                      0.59719, 0.07600, 0.02840,
+                      0.35458, 0.90834, 0.13383,
+                      0.04823, 0.01566, 0.83777
+                    );
+                    const mat3 ACESOutputMat = mat3(
+                        1.60475, -0.10208, -0.00327,
+                        -0.53108, 1.10813, -0.07276,
+                        -0.07367, -0.00605, 1.07602
+                    );
+                    color = ACESInputMat * color;
+                    color = RRTAndODTFit(color);
+                    color = ACESOutputMat * color;
+                    return clamp(color, 0.0, 1.0);
+                }
+                vec3 applyHueRotate(vec3 color, float cosHue, float sinHue) {
+                    float lr = LUMA.r, lg = LUMA.g, lb = LUMA.b;
+                    float a00 = lr + cosHue*(1.0-lr) + sinHue*(-lr);
+                    float a01 = lg + cosHue*(-lg) + sinHue*(-lg);
+                    float a02 = lb + cosHue*(-lb) + sinHue*(1.0-lb);
+                    float a10 = lr + cosHue*(-lr) + sinHue*(0.143);
+                    float a11 = lg + cosHue*(1.0-lg) + sinHue*(0.140);
+                    float a12 = lb + cosHue*(-lb) + sinHue*(-0.283);
+                    float a20 = lr + cosHue*(-lr) + sinHue*(-(1.0-lr));
+                    float a21 = lg + cosHue*(-lg) + sinHue*(lg);
+                    float a22 = lb + cosHue*(1.0-lb) + sinHue*(lb);
+                    return vec3(
+                        a00*color.r + a01*color.g + a02*color.b,
+                        a10*color.r + a11*color.g + a12*color.b,
+                        a20*color.r + a21*color.g + a22*color.b
+                    );
+                }
+
+                vec3 applyColorMatrix(vec3 color, mat4 m) {
+                    return vec3(
+                        m[0][0]*color.r + m[1][0]*color.g + m[2][0]*color.b + m[3][0],
+                        m[0][1]*color.r + m[1][1]*color.g + m[2][1]*color.b + m[3][1],
+                        m[0][2]*color.r + m[1][2]*color.g + m[2][2]*color.b + m[3][2]
+                    );
+                }
+
+                void main() {
+                    vec4 texColor = texture2D(uVideoTex, vTexCoord);
+                    vec3 color = texColor.rgb;
+
+                    // RGB Gain
+                    color.r *= uRGBGain.x;
+                    color.g *= uRGBGain.y;
+                    color.b *= uRGBGain.z;
+
+                    // Profile Matrix
+                    color = applyColorMatrix(color, uProfileMatrix);
+
+                    // Auto Matrix
+                    color = applyColorMatrix(color, uAutoMatrix);
+
+                    // Hue Rotate
+                    color = applyHueRotate(color, uHueRotate.x, uHueRotate.y);
+
+                    // Vibrance
+                    float luma = dot(color, LUMA);
+                    vec3 delta = color - luma;
+                    color = luma + delta * uParams2.z;
+
+                    // Saturation
+                    color = luma + uParams.y * (color - luma);
+
+                    // Contrast & Brightness
+                    color = (color - 0.5) * uParams.x + 0.5;
+                    color *= uParams.z;
+
+                    // Gamma
+                    float gInv = 1.0 / clampFast(uParams2.x, 0.5, 2.0);
+                    color.r = pow(color.r, gInv);
+                    color.g = pow(color.g, gInv);
+                    color.b = pow(color.b, gInv);
+
+                    // HDR (WebGL HDR-like: linear-light + ACES tonemapping)
+                    float hdr = clampFast(uParams2.w, 0.0, 1.0);
+                    if (hdr > 0.0001) {
+                        // Interpret hdr as exposure-strength (0..1) mapped to up to +1.5 stops
+                        vec3 lin = srgbToLinear(color);
+                        float exposure = pow(2.0, hdr * 1.5);
+                        lin *= exposure;
+                        lin = tonemapACES(lin);
+                        color = linearToSrgb(lin);
+                    }
+                    // Grain
+                    float noise = fract(sin(vTexCoord.x * 12.9898 + vTexCoord.y * 78.233) * 43758.5453);
+                    noise = (noise - 0.5) * uParams2.y;
+                    color += vec3(noise);
+
+                    // Sharpen
+                    if (uParams.w > 0.0) {
+                        float lumaSharp = dot(color, LUMA);
+                        vec3 sharpColor = color + (color - lumaSharp) * uParams.w;
+                        color = clampFast(sharpColor.r, 0.0, 1.0);
+                        color = clampFast(sharpColor.g, 0.0, 1.0);
+                        color = clampFast(sharpColor.b, 0.0, 1.0);
+                    }
+
+                    gl_FragColor = vec4(clampFast(color.r, 0.0, 1.0),
+                                        clampFast(color.g, 0.0, 1.0),
+                                        clampFast(color.b, 0.0, 1.0),
+                                        texColor.a);
+                }
+            `;
+        }
+
+        setupShaders() {
+            const gl = this.gl;
+
+            const vertexShader = gl.createShader(gl.VERTEX_SHADER);
+            gl.shaderSource(vertexShader, this.getVertexShader());
+            gl.compileShader(vertexShader);
+
+            if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS)) {
+                logW('Vertex shader compile error:', gl.getShaderInfoLog(vertexShader));
+                return false;
+            }
+
+            const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
+            gl.shaderSource(fragmentShader, this.getFragmentShader());
+            gl.compileShader(fragmentShader);
+
+            if (!gl.getShaderParameter(fragmentShader, gl.COMPILE_STATUS)) {
+                logW('Fragment shader compile error:', gl.getShaderInfoLog(fragmentShader));
+                return false;
+            }
+
+            this.program = gl.createProgram();
+            gl.attachShader(this.program, vertexShader);
+            gl.attachShader(this.program, fragmentShader);
+            gl.linkProgram(this.program);
+
+            if (!gl.getProgramParameter(this.program, gl.LINK_STATUS)) {
+                logW('Program link error:', gl.getProgramInfoLog(this.program));
+                return false;
+            }
+
+            gl.useProgram(this.program);
+
+            this.uResolution = gl.getUniformLocation(this.program, 'uResolution');
+            this.uVideoTex = gl.getUniformLocation(this.program, 'uVideoTex');
+            this.uParams = gl.getUniformLocation(this.program, 'uParams');
+            this.uParams2 = gl.getUniformLocation(this.program, 'uParams2');
+            this.uRGBGain = gl.getUniformLocation(this.program, 'uRGBGain');
+            this.uHueRotate = gl.getUniformLocation(this.program, 'uHueRotate');
+            this.uProfileMatrix = gl.getUniformLocation(this.program, 'uProfileMatrix');
+            this.uAutoMatrix = gl.getUniformLocation(this.program, 'uAutoMatrix');
+
+            this.aPosition = gl.getAttribLocation(this.program, 'aPosition');
+            this.aTexCoord = gl.getAttribLocation(this.program, 'aTexCoord');
+
+            gl.uniform1i(this.uVideoTex, 0);
+
+            return true;
+        }
+
+        setupBuffers() {
+            const gl = this.gl;
+
+            const vertices = new Float32Array([
+                -1.0, -1.0,
+                 1.0, -1.0,
+                -1.0,  1.0,
+                 1.0,  1.0
+            ]);
+
+            this.vertexBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+
+            const texCoords = new Float32Array([
+                0.0, 0.0,
+                1.0, 0.0,
+                0.0, 1.0,
+                1.0, 1.0
+            ]);
+
+            this.texCoordBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, this.texCoordBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, texCoords, gl.STATIC_DRAW);
+        }
+
+        attachToVideo(video) {
+            if (!this.active && !this.init()) {
+                return false;
+            }
+
+            this.video = video;
+
+            // Save original position in DOM
+            this.originalParent = video.parentNode;
+            this.originalNextSibling = video.nextSibling;
+            this.originalStyle = video.style.cssText;
+
+            // Create texture if needed
+            if (!this.videoTexture) {
+                const gl = this.gl;
+                this.videoTexture = gl.createTexture();
+                gl.bindTexture(gl.TEXTURE_2D, this.videoTexture);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+            }
+
+            // Replace video with canvas
+            if (this.originalParent) {
+                // Hide original video
+                video.style.position = 'absolute';
+                video.style.opacity = '0';
+                video.style.pointerEvents = 'none';
+                video.style.width = '1px';
+                video.style.height = '1px';
+
+                // Insert canvas in its place
+                if (this.originalNextSibling) {
+                    this.originalParent.insertBefore(this.canvas, this.originalNextSibling);
+                } else {
+                    this.originalParent.appendChild(this.canvas);
+                }
+
+                // Copy dimensions
+                this.canvas.width = video.videoWidth || 640;
+                this.canvas.height = video.videoHeight || 360;
+            }
+
+            this.startRenderLoop();
+            return true;
+        }
+
+        updateParams() {
+            let contrast = 1.0 + (u_contrast * 0.04);
+            let saturation = 1.0 + (u_sat * 0.05);
+            let brightness = 1.0 + (u_black * -0.012) + (u_white * 0.012);
+
+            let rGain = u_r_gain / 128.0;
+            let gGain = u_g_gain / 128.0;
+            let bGain = u_b_gain / 128.0;
+
+            if (enabled) {
+                contrast *= 1.05;
+                saturation *= 1.21;
+                brightness *= 1.02;
+            }
+
+            if (profile === 'film') {
+                contrast *= 1.08;
+                saturation *= 1.08;
+            } else if (profile === 'anime') {
+                contrast *= 1.10;
+                saturation *= 1.16;
+                brightness *= 1.03;
+            } else if (profile === 'gaming') {
+                contrast *= 1.12;
+                saturation *= 1.06;
+            } else if (profile === 'eyecare') {
+                saturation *= 0.85;
+                brightness *= 1.06;
+            }
+
+            if (darkMoody) {
+                saturation *= 0.92;
+                brightness *= 0.96;
+            }
+
+            if (vibrantSat) {
+                saturation *= 1.35;
+            }
+
+            let sharpen = Math.max(0, normSL() * 0.3);
+            let grain = Math.max(0, -normDN() * 0.2);
+            let gamma = 1.0 + u_gamma * 0.025;
+            let vibrance = 1.0 + u_vib * 0.02;
+            let hdrVal = normHDR();
+
+            let hue = u_hue * 3;
+            if (tealOrange) {
+                hue += -5;
+            }
+            let hueRad = hue * Math.PI / 180;
+
+            this.params = {
+                contrast: clamp(contrast, 0.5, 2.0),
+                saturation: clamp(saturation, 0.0, 3.0),
+                brightness: clamp(brightness, 0.5, 2.0),
+                sharpen: clamp(sharpen, 0.0, 2.0),
+                gamma: clamp(gamma, 0.5, 2.0),
+                grain: clamp(grain, 0.0, 0.5),
+                vibrance: clamp(vibrance, 0.0, 2.0),
+                hdr: clamp(hdrVal, -1.0, 2.0),
+                rGain: clamp(rGain, 0.0, 2.0),
+                gGain: clamp(gGain, 0.0, 2.0),
+                bGain: clamp(bGain, 0.0, 2.0),
+                hue: hue,
+                cosHue: Math.cos(hueRad),
+                sinHue: Math.sin(hueRad)
+            };
+
+            if (LOG.on && (performance.now() - LOG.lastTickMs) > 5000) {
+                log('RGB Gain:', this.params.rGain.toFixed(2), this.params.gGain.toFixed(2), this.params.bGain.toFixed(2));
+            }
+        }
+
+        render() {
+            if (!this.active || !this.gl || !this.video) return;
+
+            const gl = this.gl;
+            const video = this.video;
+
+            if (video.readyState < 2 || video.videoWidth === 0 || video.videoHeight === 0) {
+                return;
+            }
+
+            try {
+                const width = video.videoWidth;
+                const height = video.videoHeight;
+
+                if (this.canvas.width !== width || this.canvas.height !== height) {
+                    this.canvas.width = width;
+                    this.canvas.height = height;
+                    gl.viewport(0, 0, width, height);
+                    if (this.uResolution) {
+                        gl.uniform2f(this.uResolution, width, height);
+                    }
+                }
+
+                this.updateParams();
+
+                gl.useProgram(this.program);
+
+                gl.uniform4f(this.uParams,
+                    this.params.contrast,
+                    this.params.saturation,
+                    this.params.brightness,
+                    this.params.sharpen
+                );
+
+                gl.uniform4f(this.uParams2,
+                    this.params.gamma,
+                    this.params.grain,
+                    this.params.vibrance,
+                    this.params.hdr
+                );
+
+                gl.uniform4f(this.uRGBGain,
+                    this.params.rGain,
+                    this.params.gGain,
+                    this.params.bGain,
+                    1.0
+                );
+
+                gl.uniform2f(this.uHueRotate,
+                    this.params.cosHue,
+                    this.params.sinHue
+                );
+
+                // Profile matrix (Identity for now)
+                let profMatrix = new Float32Array(16);
+                profMatrix[0] = 1; profMatrix[5] = 1; profMatrix[10] = 1; profMatrix[15] = 1;
+                gl.uniformMatrix4fv(this.uProfileMatrix, false, profMatrix);
+
+                // Auto matrix (Identity for now)
+                let autoMatrix = new Float32Array(16);
+                autoMatrix[0] = 1; autoMatrix[5] = 1; autoMatrix[10] = 1; autoMatrix[15] = 1;
+                gl.uniformMatrix4fv(this.uAutoMatrix, false, autoMatrix);
+
+                gl.activeTexture(gl.TEXTURE0);
+                gl.bindTexture(gl.TEXTURE_2D, this.videoTexture);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
+                gl.enableVertexAttribArray(this.aPosition);
+                gl.vertexAttribPointer(this.aPosition, 2, gl.FLOAT, false, 0, 0);
+
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.texCoordBuffer);
+                gl.enableVertexAttribArray(this.aTexCoord);
+                gl.vertexAttribPointer(this.aTexCoord, 2, gl.FLOAT, false, 0, 0);
+
+                gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+            } catch (e) {
+                logW('WebGL render error:', e);
+            }
+        }
+
+        startRenderLoop() {
+            if (this.rafId) cancelAnimationFrame(this.rafId);
+
+            const loop = (timestamp) => {
+                if (!this.active || !this.video) {
+                    this.rafId = null;
+                    return;
+                }
+                if (timestamp - lastRenderTime >= RENDER_THROTTLE) {
+                    lastRenderTime = timestamp;
+                    this.render();
+                }
+                this.rafId = requestAnimationFrame(loop);
+            };
+
+            this.rafId = requestAnimationFrame(loop);
+        }
+
+        shutdown() {
+            this.active = false;
+            if (this.rafId) {
+                cancelAnimationFrame(this.rafId);
+                this.rafId = null;
+            }
+
+            // Restore original video
+            if (this.video && this.originalParent) {
+                this.video.style.cssText = this.originalStyle || '';
+                this.video.style.position = '';
+                this.video.style.opacity = '';
+                this.video.style.pointerEvents = '';
+                this.video.style.width = '';
+                this.video.style.height = '';
+
+                if (this.originalNextSibling) {
+                    this.originalParent.insertBefore(this.video, this.originalNextSibling);
+                } else {
+                    this.originalParent.appendChild(this.video);
+                }
+            }
+
+            // Remove canvas
+            if (this.canvas && this.canvas.parentNode) {
+                this.canvas.parentNode.removeChild(this.canvas);
+            }
+
+            // Clean up WebGL resources
+            if (this.gl && this.program) {
+                const gl = this.gl;
+                gl.deleteProgram(this.program);
+                if (this.videoTexture) gl.deleteTexture(this.videoTexture);
+                if (this.vertexBuffer) gl.deleteBuffer(this.vertexBuffer);
+                if (this.texCoordBuffer) gl.deleteBuffer(this.texCoordBuffer);
+            }
+        }
+    }
+
+    // GPU Mode Manager
+    function activateWebGLMode() {
+        if (!webglPipeline) {
+            webglPipeline = new WebGL2Pipeline();
+        }
+        document.querySelectorAll('video').forEach(video => {
+            if (!video.__gvf_webgl_attached) {
+                video.__gvf_webgl_attached = true;
+                webglPipeline.attachToVideo(video);
+            }
+        });
+    }
+
+    function deactivateWebGLMode() {
+        if (webglPipeline) {
+            webglPipeline.shutdown();
+            webglPipeline = null;
+        }
+        document.querySelectorAll('video').forEach(video => {
+            delete video.__gvf_webgl_attached;
+        });
+    }
+
+    // -------------------------
+    // GPU PIPELINE MODE - Fallback
+    // -------------------------
+    function getGpuFilterString() {
+        if (webglPipeline && webglPipeline.active) {
+            return 'none';
+        }
+
+        const filters = [];
+
+        if (enabled) {
+            filters.push('brightness(1.02)');
+            filters.push('contrast(1.05)');
+            filters.push('saturate(1.21)');
+        }
+
+        const slVal = normSL();
+        if (slVal > 0) {
+            const sharpAmount = Math.min(2, slVal * 0.3);
+            filters.push(`contrast(${1 + sharpAmount})`);
+        } else if (slVal < 0) {
+            const blurAmount = Math.abs(slVal) * 0.5;
+            filters.push(`blur(${blurAmount.toFixed(1)}px)`);
+        }
+
+        const blVal = normBL();
+        if (blVal !== 0) {
+            const blackAdj = 1 + (blVal * 0.03);
+            filters.push(`brightness(${blackAdj.toFixed(2)})`);
+        }
+
+        const wlVal = normWL();
+        if (wlVal !== 0) {
+            const whiteAdj = 1 + (wlVal * 0.04);
+            filters.push(`contrast(${whiteAdj.toFixed(2)})`);
+        }
+
+        const hdrVal = normHDR();
+        if (hdrVal > 0) {
+            const hdrContrast = 1 + (hdrVal * 0.15);
+            const hdrSaturate = 1 + (hdrVal * 0.1);
+            filters.push(`contrast(${hdrContrast.toFixed(2)})`);
+            filters.push(`saturate(${hdrSaturate.toFixed(2)})`);
+        } else if (hdrVal < 0) {
+            const softContrast = 1 + (hdrVal * 0.1);
+            filters.push(`contrast(${softContrast.toFixed(2)})`);
+        }
+
+        if (darkMoody) {
+            filters.push('brightness(0.96)');
+            filters.push('saturate(0.92)');
+        }
+
+        if (tealOrange) {
+            filters.push('sepia(0.15)');
+            filters.push('hue-rotate(-5deg)');
+            filters.push('saturate(1.1)');
+        }
+
+        if (vibrantSat) {
+            filters.push('saturate(1.35)');
+        }
+
+        if (profile === 'film') {
+            filters.push('brightness(1.01) contrast(1.08) saturate(1.08)');
+        } else if (profile === 'anime') {
+            filters.push('brightness(1.03) contrast(1.10) saturate(1.16)');
+        } else if (profile === 'gaming') {
+            filters.push('brightness(1.01) contrast(1.12) saturate(1.06)');
+        } else if (profile === 'eyecare') {
+            filters.push('brightness(1.06) contrast(0.94) saturate(0.85) hue-rotate(-18deg) sepia(0.25)');
+        }
+
+        if (profile === 'user') {
+            if (u_contrast !== 0) {
+                const c = 1 + (u_contrast * 0.04);
+                filters.push(`contrast(${c.toFixed(2)})`);
+            }
+            if (u_sat !== 0) {
+                const sat = 1 + (u_sat * 0.05);
+                filters.push(`saturate(${sat.toFixed(2)})`);
+            }
+            if (u_vib !== 0) {
+                const vib = 1 + (u_vib * 0.02);
+                filters.push(`saturate(${vib.toFixed(2)})`);
+            }
+            if (u_hue !== 0) {
+                const hue = u_hue * 3;
+                filters.push(`hue-rotate(${hue.toFixed(1)}deg)`);
+            }
+            if (u_black !== 0 || u_white !== 0) {
+                const blk = u_black * 0.012;
+                const wht = u_white * 0.012;
+                const br = 1 + (-blk + wht) * 0.6;
+                filters.push(`brightness(${br.toFixed(2)})`);
+            }
+            if (u_gamma !== 0) {
+                const g = 1 + (u_gamma * 0.025);
+                filters.push(`brightness(${g.toFixed(2)})`);
+            }
+        }
+
+        // Color blindness filter for GPU mode
+        if (cbFilter !== 'none') {
+            if (cbFilter === 'protanopia') {
+                filters.push('contrast(1.05) saturate(0.9)');
+            } else if (cbFilter === 'deuteranopia') {
+                filters.push('contrast(1.05) saturate(0.9) hue-rotate(5deg)');
+            } else if (cbFilter === 'tritanomaly') {
+                filters.push('contrast(1.02) saturate(0.95) hue-rotate(-5deg)');
+            }
+        }
+
+        if (autoOn && AUTO.cur) {
+            if (AUTO.cur.br !== 1.0) filters.push(`brightness(${AUTO.cur.br.toFixed(2)})`);
+            if (AUTO.cur.ct !== 1.0) filters.push(`contrast(${AUTO.cur.ct.toFixed(2)})`);
+        }
+
+        const uniqueFilters = [...new Set(filters.filter(f => f && f.length > 0))];
+        return uniqueFilters.length > 0 ? uniqueFilters.join(' ') : 'none';
+    }
+
+    // -------------------------
+    // Auto Scene Match (UNCHANGED)
+    // -------------------------
+    let _autoLastStyleStamp = 0;
+    const AUTO_LEVELS = [2, 4, 6, 8, 10];
+    const ADAPTIVE_FPS = {
+        MIN: 2,
+        MAX: 10,
+        current: 2,
+        lastAdjust: 0,
+        history: [],
+        historySize: 5
+    };
+    const AUTO = {
+        baseFps: 2,
+        boostMs: 800,
+        minBoostIdx: 3,
+        minBoostEarlyMs: 700,
+        minBoostEarlyIdx: 4,
+        minArea: 64 * 64,
+        canvasW: 96,
+        canvasH: 54,
+        running: false,
+        tBoostUntil: 0,
+        tBoostStart: 0,
+        lastSig: null,
+        cur: { br: 1.0, ct: 1.0, sat: 1.0, hue: 0.0 },
+        tgt: { br: 1.0, ct: 1.0, sat: 1.0, hue: 0.0 },
+
+        scoreEma: 0,
+        scoreAlpha: 0.16,
+
+        lastLuma: null,
+        motionEma: 0,
+        motionAlpha: 0.30,
+        motionThresh: 0.0075,
+        motionMinFrames: 5,
+        motionFrames: 0,
+
+        lastAppliedMs: 0,
+
+        statsEma: null,
+        statsAlpha: 0.12,
+        lastStatsMs: 0,
+
+        blink: false,
+
+        drmBlocked: false,
+        blockUntilMs: 0,
+        lastGoodMatrixStr: autoMatrixStr,
+
+        lastFrameTime: 0,
+        frameIntervals: [],
+        maxFrameIntervals: 10
+    };
+
+    function calculateAdaptiveFps(changeScore) {
+        ADAPTIVE_FPS.history.push(changeScore);
+        if (ADAPTIVE_FPS.history.length > ADAPTIVE_FPS.historySize) {
+            ADAPTIVE_FPS.history.shift();
+        }
+
+        const avgChange = ADAPTIVE_FPS.history.reduce((a, b) => a + b, 0) / ADAPTIVE_FPS.history.length;
+
+        const t1 = Math.min(avgChange, 0.1) / 0.1;
+        const t2 = Math.max(0, Math.min(avgChange - 0.1, 0.2)) / 0.2;
+        const t3 = Math.max(0, Math.min(avgChange - 0.3, 0.7)) / 0.7;
+
+        const targetFps =
+            (avgChange < 0.1 ? 2 + t1 * 2 : 0) +
+            (avgChange >= 0.1 && avgChange < 0.3 ? 4 + t2 * 3 : 0) +
+            (avgChange >= 0.3 ? 7 + t3 * 3 : 0);
+
+        const clamped = Math.max(ADAPTIVE_FPS.MIN, Math.min(targetFps, ADAPTIVE_FPS.MAX));
+        const rounded = Math.round(clamped * 2) / 2;
+
+        const fpsDiff = rounded - ADAPTIVE_FPS.current;
+        const step = Math.max(-1, Math.min(fpsDiff, 1));
+        ADAPTIVE_FPS.current += step;
+
+        return ADAPTIVE_FPS.current;
+    }
+
+    const overlaysAutoDot = new WeakMap();
+    let autoDotMode = 'off';
+
+    function mkAutoDotOverlay() {
+        const d = document.createElement('div');
+        d.className = 'gvf-auto-dot';
+        d.style.cssText = `
+      position: fixed;
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      z-index: 2147483647;
+      pointer-events: none;
+      opacity: 0.95;
+      display: none;
+      transform: translateZ(0);
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.75), 0 0 10px rgba(0,255,0,0.18);
+      background: #0b3d17;
+    `;
+        (document.body || document.documentElement).appendChild(d);
+        return d;
+    }
+
+    function setAutoDotState(mode) {
+        if (!debug) return;
+        autoDotMode = mode || 'off';
+        scheduleOverlayUpdate();
+    }
+
+    function applyAutoDotStyle(dotEl) {
+        if (!dotEl) return;
+
+        if (!autoOn || autoDotMode === 'off' || !debug) {
+            dotEl.style.display = 'none';
+            return;
+        }
+
+        dotEl.style.display = 'block';
+
+        const t = nowMs();
+        const staleMs = 10000;
+        const isStale = (AUTO.lastAppliedMs > 0) && ((t - AUTO.lastAppliedMs) >= staleMs);
+        if (isStale) {
+            dotEl.style.background = '#ff2a2a';
+            dotEl.style.boxShadow = '0 0 0 1px rgba(0,0,0,0.80), 0 0 16px rgba(255,42,42,0.55)';
+            return;
+        }
+
+        if (autoDotMode === 'idle') {
+            dotEl.style.background = '#0b3d17';
+            dotEl.style.boxShadow = '0 0 0 1px rgba(0,0,0,0.75), 0 0 10px rgba(0,255,0,0.12)';
+            return;
+        }
+
+        if (autoDotMode === 'workBright') {
+            dotEl.style.background = '#38ff64';
+            dotEl.style.boxShadow = '0 0 0 1px rgba(0,0,0,0.75), 0 0 14px rgba(56,255,100,0.45)';
+            return;
+        }
+
+        if (autoDotMode === 'workDark') {
+            dotEl.style.background = '#0f7a2b';
+            dotEl.style.boxShadow = '0 0 0 1px rgba(0,0,0,0.75), 0 0 12px rgba(56,255,100,0.22)';
+            return;
+        }
+    }
+
+    function isActuallyVisible(v) {
+        try {
+            const cs = window.getComputedStyle(v);
+            if (!cs) return true;
+            if (cs.display === 'none') return false;
+            if (cs.visibility === 'hidden') return false;
+            if (Number(cs.opacity || '1') <= 0) return false;
+            return true;
+        } catch (_) { return true; }
+    }
+
+    function getVideoRect(v) {
+        try {
+            const r = v.getBoundingClientRect();
+            if (r && r.width > 0 && r.height > 0) return r;
+        } catch (_) { }
+        const w = (v.offsetWidth || 0);
+        const h = (v.offsetHeight || 0);
+        return { top: 0, left: 0, right: w, bottom: h, width: w, height: h };
+    }
+
+    function isPlayableCandidate(v) {
+        if (!v) return false;
+        const hasDecoded = (v.videoWidth > 0 && v.videoHeight > 0);
+        const hasTime = (Number.isFinite(v.currentTime) && v.currentTime > 0) || (Number.isFinite(v.duration) && v.duration > 0);
+        const hasData = hasDecoded || hasTime || (v.readyState >= 1);
+        if (!hasData) return false;
+        if (v.ended) return false;
+        if (!isActuallyVisible(v)) return false;
+        const r = getVideoRect(v);
+        if (!r || r.width < 80 || r.height < 60) return false;
+        const area = r.width * r.height;
+        if (area < AUTO.minArea) return false;
+        return true;
+    }
+
+    function choosePrimaryVideo() {
+        let best = null;
+        let bestScore = 0;
+
+        const vids = Array.from(document.querySelectorAll('video'));
+        for (const v of vids) {
+            try {
+                if (!isPlayableCandidate(v)) continue;
+
+                const r = getVideoRect(v);
+                const area = r.width * r.height;
+
+                const inView = !(r.bottom < 0 || r.right < 0 || r.top > (window.innerHeight || 0) || r.left > (window.innerWidth || 0));
+                const playing = (!v.paused && !v.seeking);
+
+                const score = area * (inView ? 1.25 : 0.90) * (playing ? 1.20 : 1.00);
+                if (score > bestScore) { best = v; bestScore = score; }
+            } catch (_) { }
+        }
+        return best;
+    }
+
+    function computeFrameStats(imgData) {
+        const d = imgData.data;
+
+        let sumR = 0, sumG = 0, sumB = 0;
+        let sumY = 0, sumY2 = 0;
+        let sumCh = 0;
+
+        const stepPx = 2;
+        const w = imgData.width;
+        const h = imgData.height;
+        const stride = w * 4;
+
+        let count = 0;
+        for (let y = 0; y < h; y += stepPx) {
+            let idx = y * stride;
+            for (let x = 0; x < w; x += stepPx) {
+                const i = idx + x * 4;
+                const r = d[i] / 255;
+                const g = d[i + 1] / 255;
+                const b = d[i + 2] / 255;
+
+                const Y = LUMA.r * r + LUMA.g * g + LUMA.b * b;
+
+                sumR += r; sumG += g; sumB += b;
+                sumY += Y; sumY2 += Y * Y;
+
+                const mx = Math.max(r, g, b);
+                const mn = Math.min(r, g, b);
+                sumCh += (mx - mn);
+
+                count++;
+            }
+        }
+
+        const inv = 1 / Math.max(1, count);
+        const mR = sumR * inv;
+        const mG = sumG * inv;
+        const mB = sumB * inv;
+        const mY = sumY * inv;
+        const vY = Math.max(0, (sumY2 * inv) - (mY * mY));
+        const sdY = Math.sqrt(vY);
+        const mCh = sumCh * inv;
+
+        return { mR, mG, mB, mY, sdY, mCh };
+    }
+
+    function computeMotionFromImage(imgData) {
+        const d = imgData.data;
+        const stepPx = 2;
+        const w = imgData.width;
+        const h = imgData.height;
+        const stride = w * 4;
+
+        const sw = Math.ceil(w / stepPx);
+        const sh = Math.ceil(h / stepPx);
+        const n = sw * sh;
+        const cur = new Uint8Array(n);
+
+        let k = 0;
+        for (let y = 0; y < h; y += stepPx) {
+            let idx = y * stride;
+            for (let x = 0; x < w; x += stepPx) {
+                const i = idx + x * 4;
+                const r = d[i];
+                const g = d[i + 1];
+                const b = d[i + 2];
+                const y8 = (r * 54 + g * 183 + b * 19) >> 8;
+                cur[k++] = y8;
+            }
+        }
+
+        const prev = AUTO.lastLuma;
+        AUTO.lastLuma = cur;
+
+        if (!prev || prev.length !== cur.length) return 1.0;
+
+        return branchlessMotionDetect(cur, prev);
+    }
+
+    function detectCut(sig, lastSig) {
+        if (!lastSig) return false;
+        const dY = Math.abs(sig.mY - lastSig.mY);
+        const dCh = Math.abs(sig.mCh - lastSig.mCh);
+        const dRB = Math.abs((sig.mR - sig.mB) - (lastSig.mR - lastSig.mB));
+        const dGB = Math.abs((sig.mG - sig.mB) - (lastSig.mG - lastSig.mB));
+
+        const score = (dY * 1.1) + (dCh * 0.9) + (dRB * 0.7) + (dGB * 0.7);
+        sig.__cutScore = score;
+        return score > 0.14;
+    }
+
+    function wrapHueDeg(deg) {
+        let d = deg;
+        while (d > 180) d -= 360;
+        while (d < -180) d += 360;
+        return d;
+    }
+
+    function approach(cur, tgt, a, dead=0.002) {
+        const d = tgt - cur;
+        if (Math.abs(d) < dead) return tgt;
+        return cur + d * a;
+    }
+
+    function updateStatsAveraging(sig) {
+        const a = clamp(AUTO.statsAlpha, 0.05, 0.95);
+        if (!AUTO.statsEma) {
+            AUTO.statsEma = { ...sig };
+            return AUTO.statsEma;
+        }
+        const e = AUTO.statsEma;
+        e.mR = e.mR * (1 - a) + sig.mR * a;
+        e.mG = e.mG * (1 - a) + sig.mG * a;
+        e.mB = e.mB * (1 - a) + sig.mB * a;
+        e.mY = e.mY * (1 - a) + sig.mY * a;
+        e.sdY = e.sdY * (1 - a) + sig.sdY * a;
+        e.mCh = e.mCh * (1 - a) + sig.mCh * a;
+        e.__cutScore = sig.__cutScore;
+        return e;
+    }
+
+    function updateAutoTargetsFromStats(sig) {
+        const s = clamp(autoStrength, 0, 1);
+
+        const targetY = 0.50;
+        const errY = clamp(targetY - sig.mY, -0.22, 0.22);
+        const br = clamp(1.0 + errY * 0.85, 0.78, 1.22);
+
+        const targetSd = 0.23;
+        const errSd = clamp(targetSd - sig.sdY, -0.18, 0.18);
+        const ct = clamp(1.0 + (-errSd) * 0.85, 0.82, 1.30);
+
+        const targetCh = 0.12;
+        const errCh = clamp(targetCh - sig.mCh, -0.20, 0.20);
+        const sat = clamp(1.0 + (-errCh) * 0.90, 0.80, 1.45);
+
+        let hue = 0.0;
+        if (autoLockWB) {
+            const rb = clamp(sig.mR - sig.mB, -0.18, 0.18);
+            hue = clamp((-rb) * 28.0, -10.0, 10.0);
+        }
+
+        AUTO.tgt.br = clamp(1.0 + (br - 1.0) * s, 0.78, 1.22);
+        AUTO.tgt.ct = clamp(1.0 + (ct - 1.0) * s, 0.82, 1.30);
+        AUTO.tgt.sat = clamp(1.0 + (sat - 1.0) * s, 0.80, 1.45);
+        AUTO.tgt.hue = clamp(0.0 + (hue - 0.0) * s, -12.0, 12.0);
+    }
+
+    function updateAutoSmoothing(isCut) {
+        const a = isCut ? 0.16 : 0.05;
+        AUTO.cur.br  = approach(AUTO.cur.br,  AUTO.tgt.br,  a, 0.003);
+        AUTO.cur.ct  = approach(AUTO.cur.ct,  AUTO.tgt.ct,  a, 0.003);
+        AUTO.cur.sat = approach(AUTO.cur.sat, AUTO.tgt.sat, a, 0.004);
+        AUTO.cur.hue = approach(AUTO.cur.hue, AUTO.tgt.hue, a, 0.06);
+        AUTO.cur.hue = wrapHueDeg(AUTO.cur.hue);
+    }
+
+    function buildAutoMatrixValues() {
+        if (!autoOn) return matIdentity4x5();
+
+        const br = clamp(AUTO.cur.br, 0.78, 1.22);
+        const ct = clamp(AUTO.cur.ct, 0.82, 1.30);
+        const sat = clamp(AUTO.cur.sat, 0.80, 1.45);
+        const hue = clamp(AUTO.cur.hue, -12, 12);
+
+        let m = matIdentity4x5();
+
+        m = matMul4x5(matHueRotate(hue), m);
+        m = matMul4x5(matSaturation(sat), m);
+        m = matMul4x5(matBrightnessContrast(br, ct), m);
+
+        return m;
+    }
+
+    function setAutoMatrixAndApply() {
+        const m = buildAutoMatrixValues();
+        const valuesStr = matToSvgValues(m);
+
+        if (valuesStr === _autoLastMatrixStr) return;
+        autoMatrixStr = valuesStr;
+        _autoLastMatrixStr = valuesStr;
+
+        AUTO.lastGoodMatrixStr = _autoLastMatrixStr;
+        AUTO.lastAppliedMs = nowMs();
+
+        const t = nowMs();
+        if ((t - _autoLastStyleStamp) < 150) return;
+        _autoLastStyleStamp = t;
+
+        if (LOG.on && (t - LOG.lastToneMs) >= LOG.toneEveryMs) {
+            LOG.lastToneMs = t;
+            log('AutoMatrix updated:', autoMatrixStr);
+        }
+
+        updateAutoMatrixInSvg(autoMatrixStr);
+        applyFilter({ skipSvgIfPossible: true });
+    }
+
+    function primeAutoOnVideoActivity() {
+        try {
+            const resetAuto = () => {
+                if (!autoOn) return;
+                AUTO.lastSig = null;
+                AUTO.lastLuma = null;
+                AUTO.motionEma = 0;
+                AUTO.motionFrames = 0;
+                AUTO.scoreEma = 0;
+                AUTO.statsEma = null;
+                AUTO.tBoostStart = nowMs();
+                AUTO.tBoostUntil = AUTO.tBoostStart + AUTO.boostMs;
+                AUTO.drmBlocked = false;
+                AUTO.blockUntilMs = 0;
+                AUTO.blink = false; // FIX: blink zurücksetzen
+                ADAPTIVE_FPS.current = ADAPTIVE_FPS.MIN;
+                ADAPTIVE_FPS.history = [];
+            };
+
+            document.addEventListener('play', resetAuto, true);
+            document.addEventListener('playing', resetAuto, true);
+            document.addEventListener('loadeddata', () => {
+                if (!autoOn) return;
+                AUTO.lastSig = null;
+                AUTO.lastLuma = null;
+                AUTO.motionEma = 0;
+                AUTO.motionFrames = 0;
+                AUTO.scoreEma = 0;
+                AUTO.statsEma = null;
+                AUTO.drmBlocked = false;
+                AUTO.blockUntilMs = 0;
+                AUTO.blink = false;
+                ADAPTIVE_FPS.current = ADAPTIVE_FPS.MIN;
+                ADAPTIVE_FPS.history = [];
+            }, true);
+        } catch (_) { }
+    }
+
+    function scoreToIdx(score) {
+        if (score < 0.020) return 0;
+        if (score < 0.045) return 1;
+        if (score < 0.075) return 2;
+        if (score < 0.115) return 3;
+        return 4;
+    }
+
+    function pickAutoFps(nowT, cutScore) {
+        const a = clamp(AUTO.scoreAlpha, 0.05, 0.95);
+        AUTO.scoreEma = (AUTO.scoreEma * (1 - a)) + (cutScore * a);
+
+        const adaptiveFps = calculateAdaptiveFps(cutScore);
+
+        if (nowT < AUTO.tBoostUntil) {
+            const age = nowT - (AUTO.tBoostStart || nowT);
+            const early = age >= 0 && age < AUTO.minBoostEarlyMs;
+            const boostFps = early ? 10 : 8;
+            return Math.max(adaptiveFps, boostFps);
+        }
+
+        return adaptiveFps;
+    }
+
+    function ensureAutoLoop() {
+        if (AUTO.running) return;
+        AUTO.running = true;
+
+        const c = document.createElement('canvas');
+        c.width = AUTO.canvasW;
+        c.height = AUTO.canvasH;
+
+        let ctx = null;
+        try { ctx = c.getContext('2d', { willReadFrequently: true }); }
+        catch (_) { try { ctx = c.getContext('2d'); } catch (__) { } }
+
+        const scheduleNext = (fps) => {
+            const ms = Math.max(80, Math.round(1000 / Math.max(1, fps)));
+            setTimeout(loop, ms);
+        };
+
+        const loop = () => {
+            if (!AUTO.running) return;
+
+            if (!autoOn) {
+                AUTO.lastSig = null;
+                AUTO.lastLuma = null;
+                AUTO.scoreEma = 0;
+                AUTO.motionEma = 0;
+                AUTO.motionFrames = 0;
+                AUTO.statsEma = null;
+                AUTO.drmBlocked = false;
+                AUTO.blockUntilMs = 0;
+                AUTO.lastAppliedMs = 0;
+                AUTO.blink = false;
+                setAutoDotState('off');
+                scheduleNext(ADAPTIVE_FPS.MIN);
+                return;
+            }
+
+            const tNow = nowMs();
+            if (AUTO.drmBlocked && tNow < (AUTO.blockUntilMs || 0)) {
+                setAutoDotState('idle');
+                scheduleNext(ADAPTIVE_FPS.MIN);
+                return;
+            }
+
+            const v = choosePrimaryVideo();
+            if (!v || !ctx) {
+                AUTO.lastSig = null;
+                AUTO.lastLuma = null;
+                AUTO.motionEma = 0;
+                AUTO.motionFrames = 0;
+                AUTO.statsEma = null;
+                setAutoDotState('idle');
+
+                const t = nowMs();
+                if (LOG.on && (t - LOG.lastTickMs) >= LOG.tickEveryMs) {
+                    LOG.lastTickMs = t;
+                    log('Auto(A) running: no playable video found.');
+                }
+                scheduleNext(ADAPTIVE_FPS.MIN);
+                return;
+            }
+
+            if (v.paused || v.seeking) {
+                AUTO.motionFrames = 0;
+                setAutoDotState('idle');
+                scheduleNext(ADAPTIVE_FPS.MIN);
+                return;
+            }
+
+            try {
+                ctx.drawImage(v, 0, 0, AUTO.canvasW, AUTO.canvasH);
+                const img = ctx.getImageData(0, 0, AUTO.canvasW, AUTO.canvasH);
+
+                if (AUTO.drmBlocked) {
+                    AUTO.drmBlocked = false;
+                    AUTO.blockUntilMs = 0;
+                }
+
+                const motion = computeMotionFromImage(img);
+                const ma = clamp(AUTO.motionAlpha, 0.05, 0.95);
+                AUTO.motionEma = (AUTO.motionEma * (1 - ma)) + (motion * ma);
+
+                const hasMotionNow = (AUTO.motionEma >= AUTO.motionThresh);
+                AUTO.motionFrames = hasMotionNow ? (AUTO.motionFrames + 1) : 0;
+
+                const sigRaw = computeFrameStats(img);
+                const isCut = detectCut(sigRaw, AUTO.lastSig);
+                AUTO.lastSig = sigRaw;
+
+                const sig = updateStatsAveraging(sigRaw);
+
+                if (isCut) {
+                    AUTO.tBoostStart = nowMs();
+                    AUTO.tBoostUntil = AUTO.tBoostStart + AUTO.boostMs;
+                }
+
+                const t = nowMs();
+                const rawScore = clamp(sigRaw.__cutScore || 0, 0, 1);
+
+                const hasMotion = (AUTO.motionFrames >= AUTO.motionMinFrames);
+                const allowUpdate = isCut || hasMotion;
+
+                let fps = ADAPTIVE_FPS.current;
+                if (allowUpdate) {
+                    fps = pickAutoFps(t, rawScore);
+                }
+
+                if (allowUpdate) {
+                    updateAutoTargetsFromStats(sig);
+                    updateAutoSmoothing(isCut);
+                    setAutoMatrixAndApply();
+
+                    AUTO.blink = !AUTO.blink;
+                    setAutoDotState(AUTO.blink ? 'workBright' : 'workDark');
+                } else {
+                    setAutoDotState('idle');
+                }
+
+                if (LOG.on && (t - LOG.lastTickMs) >= LOG.tickEveryMs) {
+                    LOG.lastTickMs = t;
+                    log(
+                        `Auto(A) tick @${fps.toFixed(1)}fps`,
+                        `adaptive=${ADAPTIVE_FPS.current.toFixed(1)}fps`,
+                        `update=${allowUpdate ? 'YES' : 'NO'}`,
+                        `motion=${motion.toFixed(4)} ema=${AUTO.motionEma.toFixed(4)} thr=${AUTO.motionThresh.toFixed(3)} frames=${AUTO.motionFrames}/${AUTO.motionMinFrames}`,
+                        `raw=${rawScore.toFixed(3)} emaScore=${AUTO.scoreEma.toFixed(3)}`,
+                        `avgY=${(sig.mY || 0).toFixed(3)} avgSd=${(sig.sdY || 0).toFixed(3)} avgCh=${(sig.mCh || 0).toFixed(3)}`
+                    );
+                }
+
+                scheduleNext(fps);
+            } catch (e) {
+                AUTO.drmBlocked = true;
+
+                const t = nowMs();
+                const nextWait = (AUTO.blockUntilMs && (t - AUTO.blockUntilMs) < 2000) ? 5000 : 2000;
+                AUTO.blockUntilMs = t + nextWait;
+
+                AUTO.lastSig = null;
+                AUTO.lastLuma = null;
+                AUTO.motionEma = 0;
+                AUTO.motionFrames = 0;
+                AUTO.statsEma = null;
+                AUTO.blink = false; // FIX: blink zurücksetzen
+
+                const keep = AUTO.lastGoodMatrixStr || _autoLastMatrixStr || autoMatrixStr || matToSvgValues(matIdentity4x5());
+                autoMatrixStr = keep;
+                _autoLastMatrixStr = keep;
+                updateAutoMatrixInSvg(keep);
+
+                setAutoDotState('idle');
+
+                if (LOG.on && (t - LOG.lastTickMs) >= LOG.tickEveryMs) {
+                    LOG.lastTickMs = t;
+                    logW('Auto(A) DRM/cross-origin: pixels blocked. Using last AutoMatrix (static) + backoff.', e && e.message ? e.message : e);
+                }
+
+                scheduleNext(ADAPTIVE_FPS.MIN);
+            }
+        };
+
+        log(`Auto analyzer loop created with ADAPTIVE FPS (2-10fps). levels=${AUTO_LEVELS.join(',')} canvas=${AUTO.canvasW}x${AUTO.canvasH} motionThresh=${AUTO.motionThresh}`);
+        scheduleNext(ADAPTIVE_FPS.MIN);
+    }
+
+    function setAutoOn(on, opts = {}) {
+        const silent = !!opts.silent;
+        const next = !!on;
+
+        if (next === autoOn && AUTO.running) {
+            if (!silent) {
+                scheduleOverlayUpdate();
+                setAutoDotState(next ? 'idle' : 'off');
+            }
+            return;
+        }
+
+        autoOn = next;
+        if (!_inSync) gmSet(K.AUTO_ON, autoOn);
+
+        logToggle('Auto Scene Match (Ctrl+Alt+A)', autoOn, `(strength=${autoStrength.toFixed(2)}, lockWB=${autoLockWB ? 'yes' : 'no'}, adaptive FPS 2-10)`);
+
+        if (!autoOn) {
+            AUTO.lastSig = null;
+            AUTO.lastLuma = null;
+            AUTO.motionEma = 0;
+            AUTO.motionFrames = 0;
+            AUTO.scoreEma = 0;
+            AUTO.statsEma = null;
+            AUTO.tBoostUntil = 0;
+            AUTO.tBoostStart = 0;
+            AUTO.tgt = { br: 1.0, ct: 1.0, sat: 1.0, hue: 0.0 };
+            AUTO.drmBlocked = false;
+            AUTO.blockUntilMs = 0;
+            AUTO.lastAppliedMs = 0;
+            AUTO.blink = false;
+
+            autoMatrixStr = matToSvgValues(matIdentity4x5());
+            _autoLastMatrixStr = autoMatrixStr;
+            AUTO.lastGoodMatrixStr = autoMatrixStr;
+            updateAutoMatrixInSvg(autoMatrixStr);
+
+            setAutoDotState('off');
+
+            if (!silent) {
+                applyFilter({ skipSvgIfPossible: true });
+                scheduleOverlayUpdate();
+            }
+            return;
+        }
+
+        AUTO.lastAppliedMs = 0;
+        ADAPTIVE_FPS.current = ADAPTIVE_FPS.MIN;
+        ADAPTIVE_FPS.history = [];
+
+        setAutoDotState('idle');
+        ensureAutoLoop();
+
+        if (!silent) {
+            applyFilter({ skipSvgIfPossible: false });
+            setAutoMatrixAndApply();
+            scheduleOverlayUpdate();
+        } else {
+            autoMatrixStr = matToSvgValues(buildAutoMatrixValues());
+            _autoLastMatrixStr = autoMatrixStr;
+            AUTO.lastGoodMatrixStr = autoMatrixStr;
+            updateAutoMatrixInSvg(autoMatrixStr);
+        }
+    }
+
+    // -------------------------
+    // Config Menu (User Profile Management)
+    // -------------------------
+    let configMenuVisible = false;
+
+    function createConfigMenu() {
+        // Remove existing menu, if any
+        let existingMenu = document.getElementById(CONFIG_MENU_ID);
+        if (existingMenu) {
+            existingMenu.remove();
+        }
+
+        const menu = document.createElement('div');
+        menu.id = CONFIG_MENU_ID;
+        menu.style.cssText = `
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 500px;
+            max-width: 90vw;
+            max-height: 80vh;
+            background: rgba(20, 20, 20, 0.98);
+            backdrop-filter: blur(10px);
+            border: 2px solid #2a6fdb;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(255,255,255,0.1) inset;
+            color: #eaeaea;
+            font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+            z-index: 2147483647;
+            display: none;
+            flex-direction: column;
+            padding: 20px;
+            user-select: none;
+            pointer-events: auto;
+        `;
+
+        // Header
+        const header = document.createElement('div');
+        header.style.cssText = `
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #2a6fdb;
+        `;
+
+        const title = document.createElement('div');
+        title.style.cssText = `
+            font-size: 20px;
+            font-weight: 900;
+            color: #fff;
+            text-shadow: 0 0 10px #2a6fdb;
+        `;
+        title.textContent = '👤 User Profile Manager';
+
+        const closeBtn = document.createElement('button');
+        closeBtn.textContent = '✕';
+        closeBtn.style.cssText = `
+            background: rgba(255, 255, 255, 0.1);
+            border: none;
+            color: #fff;
+            font-size: 20px;
+            cursor: pointer;
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+            border: 1px solid rgba(255,255,255,0.2);
+        `;
+        closeBtn.addEventListener('mouseenter', () => {
+            closeBtn.style.background = 'rgba(255, 68, 68, 0.3)';
+            closeBtn.style.borderColor = '#ff4444';
+        });
+        closeBtn.addEventListener('mouseleave', () => {
+            closeBtn.style.background = 'rgba(255, 255, 255, 0.1)';
+            closeBtn.style.borderColor = 'rgba(255,255,255,0.2)';
+        });
+        closeBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            toggleConfigMenu();
+        });
+
+        header.appendChild(title);
+        header.appendChild(closeBtn);
+        menu.appendChild(header);
+
+        // Aktives Profil anzeigen
+        const activeInfo = document.createElement('div');
+        activeInfo.id = 'gvf-active-profile-info';
+        activeInfo.style.cssText = `
+            background: rgba(42, 111, 219, 0.2);
+            border: 1px solid #2a6fdb;
+            border-radius: 8px;
+            padding: 10px;
+            margin-bottom: 15px;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        `;
+        activeInfo.innerHTML = `🔵 Active profile: <strong>${activeUserProfile?.name || 'Default'}</strong>`;
+        menu.appendChild(activeInfo);
+
+        // Profile List Container
+        const listContainer = document.createElement('div');
+        listContainer.style.cssText = `
+            flex: 1;
+            overflow-y: auto;
+            margin-bottom: 20px;
+            max-height: 300px;
+            background: rgba(0,0,0,0.3);
+            border-radius: 8px;
+            padding: 5px;
+        `;
+
+        const profileList = document.createElement('div');
+        profileList.id = 'gvf-profile-list';
+        profileList.style.cssText = `
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        `;
+
+        listContainer.appendChild(profileList);
+        menu.appendChild(listContainer);
+
+        // Input for new profile
+        const inputContainer = document.createElement('div');
+        inputContainer.style.cssText = `
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+        `;
+
+        const newProfileInput = document.createElement('input');
+        newProfileInput.type = 'text';
+        newProfileInput.placeholder = 'New profile name...';
+        newProfileInput.id = 'gvf-new-profile-name';
+        newProfileInput.style.cssText = `
+            flex: 1;
+            background: rgba(0, 0, 0, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 8px;
+            padding: 10px 12px;
+            color: #fff;
+            font-size: 14px;
+            outline: none;
+            transition: border 0.2s;
+        `;
+        newProfileInput.addEventListener('focus', () => {
+            newProfileInput.style.borderColor = '#2a6fdb';
+        });
+        newProfileInput.addEventListener('blur', () => {
+            newProfileInput.style.borderColor = 'rgba(255, 255, 255, 0.2)';
+        });
+
+        const addBtn = document.createElement('button');
+        addBtn.textContent = '+ Add';
+        addBtn.style.cssText = `
+            background: #2a6fdb;
+            border: none;
+            color: #fff;
+            padding: 10px 16px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 900;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 1px solid transparent;
+        `;
+        addBtn.addEventListener('mouseenter', () => {
+            addBtn.style.background = '#3a7feb';
+            addBtn.style.transform = 'scale(1.02)';
+        });
+        addBtn.addEventListener('mouseleave', () => {
+            addBtn.style.background = '#2a6fdb';
+            addBtn.style.transform = 'scale(1)';
+        });
+        addBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const name = newProfileInput.value.trim();
+            if (name) {
+                createNewUserProfile(name);
+                updateProfileList();
+                newProfileInput.value = '';
+
+                // Update active info
+                const activeInfo = document.getElementById('gvf-active-profile-info');
+                if (activeInfo) {
+                    activeInfo.innerHTML = `🔵 Active profile: <strong>${activeUserProfile?.name || 'Default'}</strong>`;
+                }
+            } else {
+                alert('Please enter a name!');
+            }
+        });
+
+        inputContainer.appendChild(newProfileInput);
+        inputContainer.appendChild(addBtn);
+        menu.appendChild(inputContainer);
+
+        // Buttons
+        const buttonContainer = document.createElement('div');
+        buttonContainer.style.cssText = `
+            display: flex;
+            gap: 8px;
+            justify-content: flex-end;
+            margin-top: 10px;
+        `;
+
+        const saveCurrentBtn = document.createElement('button');
+        saveCurrentBtn.textContent = '💾 Save current profile';
+        saveCurrentBtn.style.cssText = `
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: #fff;
+            padding: 10px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 900;
+            cursor: pointer;
+            transition: all 0.2s;
+            flex: 1;
+        `;
+        saveCurrentBtn.addEventListener('mouseenter', () => {
+            saveCurrentBtn.style.background = 'rgba(255, 255, 255, 0.2)';
+            saveCurrentBtn.style.borderColor = '#2a6fdb';
+        });
+        saveCurrentBtn.addEventListener('mouseleave', () => {
+            saveCurrentBtn.style.background = 'rgba(255, 255, 255, 0.1)';
+            saveCurrentBtn.style.borderColor = 'rgba(255,255,255,0.2)';
+        });
+        saveCurrentBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            updateCurrentProfileSettings();
+            updateProfileList();
+
+            // Kurze Rückmeldung
+            saveCurrentBtn.textContent = '✓ Saved!';
+            setTimeout(() => {
+                saveCurrentBtn.textContent = '💾 Save current profile';
+            }, 1000);
+        });
+
+        const closeBtn2 = document.createElement('button');
+        closeBtn2.textContent = '✕ Close';
+        closeBtn2.style.cssText = `
+            background: rgba(255, 68, 68, 0.2);
+            border: 1px solid #ff4444;
+            color: #ff8888;
+            padding: 10px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 900;
+            cursor: pointer;
+            transition: all 0.2s;
+        `;
+        closeBtn2.addEventListener('mouseenter', () => {
+            closeBtn2.style.background = 'rgba(255, 68, 68, 0.3)';
+            closeBtn2.style.color = '#fff';
+        });
+        closeBtn2.addEventListener('mouseleave', () => {
+            closeBtn2.style.background = 'rgba(255, 68, 68, 0.2)';
+            closeBtn2.style.color = '#ff8888';
+        });
+        closeBtn2.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            toggleConfigMenu();
+        });
+
+        buttonContainer.appendChild(saveCurrentBtn);
+        buttonContainer.appendChild(closeBtn2);
+        menu.appendChild(buttonContainer);
+
+        // Add to body
+        if (document.body) {
+            document.body.appendChild(menu);
+            log('Config menu created and added to the body');
+        }
+
+        return menu;
+    }
+
+    function updateProfileList() {
+        const list = document.getElementById('gvf-profile-list');
+        if (!list) {
+            logW('Profile list not found');
+            return;
+        }
+
+        list.innerHTML = '';
+
+        userProfiles.forEach(profile => {
+            const isActive = activeUserProfile && activeUserProfile.id === profile.id;
+
+            const item = document.createElement('div');
+            item.style.cssText = `
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 12px 15px;
+                background: ${isActive ? 'rgba(42, 111, 219, 0.3)' : 'rgba(255, 255, 255, 0.05)'};
+                border: 2px solid ${isActive ? '#2a6fdb' : 'rgba(255, 255, 255, 0.1)'};
+                border-radius: 8px;
+                cursor: pointer;
+                transition: all 0.2s;
+                margin: 2px 0;
+            `;
+
+            item.addEventListener('mouseenter', () => {
+                if (!isActive) {
+                    item.style.background = 'rgba(255, 255, 255, 0.1)';
+                    item.style.borderColor = 'rgba(255,255,255,0.3)';
+                }
+            });
+            item.addEventListener('mouseleave', () => {
+                if (!isActive) {
+                    item.style.background = 'rgba(255, 255, 255, 0.05)';
+                    item.style.borderColor = 'rgba(255,255,255,0.1)';
+                }
+            });
+
+            // Profil-Info
+            const info = document.createElement('div');
+            info.style.cssText = `
+                display: flex;
+                flex-direction: column;
+                gap: 4px;
+                flex: 1;
+            `;
+
+            const nameSpan = document.createElement('span');
+            nameSpan.style.cssText = `
+                font-weight: ${isActive ? '900' : '600'};
+                color: ${isActive ? '#fff' : '#ccc'};
+                font-size: 14px;
+            `;
+            nameSpan.textContent = profile.name + (isActive ? ' (active)' : '');
+
+            const dateSpan = document.createElement('span');
+            dateSpan.style.cssText = `
+                font-size: 11px;
+                color: #888;
+            `;
+            dateSpan.textContent = 'Created: ' + new Date(profile.createdAt).toLocaleDateString('en-US');
+
+            info.appendChild(nameSpan);
+            info.appendChild(dateSpan);
+
+            // Actions
+            const actions = document.createElement('div');
+            actions.style.cssText = `
+                display: flex;
+                gap: 8px;
+            `;
+
+            // Activate button (only if inactive)
+            if (!isActive) {
+                const activateBtn = document.createElement('button');
+                activateBtn.textContent = 'Activate';
+                activateBtn.style.cssText = `
+                    background: rgba(42, 111, 219, 0.3);
+                    border: 1px solid #2a6fdb;
+                    color: #fff;
+                    padding: 6px 12px;
+                    border-radius: 6px;
+                    font-size: 12px;
+                    font-weight: 900;
+                    cursor: pointer;
+                    transition: all 0.2s;
+                `;
+                activateBtn.addEventListener('mouseenter', () => {
+                    activateBtn.style.background = 'rgba(42, 111, 219, 0.5)';
+                });
+                activateBtn.addEventListener('mouseleave', () => {
+                    activateBtn.style.background = 'rgba(42, 111, 219, 0.3)';
+                });
+                activateBtn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    switchToUserProfile(profile.id);
+                    updateProfileList();
+
+                    // Update active info
+                    const activeInfo = document.getElementById('gvf-active-profile-info');
+                    if (activeInfo) {
+                        activeInfo.innerHTML = `🔵 Active profile: <strong>${activeUserProfile?.name || 'Default'}</strong>`;
+                    }
+                });
+                actions.appendChild(activateBtn);
+            }
+
+            // Delete button (not for default)
+            if (profile.id !== 'default') {
+                const deleteBtn = document.createElement('button');
+                deleteBtn.textContent = '✕ Delete';
+                deleteBtn.style.cssText = `
+                    background: rgba(255, 68, 68, 0.2);
+                    border: 1px solid #ff4444;
+                    color: #ff8888;
+                    padding: 6px 12px;
+                    border-radius: 6px;
+                    font-size: 12px;
+                    font-weight: 900;
+                    cursor: pointer;
+                    transition: all 0.2s;
+                `;
+                deleteBtn.addEventListener('mouseenter', () => {
+                    deleteBtn.style.background = 'rgba(255, 68, 68, 0.4)';
+                    deleteBtn.style.color = '#fff';
+                });
+                deleteBtn.addEventListener('mouseleave', () => {
+                    deleteBtn.style.background = 'rgba(255, 68, 68, 0.2)';
+                    deleteBtn.style.color = '#ff8888';
+                });
+                deleteBtn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (confirm(`Profil "${profile.name}" Really delete?`)) {
+                        deleteUserProfile(profile.id);
+                        updateProfileList();
+
+                        // Update active info
+                        const activeInfo = document.getElementById('gvf-active-profile-info');
+                        if (activeInfo) {
+                            activeInfo.innerHTML = `🔵 Active profile: <strong>${activeUserProfile?.name || 'Default'}</strong>`;
+                        }
+                    }
+                });
+                actions.appendChild(deleteBtn);
+            }
+
+            item.appendChild(info);
+            item.appendChild(actions);
+            list.appendChild(item);
+        });
+    }
+
+    function toggleConfigMenu() {
+        log('toggleConfigMenu aufgerufen, aktuell:', configMenuVisible);
+
+        configMenuVisible = !configMenuVisible;
+        const menu = document.getElementById(CONFIG_MENU_ID);
+
+        if (!menu) {
+            log('Menü existiert nicht, erstelle neues...');
+            const newMenu = createConfigMenu();
+            if (configMenuVisible) {
+                setTimeout(() => {
+                    updateProfileList();
+                    newMenu.style.display = 'flex';
+                }, 10);
+            }
+            return;
+        }
+
+        if (configMenuVisible) {
+            log('Zeige Menü an');
+            updateProfileList();
+            menu.style.display = 'flex';
+        } else {
+            log('Verstecke Menü');
+            menu.style.display = 'none';
+        }
+    }
+
+    // -------------------------
+    // Overlay infrastructure
+    // -------------------------
+    const overlaysMain = new WeakMap();
+    const overlaysGrade = new WeakMap();
+    const overlaysIO = new WeakMap();
+    const overlaysScopes = new WeakMap();
+    let rafScheduled = false;
+
+    function getFsEl() {
+        return document.fullscreenElement
+            || document.webkitFullscreenElement
+            || document.mozFullScreenElement
+            || document.msFullscreenElement
+            || null;
+    }
+
+    function stopEventsOn(el) {
+        const stop = (e) => { e.stopPropagation(); };
+        [
+            'pointerdown', 'pointerup', 'pointermove',
+            'mousedown', 'mouseup', 'mousemove',
+            'touchstart', 'touchmove', 'touchend',
+            'wheel', 'keydown', 'keyup'
+        ].forEach(ev => el.addEventListener(ev, stop, { passive: true }));
+    }
+
+    function mkMainOverlay() {
+        const overlay = document.createElement('div');
+        overlay.className = 'gvf-video-overlay-main';
+        overlay.style.cssText = `
+      position: fixed;
+      display: none;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: 15px;
+      z-index: 2147483647;
+      pointer-events: auto;
+      opacity: 0.92;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      transform: translateZ(0);
+      user-select: none;
+    `;
+
+        const top = document.createElement('div');
+        top.style.cssText = `display:flex;align-items:center;justify-content: space-between;gap: 8px;`;
+
+        const row = document.createElement('div');
+        row.style.cssText = `display:flex; gap:6px; align-items:center;`;
+
+        const profBadge = document.createElement('div');
+        profBadge.className = 'gvf-prof-badge';
+        profBadge.style.cssText = `
+      padding: 4px 8px;border-radius: 10px;font-size: 11px;font-weight: 900;
+      background: rgba(0,0,0,0.92);color: #eaeaea;
+      box-shadow: 0 0 0 1px rgba(255,255,255,0.14) inset;white-space: nowrap;
+    `;
+
+        const renderBadge = document.createElement('div');
+        renderBadge.className = 'gvf-render-badge';
+        renderBadge.style.cssText = `
+      padding: 2px 6px;border-radius: 8px;font-size: 9px;font-weight: 900;
+      background: rgba(0,0,0,0.92);color: #ffaa00;
+      box-shadow: 0 0 0 1px rgba(255,255,255,0.14) inset;
+      margin-left: 4px;
+    `;
+        renderBadge.textContent = renderMode === 'gpu' ? 'GPU' : 'SVG';
+
+        const mkBtn = (key, label) => {
+            const el = document.createElement('div');
+            el.dataset.key = key;
+            el.textContent = label;
+            el.style.cssText = `
+        width: 24px;height: 24px;border-radius: 6px;background: #000;color: #666;
+        display:flex;align-items:center;justify-content:center;
+        font-size: 11px;font-weight: 800;
+        box-shadow: 0 0 0 1px rgba(255,255,255,0.18) inset;
+        text-shadow: 0 1px 1px rgba(0,0,0,0.6);
+      `;
+            return el;
+        };
+
+        row.appendChild(mkBtn('base', 'B'));
+        row.appendChild(mkBtn('moody', 'D'));
+        row.appendChild(mkBtn('teal', 'O'));
+        row.appendChild(mkBtn('vib', 'V'));
+        row.appendChild(mkBtn('hdr', 'P'));
+        row.appendChild(mkBtn('auto', 'A'));
+        top.appendChild(row);
+
+        const badgeRow = document.createElement('div');
+        badgeRow.style.cssText = `display:flex;align-items:center;gap:4px;`;
+        badgeRow.appendChild(profBadge);
+        badgeRow.appendChild(renderBadge);
+        top.appendChild(badgeRow);
+
+        overlay.appendChild(top);
+
+        const mkSliderRow = (name, labelText, min, max, step, getVal, setVal, gmKey, snapZero, fmt = v => Number(v).toFixed(1)) => {
+            const wrap = document.createElement('div');
+            wrap.style.cssText = `
+        display:flex;align-items:center;gap:8px;padding: 6px 8px;border-radius: 10px;
+        background: rgba(0,0,0,0.92);box-shadow: 0 0 0 1px rgba(255,255,255,0.14) inset;
+      `;
+
+            const lbl = document.createElement('div');
+            lbl.textContent = labelText;
+            lbl.style.cssText = `min-width: 36px;text-align:center;font-size: 11px;font-weight: 900;color:#cfcfcf;`;
+
+            const rng = document.createElement('input');
+            rng.type = 'range';
+            rng.min = String(min);
+            rng.max = String(max);
+            rng.step = String(step);
+            rng.value = String(getVal());
+            rng.dataset.gvfRange = name;
+            rng.style.cssText = `width: 210px; height: 18px; accent-color: #fff;`;
+
+            const val = document.createElement('div');
+            val.dataset.gvfVal = name;
+            val.textContent = fmt(getVal());
+            val.style.cssText = `width: 52px;text-align:right;font-size: 11px;font-weight: 900;color:#e6e6e6;`;
+
+            stopEventsOn(rng);
+
+            rng.addEventListener('input', () => {
+                let v = clamp(parseFloat(rng.value), min, max);
+                if (snapZero) v = snap0(v, 0.05);
+                v = roundTo(v, step);
+
+                setVal(v);
+                rng.value = String(getVal());
+                val.textContent = fmt(getVal());
+
+                gmSet(gmKey, getVal());
+                if (gmKey === K.HDR && getVal() !== 0) gmSet(K.HDR_LAST, getVal());
+
+                // Save current settings in active profile
+                updateCurrentProfileSettings();
+
+                if (renderMode === 'gpu') {
+                    applyGpuFilter();
+                } else {
+                    regenerateSvgImmediately();
+                }
+            });
+
+            wrap.appendChild(lbl);
+            wrap.appendChild(rng);
+            wrap.appendChild(val);
+            return wrap;
+        };
+
+        overlay.appendChild(mkSliderRow('SL', 'SL', -2, 2, 0.1, () => normSL(), (v) => { sl = v; }, K.SL, true));
+        overlay.appendChild(mkSliderRow('SR', 'SR', -2, 2, 0.1, () => normSR(), (v) => { sr = v; }, K.SR, true));
+        overlay.appendChild(mkSliderRow('BL', 'BL', -2, 2, 0.1, () => normBL(), (v) => { bl = v; }, K.BL, true));
+        overlay.appendChild(mkSliderRow('WL', 'WL', -2, 2, 0.1, () => normWL(), (v) => { wl = v; }, K.WL, true));
+        overlay.appendChild(mkSliderRow('DN', 'DN', -1.5, 1.5, 0.1, () => normDN(), (v) => { dn = v; }, K.DN, true));
+        overlay.appendChild(mkSliderRow('HDR', 'HDR', -1.0, 2.0, 0.1, () => normHDR(), (v) => { hdr = v; }, K.HDR, true));
+
+        (document.body || document.documentElement).appendChild(overlay);
+        return overlay;
+    }
+
+    function mkGradingOverlay() {
+        const overlay = document.createElement('div');
+        overlay.className = 'gvf-video-overlay-grade';
+        overlay.style.cssText = `
+      position: fixed;display: none;flex-direction: column;gap: 6px;z-index: 2147483647;
+      pointer-events: auto;opacity: 0.92;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      transform: translateZ(0);user-select: none;
+      width: 340px;
+      max-height: 90vh;
+      overflow-y: auto;
+    `;
+
+        const head = document.createElement('div');
+        head.style.cssText = `
+      display:flex;justify-content: space-between;align-items:center;
+      padding: 6px 8px;border-radius: 10px;background: rgba(0,0,0,0.92);
+      box-shadow: 0 0 0 1px rgba(255,255,255,0.14) inset;
+    `;
+
+        const title = document.createElement('div');
+        title.textContent = 'Grading (G) & RGB Gain (0-255)';
+        title.style.cssText = `font-size:11px; font-weight:900; color:#eaeaea;`;
+        head.appendChild(title);
+        overlay.appendChild(head);
+
+        const mkRow = (name, labelText, keyGet, keySet, gmKey) => {
+            const wrap = document.createElement('div');
+            wrap.style.cssText = `
+        display:flex;align-items:center;gap:8px;padding: 6px 8px;border-radius: 10px;
+        background: rgba(0,0,0,0.92);box-shadow: 0 0 0 1px rgba(255,255,255,0.14) inset;
+      `;
+
+            const lbl = document.createElement('div');
+            lbl.textContent = labelText;
+            lbl.style.cssText = `
+        min-width: 100px;text-align:left;font-size: 11px;font-weight: 900;
+        color:#cfcfcf;padding-left: 2px;
+      `;
+
+            const rng = document.createElement('input');
+            rng.type = 'range';
+            rng.min = '-10';
+            rng.max = '10';
+            rng.step = '0.1';
+            rng.value = String(keyGet());
+            rng.dataset.gvfRange = name;
+            rng.style.cssText = `width: 120px; height: 18px; accent-color: #fff;`;
+
+            const val = document.createElement('div');
+            val.dataset.gvfVal = name;
+            val.textContent = Number(keyGet()).toFixed(1);
+            val.style.cssText = `width: 54px;text-align:right;font-size: 11px;font-weight: 900;color:#e6e6e6;`;
+
+            stopEventsOn(rng);
+
+            rng.addEventListener('input', () => {
+                const v = normU(parseFloat(rng.value));
+                keySet(v);
+                rng.value = String(keyGet());
+                val.textContent = Number(keyGet()).toFixed(1);
+                gmSet(gmKey, keyGet());
+
+                // Save current settings in active profile
+                updateCurrentProfileSettings();
+
+                if (renderMode === 'gpu') {
+                    applyGpuFilter();
+                } else {
+                    regenerateSvgImmediately();
+                }
+                scheduleOverlayUpdate();
+            });
+
+            wrap.appendChild(lbl);
+            wrap.appendChild(rng);
+            wrap.appendChild(val);
+            return wrap;
+        };
+
+        const mkRGBRow = (name, labelText, keyGet, keySet, gmKey, color) => {
+            const wrap = document.createElement('div');
+            wrap.style.cssText = `
+        display:flex;align-items:center;gap:8px;padding: 6px 8px;border-radius: 10px;
+        background: rgba(0,0,0,0.92);box-shadow: 0 0 0 1px rgba(255,255,255,0.14) inset;
+      `;
+
+            const lbl = document.createElement('div');
+            lbl.textContent = labelText;
+            lbl.style.cssText = `
+        min-width: 100px;text-align:left;font-size: 11px;font-weight: 900;
+        color:${color};padding-left: 2px;
+      `;
+
+            const rng = document.createElement('input');
+            rng.type = 'range';
+            rng.min = '0';
+            rng.max = '255';
+            rng.step = '1';
+            rng.value = String(keyGet());
+            rng.dataset.gvfRange = name;
+            rng.style.cssText = `width: 120px; height: 18px; accent-color: ${color};`;
+
+            const val = document.createElement('div');
+            val.dataset.gvfVal = name;
+            val.textContent = String(Math.round(keyGet()));
+            val.style.cssText = `width: 54px;text-align:right;font-size: 11px;font-weight: 900;color:${color};`;
+
+            stopEventsOn(rng);
+
+            rng.addEventListener('input', () => {
+                const v = normRGB(parseFloat(rng.value));
+                keySet(v);
+                rng.value = String(keyGet());
+                val.textContent = String(Math.round(keyGet()));
+                gmSet(gmKey, keyGet());
+
+                // Save current settings in active profile
+                updateCurrentProfileSettings();
+
+                if (renderMode === 'gpu') {
+                    applyGpuFilter();
+                } else {
+                    regenerateSvgImmediately();
+                }
+                scheduleOverlayUpdate();
+            });
+
+            wrap.appendChild(lbl);
+            wrap.appendChild(rng);
+            wrap.appendChild(val);
+            return wrap;
+        };
+
+        overlay.appendChild(mkRow('U_CONTRAST', 'Contrast', () => normU(u_contrast), (v) => { u_contrast = v; }, K.U_CONTRAST));
+        overlay.appendChild(mkRow('U_BLACK', 'Black Level', () => normU(u_black), (v) => { u_black = v; }, K.U_BLACK));
+        overlay.appendChild(mkRow('U_WHITE', 'White Level', () => normU(u_white), (v) => { u_white = v; }, K.U_WHITE));
+        overlay.appendChild(mkRow('U_HIGHLIGHTS', 'Highlights', () => normU(u_highlights), (v) => { u_highlights = v; }, K.U_HIGHLIGHTS));
+        overlay.appendChild(mkRow('U_SHADOWS', 'Shadows', () => normU(u_shadows), (v) => { u_shadows = v; }, K.U_SHADOWS));
+        overlay.appendChild(mkRow('U_SAT', 'Saturation', () => normU(u_sat), (v) => { u_sat = v; }, K.U_SAT));
+        overlay.appendChild(mkRow('U_VIB', 'Vibrance', () => normU(u_vib), (v) => { u_vib = v; }, K.U_VIB));
+        overlay.appendChild(mkRow('U_SHARP', 'Sharpen', () => normU(u_sharp), (v) => { u_sharp = v; }, K.U_SHARP));
+        overlay.appendChild(mkRow('U_GAMMA', 'Gamma', () => normU(u_gamma), (v) => { u_gamma = v; }, K.U_GAMMA));
+        overlay.appendChild(mkRow('U_GRAIN', 'Grain (Banding)', () => normU(u_grain), (v) => { u_grain = v; }, K.U_GRAIN));
+        overlay.appendChild(mkRow('U_HUE', 'Hue Correction', () => normU(u_hue), (v) => { u_hue = v; }, K.U_HUE));
+
+        const sep = document.createElement('div');
+        sep.style.cssText = `height:1px;background:rgba(255,255,255,0.14);margin:8px 0;`;
+        overlay.appendChild(sep);
+
+        overlay.appendChild(mkRGBRow('U_R_GAIN', 'R Gain (0-255)', () => normRGB(u_r_gain), (v) => { u_r_gain = v; }, K.U_R_GAIN, '#ff6b6b'));
+        overlay.appendChild(mkRGBRow('U_G_GAIN', 'G Gain (0-255)', () => normRGB(u_g_gain), (v) => { u_g_gain = v; }, K.U_G_GAIN, '#6bff6b'));
+        overlay.appendChild(mkRGBRow('U_B_GAIN', 'B Gain (0-255)', () => normRGB(u_b_gain), (v) => { u_b_gain = v; }, K.U_B_GAIN, '#6b6bff'));
+
+        // Add color blindness filter dropdown
+        const cbSep = document.createElement('div');
+        cbSep.style.cssText = `height:1px;background:rgba(255,255,255,0.14);margin:8px 0;`;
+        overlay.appendChild(cbSep);
+
+        const cbSection = document.createElement('div');
+        cbSection.style.cssText = `
+      display:flex;align-items:center;gap:8px;padding: 6px 8px;border-radius: 10px;
+      background: rgba(0,0,0,0.92);box-shadow: 0 0 0 1px rgba(255,255,255,0.14) inset;
+      margin-top: 4px;
+    `;
+
+        const cbLabel = document.createElement('div');
+        cbLabel.textContent = 'Color Blind';
+        cbLabel.style.cssText = `
+      min-width: 100px;text-align:left;font-size: 11px;font-weight: 900;
+      color:#cfcfcf;padding-left: 2px;
+    `;
+
+        const cbSelect = document.createElement('select');
+        cbSelect.dataset.gvfSelect = 'cb_filter';
+        cbSelect.style.cssText = `
+      width: 120px;background: rgba(30,30,30,0.9);color: #eaeaea;
+      border: 1px solid rgba(255,255,255,0.2);border-radius: 6px;
+      padding: 4px;font-size: 11px;font-weight: 900;cursor: pointer;
+    `;
+
+        const options = [
+            { value: 'none', text: 'None' },
+            { value: 'protanopia', text: 'Protanopia (Red-Green)' },
+            { value: 'deuteranopia', text: 'Deuteranopia (Green-Red)' },
+            { value: 'tritanomaly', text: 'Tritanomaly (Blue-Yellow)' }
+        ];
+
+        options.forEach(opt => {
+            const option = document.createElement('option');
+            option.value = opt.value;
+            option.textContent = opt.text;
+            if (opt.value === cbFilter) {
+                option.selected = true;
+            }
+            cbSelect.appendChild(option);
+        });
+
+        stopEventsOn(cbSelect);
+
+        cbSelect.addEventListener('change', () => {
+            const newVal = cbSelect.value;
+            if (newVal === cbFilter) return;
+
+            cbFilter = newVal;
+            gmSet(K.CB_FILTER, cbFilter);
+            log('Color blindness filter:', cbFilter);
+
+            // Save current settings in active profile
+            updateCurrentProfileSettings();
+
+            if (renderMode === 'gpu') {
+                applyGpuFilter();
+            } else {
+                regenerateSvgImmediately();
+            }
+            scheduleOverlayUpdate();
+        });
+
+        const cbHint = document.createElement('div');
+
+        cbSection.appendChild(cbLabel);
+        cbSection.appendChild(cbSelect);
+        cbSection.appendChild(cbHint);
+        overlay.appendChild(cbSection);
+
+        (document.body || document.documentElement).appendChild(overlay);
+        return overlay;
+    }
+
+    function mkIOOverlay() {
+        const overlay = document.createElement('div');
+        overlay.className = 'gvf-video-overlay-io';
+        overlay.style.cssText = `
+      position: fixed;display: none;flex-direction: column;gap: 6px;z-index: 2147483647;
+      pointer-events: auto;opacity: 0.95;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      transform: translateZ(0);user-select: none;
+      width: 420px;
+    `;
+
+        const head = document.createElement('div');
+        head.style.cssText = `
+      display:flex;justify-content: space-between;align-items:center;
+      padding: 6px 8px;border-radius: 10px;background: rgba(0,0,0,0.92);
+      box-shadow: 0 0 0 1px rgba(255,255,255,0.14) inset;
+    `;
+
+        const title = document.createElement('div');
+        title.textContent = 'Settings (I) Export/Import';
+        title.style.cssText = `font-size:11px; font-weight:900; color:#eaeaea;`;
+
+        const hint = document.createElement('div');
+        hint.textContent = 'JSON';
+        hint.style.cssText = `font-size:10px;font-weight:900;color:#cfcfcf;opacity:0.9;`;
+
+        head.appendChild(title);
+        head.appendChild(hint);
+        overlay.appendChild(head);
+
+        const box = document.createElement('div');
+        box.style.cssText = `
+      padding: 8px;border-radius: 10px;background: rgba(0,0,0,0.92);
+      box-shadow: 0 0 0 1px rgba(255,255,255,0.14) inset;
+    `;
+
+        const ta = document.createElement('textarea');
+        ta.className = 'gvf-io-text';
+        ta.spellcheck = false;
+        ta.wrap = 'off';
+        ta.style.cssText = `
+      width: 100%;height: 220px;resize: vertical;
+      background: rgba(10,10,10,0.98);color:#eaeaea;
+      border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 10px;padding: 8px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11px; line-height: 1.25;
+      outline: none;
+    `;
+        stopEventsOn(ta);
+
+        const setDirty = (on) => { if (on) ta.dataset.dirty = '1'; else delete ta.dataset.dirty; };
+        ta.addEventListener('input', () => setDirty(true));
+
+        const row = document.createElement('div');
+        row.style.cssText = `display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;`;
+
+        const mkBtn = (text) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.textContent = text;
+            b.style.cssText = `
+        cursor:pointer;
+        padding: 6px 10px;border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.14);
+        background: rgba(255,255,255,0.08);
+        color:#eaeaea;font-size: 11px;font-weight: 900;
+        transition: all 0.2s ease;
+      `;
+
+            // hover effect
+            b.addEventListener('mouseenter', () => {
+                b.style.background = 'rgba(255,255,255,0.15)';
+            });
+            b.addEventListener('mouseleave', () => {
+                b.style.background = 'rgba(255,255,255,0.08)';
+            });
+
+            stopEventsOn(b);
+            return b;
+        };
+
+        const status = document.createElement('div');
+        status.className = 'gvf-io-status';
+        status.style.cssText = `margin-top:8px;font-size:11px;font-weight:900;color:#cfcfcf;opacity:0.95;`;
+        status.textContent = 'Tip: paste JSON here → Save';
+
+        const btnRefresh = mkBtn('Refresh');
+        const btnSave = mkBtn('Save');
+        const btnSelect = mkBtn('Select All');
+        const btnReset = mkBtn('Reset to defaults');
+        const btnExportFile = mkBtn('Export .json');
+        const btnImportFile = mkBtn('Import .json');
+        const btnShot = mkBtn('Screenshot');
+        const btnRec = mkBtn('Record');
+
+        // CONFIG BUTTON - Improved version
+        const btnConfig = mkBtn('⚙️ Config');
+        btnConfig.style.background = 'rgba(42, 111, 219, 0.4)';
+        btnConfig.style.border = '2px solid #2a6fdb';
+        btnConfig.style.color = '#fff';
+        btnConfig.style.fontWeight = 'bold';
+        btnConfig.style.padding = '6px 12px';
+
+        // Important: Direct event listener with console.log for testing
+        btnConfig.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            log('Config button clicked!');
+            toggleConfigMenu();
+        });
+
+        // Debug Button
+        const btnDebug = mkBtn(debug ? '🐞 Debug: ON' : '🐞 Debug: OFF');
+        btnDebug.style.background = debug ? 'rgba(0,255,0,0.2)' : 'rgba(255,0,0,0.2)';
+        btnDebug.style.border = debug ? '1px solid #00ff00' : '1px solid #ff0000';
+        btnDebug.style.color = debug ? '#00ff00' : '#ff6666';
+
+        btnDebug.addEventListener('click', () => {
+            toggleDebug();
+            btnDebug.textContent = debug ? '🐞 Debug: ON' : '🐞 Debug: OFF';
+            btnDebug.style.background = debug ? 'rgba(0,255,0,0.2)' : 'rgba(255,0,0,0.2)';
+            btnDebug.style.border = debug ? '1px solid #00ff00' : '1px solid #ff0000';
+            btnDebug.style.color = debug ? '#00ff00' : '#ff6666';
+            status.textContent = debug ? 'Debug mode activated' : 'Debug mode deactivated';
+        });
+
+        overlay.__btnRec = btnRec;
+        overlay.__status = status;
+
+        const fileInput = document.createElement('input');
+        fileInput.type = 'file';
+        fileInput.accept = 'application/json,.json';
+        fileInput.style.display = 'none';
+        stopEventsOn(fileInput);
+
+        function downloadJsonToPC(obj) {
+            const jsonStr = JSON.stringify(obj, null, 2);
+            const blob = new Blob([jsonStr], { type: 'application/json;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+
+            const a = document.createElement('a');
+            a.href = url;
+
+            const d = new Date();
+            const pad = (n) => String(n).padStart(2, '0');
+            const name = `gvf-settings_${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}.json`;
+            a.download = name;
+
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+        }
+
+        btnExportFile.addEventListener('click', () => {
+            try { downloadJsonToPC(exportSettings()); status.textContent = 'Exported to .json file.'; }
+            catch (_) { status.textContent = 'Export failed.'; }
+        });
+
+        btnImportFile.addEventListener('click', () => {
+            try { fileInput.value = ''; } catch (_) { }
+            fileInput.click();
+        });
+
+        fileInput.addEventListener('change', () => {
+            const f = fileInput.files && fileInput.files[0];
+            if (!f) return;
+
+            const reader = new FileReader();
+            reader.onload = () => {
+                try {
+                    const raw = String(reader.result || '').trim();
+                    const obj = JSON.parse(raw);
+                    const ok = importSettings(obj);
+                    if (!ok) { status.textContent = 'Invalid JSON structure.'; return; }
+
+                    setDirty(false);
+                    ta.value = JSON.stringify(exportSettings(), null, 2);
+                    status.textContent = 'Imported + applied.';
+                } catch (_) {
+                    status.textContent = 'Import failed (invalid JSON).';
+                } finally {
+                    try { fileInput.value = ''; } catch (_) { }
+                }
+            };
+            reader.onerror = () => {
+                status.textContent = 'Import failed (read error).';
+                try { fileInput.value = ''; } catch (_) { }
+            };
+            reader.readAsText(f);
+        });
+
+        btnRefresh.addEventListener('click', () => {
+            setDirty(false);
+            ta.value = JSON.stringify(exportSettings(), null, 2);
+            status.textContent = 'Exported current settings.';
+        });
+
+        btnSelect.addEventListener('click', () => { ta.focus(); ta.select(); status.textContent = 'Selected.'; });
+
+        btnSave.addEventListener('click', () => {
+            const raw = String(ta.value || '').trim();
+            if (!raw) { status.textContent = 'Empty JSON.'; return; }
+            try {
+                const obj = JSON.parse(raw);
+                const ok = importSettings(obj);
+                if (!ok) { status.textContent = 'Invalid JSON structure.'; return; }
+
+                setDirty(false);
+                ta.value = JSON.stringify(exportSettings(), null, 2);
+                status.textContent = 'Saved + applied.';
+            } catch (_) {
+                status.textContent = 'JSON parse error.';
+            }
+        });
+
+        // Reset to defaults
+        btnReset.addEventListener('click', () => {
+
+            const firefoxDetected = isFirefox();
+
+            let defaults;
+
+            if (firefoxDetected) {
+
+                defaults = {
+                    enabled: true, darkMoody: true, tealOrange: false, vibrantSat: false, iconsShown: false,
+                    sl: 1.3, sr: -1.1, bl: 0.3, wl: 0.2, dn: 0.6,
+                    hdr: 0.0, profile: 'off',
+                    gradingHudShown: false,
+                    renderMode: 'svg',
+                    autoOn: true,
+                    autoStrength: 0.65,
+                    autoLockWB: true,
+                    user: {
+                        contrast: 0, black: 0, white: 0, highlights: 0, shadows: 0, saturation: 0, vibrance: 0, sharpen: 0, gamma: 0, grain: 0, hue: 0,
+                        r_gain: 128, g_gain: 128, b_gain: 128
+                    },
+                    debug: false,
+                    logs: true,
+                    cbFilter: 'none'
+                };
+            } else {
+
+                defaults = {
+                    enabled: true, darkMoody: true, tealOrange: false, vibrantSat: false, iconsShown: false,
+                    sl: 1.0, sr: 0.5, bl: -1.2, wl: 0.2, dn: -0.6,
+                    hdr: 0.0, profile: 'user',
+                    gradingHudShown: false,
+                    renderMode: 'svg',
+                    autoOn: true,
+                    autoStrength: 0.65,
+                    autoLockWB: true,
+                    user: {
+                        contrast: 0, black: 0, white: 0, highlights: 0, shadows: 0, saturation: 0, vibrance: 0, sharpen: 0, gamma: 0, grain: 0, hue: 0,
+                        r_gain: 128, g_gain: 128, b_gain: 128
+                    },
+                    debug: false,
+                    logs: true,
+                    cbFilter: 'none'
+                };
+            }
+
+            importSettings(defaults);
+            setDirty(false);
+            ta.value = JSON.stringify(exportSettings(), null, 2);
+            status.textContent = 'Reset + applied.';
+
+            // Update Debug button
+            btnDebug.textContent = '🐞 Debug: OFF';
+            btnDebug.style.background = 'rgba(255,0,0,0.2)';
+            btnDebug.style.border = '1px solid #ff0000';
+            btnDebug.style.color = '#ff6666';
+        });
+
+        btnShot.addEventListener('click', async () => { await takeVideoScreenshot(status); });
+
+        btnRec.addEventListener('click', async () => {
+            if (btnRec.disabled) return;
+            await toggleVideoRecord(status, btnRec);
+        });
+
+        // Add buttons in the correct order
+        row.appendChild(btnRefresh);
+        row.appendChild(btnSave);
+        row.appendChild(btnSelect);
+        row.appendChild(btnExportFile);
+        row.appendChild(btnImportFile);
+        row.appendChild(btnShot);
+        row.appendChild(btnRec);
+        row.appendChild(btnConfig);  // Config Button
+        row.appendChild(btnDebug);
+        row.appendChild(btnReset);
+
+        box.appendChild(ta);
+        box.appendChild(row);
+        box.appendChild(status);
+        box.appendChild(fileInput);
+
+        overlay.appendChild(box);
+
+        // Direkt zum body hinzufügen
+        if (document.body) {
+            document.body.appendChild(overlay);
+            log('IO overlay created and added to the body');
+        } else {
+            logW('Body not yet available');
+        }
+
+        return overlay;
+    }
+
+    function mkScopesOverlay() {
+        const overlay = document.createElement('div');
+        overlay.className = 'gvf-video-overlay-scopes';
+        overlay.style.cssText = `
+      position: fixed;
+      display: none;
+      flex-direction: column;
+      gap: 6px;
+      z-index: 2147483647;
+      pointer-events: none;
+      opacity: 0.95;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      transform: translateZ(0);
+      user-select: none;
+      width: 280px;
+    `;
+
+        const head = document.createElement('div');
+        head.style.cssText = `
+      display:flex;justify-content: space-between;align-items:center;
+      padding: 4px 8px;border-radius: 8px;background: rgba(0,0,0,0.85);
+      box-shadow: 0 0 0 1px rgba(255,255,255,0.2) inset;
+      backdrop-filter: blur(2px);
+    `;
+
+        const title = document.createElement('div');
+        title.textContent = 'Scopes (S)';
+        title.style.cssText = `font-size:10px; font-weight:900; color:#eaeaea;`;
+
+        const hint = document.createElement('div');
+        hint.textContent = 'live';
+        hint.style.cssText = `font-size:9px;font-weight:900;color:#aaa;`;
+
+        head.appendChild(title);
+        head.appendChild(hint);
+        overlay.appendChild(head);
+
+        const content = document.createElement('div');
+        content.style.cssText = `
+      padding: 8px;border-radius: 8px;background: rgba(0,0,0,0.85);
+      box-shadow: 0 0 0 1px rgba(255,255,255,0.2) inset;
+      backdrop-filter: blur(2px);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    `;
+
+        const lumaSection = document.createElement('div');
+        lumaSection.style.cssText = `display:flex;flex-direction:column;gap:2px;`;
+
+        const lumaTitle = document.createElement('div');
+        lumaTitle.style.cssText = `font-size:9px;font-weight:900;color:#cfcfcf;text-transform:uppercase;letter-spacing:0.5px;`;
+        lumaTitle.textContent = 'Luma Y';
+        lumaSection.appendChild(lumaTitle);
+
+        const lumaBars = document.createElement('div');
+        lumaBars.style.cssText = `
+      display:flex;align-items:flex-end;height:40px;gap:1px;
+      background:rgba(20,20,20,0.6);border-radius:4px;padding:2px;
+    `;
+        lumaBars.className = 'gvf-scope-luma';
+        for (let i = 0; i < 16; i++) {
+            const bar = document.createElement('div');
+            bar.style.cssText = `
+        flex:1;height:2px;background:#4CAF50;border-radius:1px;
+        transition:height 0.1s ease;
+      `;
+            bar.dataset.index = i;
+            lumaBars.appendChild(bar);
+        }
+        lumaSection.appendChild(lumaBars);
+
+        const rgbSection = document.createElement('div');
+        rgbSection.style.cssText = `display:flex;flex-direction:column;gap:2px;`;
+
+        const rgbTitle = document.createElement('div');
+        rgbTitle.style.cssText = `font-size:9px;font-weight:900;color:#cfcfcf;text-transform:uppercase;letter-spacing:0.5px;`;
+        rgbTitle.textContent = 'RGB';
+        rgbSection.appendChild(rgbTitle);
+
+        const rgbGrid = document.createElement('div');
+        rgbGrid.style.cssText = `
+      display:grid;grid-template-columns:1fr 1fr 1fr;gap:2px;
+      background:rgba(20,20,20,0.6);border-radius:4px;padding:4px;
+    `;
+
+        const redCol = document.createElement('div');
+        redCol.style.cssText = `display:flex;flex-direction:column;gap:1px;`;
+        const redLabel = document.createElement('div');
+        redLabel.style.cssText = `font-size:8px;font-weight:900;color:#ff6b6b;text-align:center;`;
+        redLabel.textContent = 'R';
+        redCol.appendChild(redLabel);
+        const redBars = document.createElement('div');
+        redBars.style.cssText = `display:flex;align-items:flex-end;height:32px;gap:1px;`;
+        redBars.className = 'gvf-scope-red';
+        for (let i = 0; i < 16; i++) {
+            const bar = document.createElement('div');
+            bar.style.cssText = `flex:1;height:2px;background:#ff5252;border-radius:1px;transition:height 0.1s ease;`;
+            bar.dataset.index = i;
+            redBars.appendChild(bar);
+        }
+        redCol.appendChild(redBars);
+        rgbGrid.appendChild(redCol);
+
+        const greenCol = document.createElement('div');
+        greenCol.style.cssText = `display:flex;flex-direction:column;gap:1px;`;
+        const greenLabel = document.createElement('div');
+        greenLabel.style.cssText = `font-size:8px;font-weight:900;color:#6bff6b;text-align:center;`;
+        greenLabel.textContent = 'G';
+        greenCol.appendChild(greenLabel);
+        const greenBars = document.createElement('div');
+        greenBars.style.cssText = `display:flex;align-items:flex-end;height:32px;gap:1px;`;
+        greenBars.className = 'gvf-scope-green';
+        for (let i = 0; i < 16; i++) {
+            const bar = document.createElement('div');
+            bar.style.cssText = `flex:1;height:2px;background:#52ff52;border-radius:1px;transition:height 0.1s ease;`;
+            bar.dataset.index = i;
+            greenBars.appendChild(bar);
+        }
+        greenCol.appendChild(greenBars);
+        rgbGrid.appendChild(greenCol);
+
+        const blueCol = document.createElement('div');
+        blueCol.style.cssText = `display:flex;flex-direction:column;gap:1px;`;
+        const blueLabel = document.createElement('div');
+        blueLabel.style.cssText = `font-size:8px;font-weight:900;color:#6b6bff;text-align:center;`;
+        blueLabel.textContent = 'B';
+        blueCol.appendChild(blueLabel);
+        const blueBars = document.createElement('div');
+        blueBars.style.cssText = `display:flex;align-items:flex-end;height:32px;gap:1px;`;
+        blueBars.className = 'gvf-scope-blue';
+        for (let i = 0; i < 16; i++) {
+            const bar = document.createElement('div');
+            bar.style.cssText = `flex:1;height:2px;background:#5252ff;border-radius:1px;transition:height 0.1s ease;`;
+            bar.dataset.index = i;
+            blueBars.appendChild(bar);
+        }
+        blueCol.appendChild(blueBars);
+        rgbGrid.appendChild(blueCol);
+
+        rgbSection.appendChild(rgbGrid);
+
+        const satSection = document.createElement('div');
+        satSection.style.cssText = `display:flex;flex-direction:column;gap:2px;`;
+
+        const satTitle = document.createElement('div');
+        satTitle.style.cssText = `font-size:9px;font-weight:900;color:#cfcfcf;text-transform:uppercase;letter-spacing:0.5px;`;
+        satTitle.textContent = 'Sat';
+        satSection.appendChild(satTitle);
+
+        const satMeter = document.createElement('div');
+        satMeter.style.cssText = `
+      display:flex;align-items:center;gap:6px;
+      background:rgba(20,20,20,0.6);border-radius:4px;padding:4px;
+    `;
+
+        const satBarBg = document.createElement('div');
+        satBarBg.style.cssText = `flex:1;height:8px;background:#333;border-radius:4px;overflow:hidden;`;
+
+        const satBarFill = document.createElement('div');
+        satBarFill.style.cssText = `height:100%;width:0%;background:linear-gradient(90deg,#ffd700,#ff8c00);border-radius:4px;transition:width 0.1s ease;`;
+        satBarFill.className = 'gvf-scope-sat-fill';
+
+        const satValue = document.createElement('div');
+        satValue.style.cssText = `font-size:9px;font-weight:900;color:#eaeaea;min-width:36px;text-align:right;`;
+        satValue.className = 'gvf-scope-sat-value';
+        satValue.textContent = '0.00';
+
+        satBarBg.appendChild(satBarFill);
+        satMeter.appendChild(satBarBg);
+        satMeter.appendChild(satValue);
+        satSection.appendChild(satMeter);
+
+        const avgSection = document.createElement('div');
+        avgSection.style.cssText = `
+      display:grid;grid-template-columns:1fr 1fr 1fr;gap:2px;margin-top:2px;
+      font-size:8px;font-weight:900;color:#aaa;
+    `;
+
+        const avgY = document.createElement('div');
+        avgY.className = 'gvf-scope-avg-y';
+        avgY.style.cssText = `text-align:center;background:rgba(30,30,30,0.6);border-radius:4px;padding:2px;`;
+        avgY.textContent = 'Y: 0.00';
+
+        const avgRGB = document.createElement('div');
+        avgRGB.className = 'gvf-scope-avg-rgb';
+        avgRGB.style.cssText = `text-align:center;background:rgba(30,30,30,0.6);border-radius:4px;padding:2px;`;
+        avgRGB.textContent = 'RGB: 0.00';
+
+        const avgSat = document.createElement('div');
+        avgSat.className = 'gvf-scope-avg-sat';
+        avgSat.style.cssText = `text-align:center;background:rgba(30,30,30,0.6);border-radius:4px;padding:2px;`;
+        avgSat.textContent = 'Sat: 0.00';
+
+        avgSection.appendChild(avgY);
+        avgSection.appendChild(avgRGB);
+        avgSection.appendChild(avgSat);
+
+        content.appendChild(lumaSection);
+        content.appendChild(rgbSection);
+        content.appendChild(satSection);
+        content.appendChild(avgSection);
+
+        overlay.appendChild(content);
+        (document.body || document.documentElement).appendChild(overlay);
+        return overlay;
+    }
+
+    const SCOPES = {
+        running: false,
+        canvas: document.createElement('canvas'),
+        ctx: null,
+        lastUpdate: 0,
+        updateInterval: 100,
+        lastVideo: null
+    };
+
+    SCOPES.canvas.width = 160;
+    SCOPES.canvas.height = 90;
+    try {
+        SCOPES.ctx = SCOPES.canvas.getContext('2d', { willReadFrequently: true, alpha: false });
+    } catch (_) {
+        try {
+            SCOPES.ctx = SCOPES.canvas.getContext('2d', { alpha: false });
+        } catch (__) {
+            SCOPES.ctx = SCOPES.canvas.getContext('2d');
+        }
+    }
+
+    function updateScopesData() {
+        if (!scopesHudShown) return;
+
+        const v = choosePrimaryVideo();
+        if (!v || !SCOPES.ctx) return;
+
+        if (v.paused || v.seeking || v.ended || v.readyState < 2) {
+            return;
+        }
+
+        const now = nowMs();
+        if (now - SCOPES.lastUpdate < SCOPES.updateInterval) return;
+
+        try {
+            const w = Math.max(2, v.videoWidth || 0);
+            const h = Math.max(2, v.videoHeight || 0);
+            if (!w || !h) return;
+
+            const cssFilter = getAppliedCssFilterString(v);
+
+            SCOPES.ctx.save();
+            if (cssFilter) {
+                SCOPES.ctx.filter = cssFilter;
+            }
+            SCOPES.ctx.drawImage(v, 0, 0, 160, 90);
+            SCOPES.ctx.restore();
+
+            let imgData;
+            try {
+                imgData = SCOPES.ctx.getImageData(0, 0, 160, 90);
+            } catch (e) {
+                SCOPES.lastUpdate = now;
+                return;
+            }
+
+            const d = imgData.data;
+
+            const lumaHist = new Array(16).fill(0);
+            const redHist = new Array(16).fill(0);
+            const greenHist = new Array(16).fill(0);
+            const blueHist = new Array(16).fill(0);
+
+            let sumR = 0, sumG = 0, sumB = 0, sumSat = 0;
+            let count = 0;
+
+            for (let y = 0; y < 90; y += 2) {
+                for (let x = 0; x < 160; x += 2) {
+                    const i = (y * 160 + x) * 4;
+                    const r = d[i];
+                    const g = d[i + 1];
+                    const b = d[i + 2];
+
+                    const yVal = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+                    const lumaBucket = Math.floor(yVal / 16);
+                    if (lumaBucket >= 0 && lumaBucket < 16) lumaHist[lumaBucket]++;
+
+                    const rBucket = Math.floor(r / 16);
+                    const gBucket = Math.floor(g / 16);
+                    const bBucket = Math.floor(b / 16);
+                    if (rBucket >= 0 && rBucket < 16) redHist[rBucket]++;
+                    if (gBucket >= 0 && gBucket < 16) greenHist[gBucket]++;
+                    if (bBucket >= 0 && bBucket < 16) blueHist[bBucket]++;
+
+                    const max = Math.max(r, g, b);
+                    const min = Math.min(r, g, b);
+                    const sat = max - min;
+
+                    sumR += r;
+                    sumG += g;
+                    sumB += b;
+                    sumSat += sat;
+                    count++;
+                }
+            }
+
+            if (count === 0) return;
+
+            const maxLuma = Math.max(...lumaHist, 1);
+            const maxRed = Math.max(...redHist, 1);
+            const maxGreen = Math.max(...greenHist, 1);
+            const maxBlue = Math.max(...blueHist, 1);
+
+            document.querySelectorAll('.gvf-scope-luma [data-index]').forEach(bar => {
+                const idx = parseInt(bar.dataset.index);
+                const val = lumaHist[idx] || 0;
+                const pct = (val / maxLuma) * 36;
+                bar.style.height = Math.max(2, pct) + 'px';
+            });
+
+            document.querySelectorAll('.gvf-scope-red [data-index]').forEach(bar => {
+                const idx = parseInt(bar.dataset.index);
+                const val = redHist[idx] || 0;
+                const pct = (val / maxRed) * 28;
+                bar.style.height = Math.max(2, pct) + 'px';
+            });
+
+            document.querySelectorAll('.gvf-scope-green [data-index]').forEach(bar => {
+                const idx = parseInt(bar.dataset.index);
+                const val = greenHist[idx] || 0;
+                const pct = (val / maxGreen) * 28;
+                bar.style.height = Math.max(2, pct) + 'px';
+            });
+
+            document.querySelectorAll('.gvf-scope-blue [data-index]').forEach(bar => {
+                const idx = parseInt(bar.dataset.index);
+                const val = blueHist[idx] || 0;
+                const pct = (val / maxBlue) * 28;
+                bar.style.height = Math.max(2, pct) + 'px';
+            });
+
+            const avgSat = sumSat / count / 255;
+            const satPct = Math.min(100, avgSat * 200);
+            const satFill = document.querySelector('.gvf-scope-sat-fill');
+            const satValue = document.querySelector('.gvf-scope-sat-value');
+            if (satFill) satFill.style.width = satPct + '%';
+            if (satValue) satValue.textContent = avgSat.toFixed(2);
+
+            const avgY = (0.299 * (sumR / count) + 0.587 * (sumG / count) + 0.114 * (sumB / count)) / 255;
+            const avgR = (sumR / count) / 255;
+            const avgG = (sumG / count) / 255;
+            const avgB = (sumB / count) / 255;
+            const avgRGB = (avgR + avgG + avgB) / 3;
+
+            const avgYEl = document.querySelector('.gvf-scope-avg-y');
+            const avgRGBEl = document.querySelector('.gvf-scope-avg-rgb');
+            const avgSatEl = document.querySelector('.gvf-scope-avg-sat');
+
+            if (avgYEl) avgYEl.textContent = `Y: ${avgY.toFixed(2)}`;
+            if (avgRGBEl) avgRGBEl.textContent = `RGB: ${avgRGB.toFixed(2)}`;
+            if (avgSatEl) avgSatEl.textContent = `Sat: ${avgSat.toFixed(2)}`;
+
+            SCOPES.lastUpdate = now;
+
+        } catch (e) {
+            if (debug) console.log('[GVF] Scopes update failed:', e);
+            SCOPES.lastUpdate = now;
+        }
+    }
+
+    function startScopesLoop() {
+        if (SCOPES.running) return;
+        SCOPES.running = true;
+
+        const loop = () => {
+            if (!SCOPES.running) return;
+
+            if (scopesHudShown) {
+                try {
+                    updateScopesData();
+                } catch (e) {
+                    if (debug) console.log('[GVF] Scopes loop error:', e);
+                }
+            }
+
+            setTimeout(loop, SCOPES.updateInterval);
+        };
+
+        setTimeout(loop, 100);
+    }
+
+    function exportSettings() {
+        return {
+            schema: 'gvf-settings',
+            ver: '1.10',
+            enabled: !!enabled,
+            darkMoody: !!darkMoody,
+            tealOrange: !!tealOrange,
+            vibrantSat: !!vibrantSat,
+            iconsShown: !!iconsShown,
+
+            sl: nFix(normSL(), 1),
+            sr: nFix(normSR(), 1),
+            bl: nFix(normBL(), 1),
+            wl: nFix(normWL(), 1),
+            dn: nFix(normDN(), 1),
+
+            hdr: nFix(normHDR(), 1),
+            profile: String(profile),
+            renderMode: String(renderMode),
+
+            gradingHudShown: !!gradingHudShown,
+            scopesHudShown: !!scopesHudShown,
+
+            autoOn: !!autoOn,
+            autoStrength: nFix(autoStrength, 2),
+            autoLockWB: !!autoLockWB,
+
+            adaptiveFps: {
+                min: ADAPTIVE_FPS.MIN,
+                max: ADAPTIVE_FPS.MAX,
+                current: ADAPTIVE_FPS.current
+            },
+
+            user: {
+                contrast: nFix(normU(u_contrast), 1),
+                black: nFix(normU(u_black), 1),
+                white: nFix(normU(u_white), 1),
+                highlights: nFix(normU(u_highlights), 1),
+                shadows: nFix(normU(u_shadows), 1),
+                saturation: nFix(normU(u_sat), 1),
+                vibrance: nFix(normU(u_vib), 1),
+                sharpen: nFix(normU(u_sharp), 1),
+                gamma: nFix(normU(u_gamma), 1),
+                grain: nFix(normU(u_grain), 1),
+                hue: nFix(normU(u_hue), 1),
+
+                r_gain: Math.round(normRGB(u_r_gain)),
+                g_gain: Math.round(normRGB(u_g_gain)),
+                b_gain: Math.round(normRGB(u_b_gain))
+            },
+            debug: !!debug,
+            logs: !!logs,
+            cbFilter: String(cbFilter)
+        };
+    }
+
+    function importSettings(obj) {
+        if (!obj || typeof obj !== 'object') return false;
+
+        _suspendSync = true;
+        _inSync = true;
+
+        try {
+            const u = (obj.user && typeof obj.user === 'object') ? obj.user : {};
+
+            if ('enabled' in obj) enabled = !!obj.enabled;
+            if ('darkMoody' in obj) darkMoody = !!obj.darkMoody;
+            if ('tealOrange' in obj) tealOrange = !!obj.tealOrange;
+            if ('vibrantSat' in obj) vibrantSat = !!obj.vibrantSat;
+            if ('iconsShown' in obj) iconsShown = !!obj.iconsShown;
+
+            if ('sl' in obj) sl = clamp(Number(obj.sl), -2, 2);
+            if ('sr' in obj) sr = clamp(Number(obj.sr), -2, 2);
+            if ('bl' in obj) bl = clamp(Number(obj.bl), -2, 2);
+            if ('wl' in obj) wl = clamp(Number(obj.wl), -2, 2);
+            if ('dn' in obj) dn = clamp(Number(obj.dn), -1.5, 1.5);
+
+            if ('hdr' in obj) hdr = clamp(Number(obj.hdr), -1, 2);
+
+            if ('profile' in obj) {
+                const p = String(obj.profile).toLowerCase();
+                profile = (['off', 'film', 'anime', 'gaming', 'eyecare', 'user'].includes(p) ? p : 'off');
+            }
+
+            if ('renderMode' in obj) {
+                const r = String(obj.renderMode).toLowerCase();
+                renderMode = (r === 'gpu' ? 'gpu' : 'svg');
+            }
+
+            if ('gradingHudShown' in obj) gradingHudShown = !!obj.gradingHudShown;
+            if ('scopesHudShown' in obj) scopesHudShown = !!obj.scopesHudShown;
+
+            if ('autoOn' in obj) autoOn = !!obj.autoOn;
+            if ('autoStrength' in obj) autoStrength = clamp(Number(obj.autoStrength), 0, 1);
+            if ('autoLockWB' in obj) autoLockWB = !!obj.autoLockWB;
+
+            if ('debug' in obj) {
+                debug = !!obj.debug;
+                gmSet(K.DEBUG, debug);
+            }
+            if ('logs' in obj) {
+                logs = !!obj.logs;
+                gmSet(K.LOGS, logs);
+                LOG.on = logs;
+            }
+
+            if ('cbFilter' in obj) {
+                const cb = String(obj.cbFilter).toLowerCase();
+                cbFilter = (['none', 'protanopia', 'deuteranopia', 'tritanomaly'].includes(cb) ? cb : 'none');
+                gmSet(K.CB_FILTER, cbFilter);
+            }
+
+            if ('contrast' in u) u_contrast = normU(u.contrast);
+            if ('black' in u) u_black = normU(u.black);
+            if ('white' in u) u_white = normU(u.white);
+            if ('highlights' in u) u_highlights = normU(u.highlights);
+            if ('shadows' in u) u_shadows = normU(u.shadows);
+            if ('saturation' in u) u_sat = normU(u.saturation);
+            if ('vibrance' in u) u_vib = normU(u.vibrance);
+            if ('sharpen' in u) u_sharp = normU(u.sharpen);
+            if ('gamma' in u) u_gamma = normU(u.gamma);
+            if ('grain' in u) u_grain = normU(u.grain);
+            if ('hue' in u) u_hue = normU(u.hue);
+
+            if ('r_gain' in u) u_r_gain = normRGB(u.r_gain);
+            if ('g_gain' in u) u_g_gain = normRGB(u.g_gain);
+            if ('b_gain' in u) u_b_gain = normRGB(u.b_gain);
+
+            enabled = !!enabled; darkMoody = !!darkMoody; tealOrange = !!tealOrange; vibrantSat = !!vibrantSat; iconsShown = !!iconsShown;
+
+            sl = normSL(); sr = normSR(); bl = normBL(); wl = normWL(); dn = normDN(); hdr = normHDR();
+
+            u_contrast = normU(u_contrast);
+            u_black = normU(u_black);
+            u_white = normU(u_white);
+            u_highlights = normU(u_highlights);
+            u_shadows = normU(u_shadows);
+            u_sat = normU(u_sat);
+            u_vib = normU(u_vib);
+            u_sharp = normU(u_sharp);
+            u_gamma = normU(u_gamma);
+            u_grain = normU(u_grain);
+            u_hue = normU(u_hue);
+
+            u_r_gain = normRGB(u_r_gain);
+            u_g_gain = normRGB(u_g_gain);
+            u_b_gain = normRGB(u_b_gain);
+
+            gmSet(K.enabled, enabled);
+            gmSet(K.moody, darkMoody);
+            gmSet(K.teal, tealOrange);
+            gmSet(K.vib, vibrantSat);
+            gmSet(K.icons, iconsShown);
+
+            gmSet(K.SL, sl);
+            gmSet(K.SR, sr);
+            gmSet(K.BL, bl);
+            gmSet(K.WL, wl);
+            gmSet(K.DN, dn);
+
+            gmSet(K.HDR, hdr);
+            if (hdr !== 0) gmSet(K.HDR_LAST, hdr);
+
+            gmSet(K.PROF, profile);
+            gmSet(K.RENDER_MODE, renderMode);
+            gmSet(K.G_HUD, gradingHudShown);
+            gmSet(K.I_HUD, ioHudShown);
+            gmSet(K.S_HUD, scopesHudShown);
+
+            gmSet(K.U_CONTRAST, u_contrast);
+            gmSet(K.U_BLACK, u_black);
+            gmSet(K.U_WHITE, u_white);
+            gmSet(K.U_HIGHLIGHTS, u_highlights);
+            gmSet(K.U_SHADOWS, u_shadows);
+            gmSet(K.U_SAT, u_sat);
+            gmSet(K.U_VIB, u_vib);
+            gmSet(K.U_SHARP, u_sharp);
+            gmSet(K.U_GAMMA, u_gamma);
+            gmSet(K.U_GRAIN, u_grain);
+            gmSet(K.U_HUE, u_hue);
+
+            gmSet(K.U_R_GAIN, u_r_gain);
+            gmSet(K.U_G_GAIN, u_g_gain);
+            gmSet(K.U_B_GAIN, u_b_gain);
+
+            gmSet(K.AUTO_ON, autoOn);
+            gmSet(K.AUTO_STRENGTH, autoStrength);
+            gmSet(K.AUTO_LOCK_WB, autoLockWB);
+
+            setAutoOn(autoOn, { silent: true });
+
+            if (renderMode === 'gpu') {
+                applyGpuFilter();
+            } else {
+                regenerateSvgImmediately();
+            }
+            scheduleOverlayUpdate();
+
+            // Update current profile
+            updateCurrentProfileSettings();
+
+            return true;
+        } catch (_) {
+            return false;
+        } finally {
+            _inSync = false;
+            _suspendSync = false;
+        }
+    }
+
+    function toggleRenderMode() {
+        renderMode = renderMode === 'svg' ? 'gpu' : 'svg';
+        gmSet(K.RENDER_MODE, renderMode);
+        logToggle('Render Mode (Ctrl+Alt+X)', renderMode === 'gpu', `Mode: ${renderMode === 'gpu' ? 'WebGL2 Canvas Pipeline' : 'SVG'}`);
+
+        // Save current settings in active profile
+        updateCurrentProfileSettings();
+
+        if (renderMode === 'gpu') {
+            deactivateSVGMode();
+            activateWebGLMode();
+            applyGpuFilter();
+        } else {
+            deactivateWebGLMode();
+            regenerateSvgImmediately();
+        }
+
+        scheduleOverlayUpdate();
+    }
+
+    function deactivateSVGMode() {
+        const style = document.getElementById(STYLE_ID);
+        if (style) style.remove();
+        const svg = document.getElementById(SVG_ID);
+        if (svg) svg.remove();
+    }
+
+    function deactivateWebGLMode() {
+        if (webglPipeline) {
+            webglPipeline.shutdown();
+            webglPipeline = null;
+        }
+        document.querySelectorAll('video').forEach(video => {
+            delete video.__gvf_webgl_attached;
+        });
+    }
+
+    function ensureGpuSvgHost() {
+        let svg = document.getElementById(GPU_SVG_ID);
+        if (svg) return svg;
+
+        svg = document.createElementNS(svgNS, 'svg');
+        svg.id = GPU_SVG_ID;
+        svg.setAttribute('width', '0');
+        svg.setAttribute('height', '0');
+        svg.style.position = 'absolute';
+        svg.style.left = '-9999px';
+        svg.style.top = '-9999px';
+
+        const defs = document.createElementNS(svgNS, 'defs');
+        svg.appendChild(defs);
+
+        (document.body || document.documentElement).appendChild(svg);
+        return svg;
+    }
+
+    function upsertGpuGainFilter() {
+        const svg = ensureGpuSvgHost();
+        if (!svg) return;
+
+        const defs = svg.querySelector('defs') || svg;
+
+        let f = defs.querySelector(`#${GPU_GAIN_FILTER_ID}`);
+        if (!f) {
+            f = document.createElementNS(svgNS, 'filter');
+            f.setAttribute('id', GPU_GAIN_FILTER_ID);
+            defs.appendChild(f);
+        } else {
+            while (f.firstChild) f.removeChild(f.firstChild);
+        }
+
+        const r = rgbGainToFactor(u_r_gain);
+        const g = rgbGainToFactor(u_g_gain);
+        const b = rgbGainToFactor(u_b_gain);
+
+        const fe = document.createElementNS(svgNS, 'feColorMatrix');
+        fe.setAttribute('type', 'matrix');
+        fe.setAttribute('values', [
+            r, 0, 0, 0, 0,
+            0, g, 0, 0, 0,
+            0, 0, b, 0, 0,
+            0, 0, 0, 1, 0
+        ].join(' '));
+        f.appendChild(fe);
+    }
+
+    function gpuProfileMatrixActive() {
+        return (profile === 'film' || profile === 'anime' || profile === 'gaming' || profile === 'eyecare');
+    }
+
+    function upsertGpuProfileFilter() {
+        const svg = ensureGpuSvgHost();
+        if (!svg) return;
+
+        const defs = svg.querySelector('defs') || svg;
+
+        let f = defs.querySelector(`#${GPU_PROFILE_FILTER_ID}`);
+        if (!f) {
+            f = document.createElementNS(svgNS, 'filter');
+            f.setAttribute('id', GPU_PROFILE_FILTER_ID);
+            f.setAttribute('color-interpolation-filters', 'sRGB');
+            defs.appendChild(f);
+        } else {
+            const lastP = f.getAttribute('data-prof');
+            if (lastP === profile) return;
+            while (f.firstChild) f.removeChild(f.firstChild);
+        }
+
+        f.setAttribute('data-prof', profile);
+
+        const profMat = mkProfileMatrixCT(profile);
+        if (profMat) f.appendChild(profMat);
+
+        if (profile === 'eyecare') {
+            const sat = document.createElementNS(svgNS, 'feColorMatrix');
+            sat.setAttribute('type', 'saturate');
+            sat.setAttribute('values', '0.82');
+            f.appendChild(sat);
+
+            const sepia = document.createElementNS(svgNS, 'feColorMatrix');
+            sepia.setAttribute('type', 'matrix');
+            sepia.setAttribute('values', [
+                0.85, 0.15, 0.00, 0, 0,
+                0.10, 0.80, 0.10, 0, 0,
+                0.05, 0.05, 0.70, 0, 0,
+                0, 0, 0, 1, 0
+            ].join(' '));
+            f.appendChild(sepia);
+
+            const hue = document.createElementNS(svgNS, 'feColorMatrix');
+            hue.setAttribute('type', 'hueRotate');
+            hue.setAttribute('values', '-22');
+            f.appendChild(hue);
+        }
+    }
+
+    function removeGpuProfileFilter() {
+        const svg = document.getElementById(GPU_SVG_ID);
+        if (!svg) return;
+        const f = svg.querySelector(`#${GPU_PROFILE_FILTER_ID}`);
+        if (f && f.parentNode) f.parentNode.removeChild(f);
+    }
+
+    function removeGpuGainFilter() {
+        const svg = document.getElementById(GPU_SVG_ID);
+        if (!svg) return;
+        const f = svg.querySelector(`#${GPU_GAIN_FILTER_ID}`);
+        if (f && f.parentNode) f.parentNode.removeChild(f);
+    }
+
+    function gpuGainActive() {
+        if (profile !== 'user') return false;
+        return (u_r_gain !== 128) || (u_g_gain !== 128) || (u_b_gain !== 128);
+    }
+
+    function applyGpuFilter() {
+        if (renderMode === 'gpu' && webglPipeline && webglPipeline.active) {
+            let style = document.getElementById(STYLE_ID);
+            if (style) style.remove();
+            scheduleOverlayUpdate();
+            return;
+        }
+
+        let style = document.getElementById(STYLE_ID);
+
+        const nothingOn =
+            !enabled && !darkMoody && !tealOrange && !vibrantSat && normHDR() === 0 && (profile === 'off') && !autoOn && cbFilter === 'none';
+
+        if (nothingOn) {
+            if (style) style.remove();
+            removeGpuGainFilter();
+            scheduleOverlayUpdate();
+            return;
+        }
+
+        if (!style) {
+            style = document.createElement('style');
+            style.id = STYLE_ID;
+            document.head.appendChild(style);
+        }
+
+        let gpuFilterString = getGpuFilterString();
+
+        if (gpuProfileMatrixActive()) {
+            upsertGpuProfileFilter();
+            const urlP = `url(#${GPU_PROFILE_FILTER_ID})`;
+            gpuFilterString = gpuFilterString ? (gpuFilterString + ' ' + urlP) : urlP;
+        } else {
+            removeGpuProfileFilter();
+        }
+
+        if (gpuGainActive()) {
+            upsertGpuGainFilter();
+            const url = `url(#${GPU_GAIN_FILTER_ID})`;
+            gpuFilterString = gpuFilterString ? (gpuFilterString + ' ' + url) : url;
+        } else {
+            removeGpuGainFilter();
+        }
+
+        const outlineCss = (PROFILE_VIDEO_OUTLINE && profile !== 'off')
+            ? `outline: 2px solid ${(PROF[profile] || PROF.off).color} !important; outline-offset: -2px;`
+            : `outline: none !important;`;
+
+        const finalFilter = (gpuFilterString && String(gpuFilterString).trim()) ? String(gpuFilterString).trim() : 'none';
+
+        style.textContent = `
+      video {
+        will-change: filter;
+        transform: translateZ(0);
+        filter: ${finalFilter} !important;
+        ${outlineCss}
+      }
+    `;
+
+        scheduleOverlayUpdate();
+    }
+
+    function updateMainOverlayState(overlay) {
+        if (!iconsShown) { overlay.style.display = 'none'; return; }
+        overlay.style.display = 'flex';
+
+        const state = {
+            base: enabled,
+            moody: darkMoody,
+            teal: tealOrange,
+            vib: vibrantSat,
+            hdr: (normHDR() !== 0),
+            auto: autoOn,
+            mode: true
+        };
+
+        overlay.querySelectorAll('[data-key]').forEach(el => {
+            const key = el.dataset.key;
+            let on = !!state[key];
+
+            if (key === 'mode') {
+                el.textContent = renderMode === 'gpu' ? 'C' : 'S';
+                on = true;
+                el.style.color = renderMode === 'gpu' ? '#ffaa00' : '#88ccff';
+                el.style.background = 'rgba(255,255,255,0.15)';
+            } else {
+                el.style.color = on ? '#fff' : '#666';
+                el.style.background = on ? 'rgba(255,255,255,0.22)' : '#000';
+            }
+            el.style.boxShadow = '0 0 0 1px rgba(255,255,255,0.18) inset';
+        });
+
+        const badge = overlay.querySelector('.gvf-prof-badge');
+        if (badge) {
+            const p = PROF[profile] || PROF.off;
+            const c = p.color;
+            badge.textContent = `${p.name} (C)`;
+
+            if (c && c !== 'transparent') {
+                badge.style.background = 'rgba(0,0,0,0.92)';
+                badge.style.border = `1px solid ${c}`;
+                badge.style.boxShadow = `0 0 0 1px rgba(255,255,255,0.14) inset, 0 0 0 2px ${c}, 0 0 18px ${c}55`;
+            } else {
+                badge.style.background = 'rgba(0,0,0,0.92)';
+                badge.style.border = '1px solid rgba(255,255,255,0.10)';
+                badge.style.boxShadow = '0 0 0 1px rgba(255,255,255,0.14) inset';
+            }
+        }
+
+        const renderBadge = overlay.querySelector('.gvf-render-badge');
+        if (renderBadge) {
+            renderBadge.textContent = renderMode === 'gpu' ? 'GPU' : 'SVG';
+            renderBadge.style.color = renderMode === 'gpu' ? '#ffaa00' : '#88ccff';
+        }
+
+        const setPair = (name, v) => {
+            const r = overlay.querySelector(`[data-gvf-range="${cssEscape(name)}"]`);
+            const t = overlay.querySelector(`[data-gvf-val="${cssEscape(name)}"]`);
+            if (r) r.value = String(v);
+            if (t) t.textContent = Number(v).toFixed(1);
+        };
+
+        setPair('SL', normSL());
+        setPair('SR', normSR());
+        setPair('BL', normBL());
+        setPair('WL', normWL());
+        setPair('DN', normDN());
+        setPair('HDR', normHDR());
+    }
+
+    function updateGradingOverlayState(overlay) {
+        if (!gradingHudShown) { overlay.style.display = 'none'; return; }
+        overlay.style.display = 'flex';
+
+        const setPair = (name, v) => {
+            const r = overlay.querySelector(`[data-gvf-range="${cssEscape(name)}"]`);
+            const t = overlay.querySelector(`[data-gvf-val="${cssEscape(name)}"]`);
+            if (r) r.value = String(v);
+            if (t) t.textContent = Number(v).toFixed(1);
+        };
+
+        setPair('U_CONTRAST', normU(u_contrast));
+        setPair('U_BLACK', normU(u_black));
+        setPair('U_WHITE', normU(u_white));
+        setPair('U_HIGHLIGHTS', normU(u_highlights));
+        setPair('U_SHADOWS', normU(u_shadows));
+        setPair('U_SAT', normU(u_sat));
+        setPair('U_VIB', normU(u_vib));
+        setPair('U_SHARP', normU(u_sharp));
+        setPair('U_GAMMA', normU(u_gamma));
+        setPair('U_GRAIN', normU(u_grain));
+        setPair('U_HUE', normU(u_hue));
+
+        const setRGBPair = (name, v) => {
+            const r = overlay.querySelector(`[data-gvf-range="${cssEscape(name)}"]`);
+            const t = overlay.querySelector(`[data-gvf-val="${cssEscape(name)}"]`);
+            if (r) r.value = String(v);
+            if (t) t.textContent = String(Math.round(v));
+        };
+
+        setRGBPair('U_R_GAIN', normRGB(u_r_gain));
+        setRGBPair('U_G_GAIN', normRGB(u_g_gain));
+        setRGBPair('U_B_GAIN', normRGB(u_b_gain));
+
+        // Update color blindness dropdown
+        const cbSelect = overlay.querySelector('[data-gvf-select="cb_filter"]');
+        if (cbSelect) {
+            cbSelect.value = cbFilter;
+        }
+    }
+
+    function updateIOOverlayState(overlay) {
+        if (!ioHudShown) { overlay.style.display = 'none'; return; }
+        overlay.style.display = 'flex';
+
+        try {
+            const btnRec = overlay.__btnRec;
+            const status = overlay.__status;
+            if (btnRec && !REC.active) {
+                const v = getActiveVideoForCapture();
+                if (!v) {
+                    btnRec.disabled = true;
+                    btnRec.textContent = 'No video';
+                    btnRec.style.opacity = '0.55';
+                    btnRec.style.cursor = 'not-allowed';
+                } else {
+                    const chk = canBakeToCanvas(v);
+                    if (!chk.ok) {
+                        btnRec.disabled = true;
+                        btnRec.textContent = 'DRM blocked';
+                        btnRec.style.opacity = '0.55';
+                        btnRec.style.cursor = 'not-allowed';
+                        if (status && status.textContent === 'Tip: paste JSON here → Save') {
+                            status.textContent = `Recording disabled: ${chk.reason}`;
+                        }
+                    } else {
+                        btnRec.disabled = false;
+                        btnRec.textContent = 'Record';
+                        btnRec.style.opacity = '1';
+                        btnRec.style.cursor = 'pointer';
+
+                        if (isFirefox()) {
+                            const tap = ensureAudioTap(v);
+                            if (tap && tap.tracks && tap.tracks.length && status && !status.textContent.startsWith('Recording disabled')) {
+                                if (status.textContent === 'Tip: paste JSON here → Save') {
+                                    status.textContent = 'Firefox: recording uses WebAudio tap (should keep audio + no auto-mute).';
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Update Debug button
+            const btnDebug = Array.from(overlay.querySelectorAll('button')).find(b => b.textContent.startsWith('🐞') || b.textContent.startsWith('Debug'));
+            if (btnDebug) {
+                btnDebug.textContent = debug ? '🐞 Debug: ON' : '🐞 Debug: OFF';
+                btnDebug.style.background = debug ? 'rgba(0,255,0,0.2)' : 'rgba(255,0,0,0.2)';
+                btnDebug.style.border = debug ? '1px solid #00ff00' : '1px solid #ff0000';
+                btnDebug.style.color = debug ? '#00ff00' : '#ff6666';
+            }
+
+            // Config Button Status
+            const btnConfig = Array.from(overlay.querySelectorAll('button')).find(b => b.textContent.includes('Config'));
+            if (btnConfig) {
+                if (configMenuVisible) {
+                    btnConfig.style.background = 'rgba(42, 111, 219, 0.6)';
+                } else {
+                    btnConfig.style.background = 'rgba(42, 111, 219, 0.4)';
+                }
+            }
+        } catch (_) { }
+
+        const ta = overlay.querySelector('.gvf-io-text');
+        if (!ta) return;
+        if (ta.dataset.dirty) return;
+
+        ta.value = JSON.stringify(exportSettings(), null, 2);
+    }
+
+    function updateScopesOverlayState(overlay) {
+        if (!scopesHudShown) { overlay.style.display = 'none'; return; }
+        overlay.style.display = 'flex';
+    }
+
+    const fsWraps2 = new WeakMap();
+
+    function ensureFsWrapper(video) {
+        if (fsWraps2.has(video)) return fsWraps2.get(video);
+        if (!video || !video.parentNode) return null;
+
+        const parent = video.parentNode;
+
+        const wrap = document.createElement('div');
+        wrap.className = 'gvf-fs-wrap';
+        wrap.style.cssText = `
+      position: relative;display: inline-block;width: 100%;height: 100%;
+      max-width: 100%;background: black;
+    `;
+
+        const ph = document.createComment('gvf-video-placeholder');
+        parent.insertBefore(ph, video);
+        parent.insertBefore(wrap, video);
+        wrap.appendChild(video);
+
+        wrap.__gvfPlaceholder = ph;
+        fsWraps2.set(video, wrap);
+        return wrap;
+    }
+
+    function restoreFromFsWrapper(video) {
+        const wrap = fsWraps2.get(video);
+        if (!wrap) return;
+        const ph = wrap.__gvfPlaceholder;
+        if (ph && ph.parentNode) {
+            ph.parentNode.insertBefore(video, ph);
+            ph.parentNode.removeChild(ph);
+        }
+        if (wrap.parentNode) wrap.parentNode.removeChild(wrap);
+        fsWraps2.delete(video);
+    }
+
+    function patchFullscreenRequest(video) {
+        if (!video || video.__gvfFsPatched) return;
+        video.__gvfFsPatched = true;
+
+        if (typeof video.webkitEnterFullscreen === 'function') return;
+
+        const origReq = video.requestFullscreen || video.webkitRequestFullscreen || video.msRequestFullscreen;
+        if (!origReq) return;
+
+        const callWrapFs = async () => {
+            const wrap = ensureFsWrapper(video);
+            if (!wrap) return origReq.call(video);
+            const req = wrap.requestFullscreen || wrap.webkitRequestFullscreen || wrap.msRequestFullscreen;
+            if (req) return req.call(wrap);
+            return origReq.call(video);
+        };
+
+        if (video.requestFullscreen) {
+            const _orig = video.requestFullscreen.bind(video);
+            video.requestFullscreen = function () { return callWrapFs() || _orig(); };
+        }
+        if (video.webkitRequestFullscreen) {
+            const _orig = video.webkitRequestFullscreen.bind(video);
+            video.webkitRequestFullscreen = function () { return callWrapFs() || _orig(); };
+        }
+        if (video.msRequestFullscreen) {
+            const _orig = video.msRequestFullscreen.bind(video);
+            video.msRequestFullscreen = function () { return callWrapFs() || _orig(); };
+        }
+    }
+
+    function getOverlayContainer(video) {
+        const fsEl = getFsEl();
+        const wrap = fsWraps2.get(video);
+
+        if (fsEl && wrap && fsEl === wrap) return wrap;
+
+        if (fsEl && (fsEl === video || (fsEl.contains && fsEl.contains(video)))) {
+            if (fsEl.tagName && fsEl.tagName.toLowerCase() === 'video') return document.body || document.documentElement;
+            return fsEl;
+        }
+        return document.body || document.documentElement;
+    }
+
+    function positionOverlayAt(video, overlay, dx, dy) {
+        const fsEl = getFsEl();
+        const container = getOverlayContainer(video);
+
+        if (overlay.parentNode !== container) container.appendChild(overlay);
+
+        const isWrapFs = fsEl && container === fsEl && fsEl.classList && fsEl.classList.contains('gvf-fs-wrap');
+        overlay.style.position = isWrapFs ? 'absolute' : 'fixed';
+
+        const r = video.getBoundingClientRect();
+        if (!r || r.width < 40 || r.height < 40) { overlay.style.display = 'none'; return; }
+
+        if (!fsEl) {
+            if (r.bottom < 0 || r.right < 0 || r.top > (window.innerHeight || 0) || r.left > (window.innerWidth || 0)) {
+                overlay.style.display = 'none';
+                return;
+            }
+        }
+
+        if (overlay.classList.contains('gvf-video-overlay-scopes')) {
+            if (isWrapFs) {
+                const cr = container.getBoundingClientRect();
+                overlay.style.top = `${Math.round((r.top - cr.top) + dy)}px`;
+                overlay.style.left = `${Math.round((r.left - cr.left) + dx)}px`;
+                overlay.style.transform = 'none';
+            } else {
+                overlay.style.top = `${Math.round(r.top + dy)}px`;
+                overlay.style.left = `${Math.round(r.left + dx)}px`;
+                overlay.style.transform = 'none';
+            }
+        } else {
+            if (isWrapFs) {
+                const cr = container.getBoundingClientRect();
+                overlay.style.top = `${Math.round((r.top - cr.top) + dy)}px`;
+                overlay.style.left = `${Math.round((r.left - cr.left) + r.width - dx)}px`;
+                overlay.style.transform = 'translateX(-100%) translateZ(0)';
+            } else {
+                overlay.style.top = `${Math.round(r.top + dy)}px`;
+                overlay.style.left = `${Math.round(r.left + r.width - dx)}px`;
+                overlay.style.transform = 'translateX(-100%) translateZ(0)';
+            }
+        }
+    }
+
+    function ensureOverlays() {
+        document.querySelectorAll('video').forEach(v => {
+            patchFullscreenRequest(v);
+
+            if (!overlaysMain.has(v)) overlaysMain.set(v, mkMainOverlay());
+            if (!overlaysGrade.has(v)) overlaysGrade.set(v, mkGradingOverlay());
+            if (!overlaysIO.has(v)) overlaysIO.set(v, mkIOOverlay());
+            if (!overlaysScopes.has(v)) overlaysScopes.set(v, mkScopesOverlay());
+            if (debug && !overlaysAutoDot.has(v)) overlaysAutoDot.set(v, mkAutoDotOverlay());
+        });
+    }
+
+    function updateAllOverlays() {
+        ensureOverlays();
+
+        const primary = choosePrimaryVideo();
+
+        document.querySelectorAll('video').forEach(v => {
+            const oMain = overlaysMain.get(v);
+            const oGr = overlaysGrade.get(v);
+            const oIO = overlaysIO.get(v);
+            const oScopes = overlaysScopes.get(v);
+            const oDot = overlaysAutoDot.get(v);
+
+            if (oMain) {
+                updateMainOverlayState(oMain);
+                if (iconsShown) positionOverlayAt(v, oMain, 10, 10);
+            }
+            if (oGr) {
+                updateGradingOverlayState(oGr);
+                if (gradingHudShown) positionOverlayAt(v, oGr, 10, 10 + 280);
+            }
+            if (oIO) {
+                updateIOOverlayState(oIO);
+                if (ioHudShown) positionOverlayAt(v, oIO, 10, 10 + 560);
+            }
+            if (oScopes) {
+                updateScopesOverlayState(oScopes);
+                if (scopesHudShown) positionOverlayAt(v, oScopes, 10, 10);
+            }
+
+            if (oDot) {
+                applyAutoDotStyle(oDot);
+
+                if (!debug || !autoOn || !primary || v !== primary) {
+                    oDot.style.display = 'none';
+                } else {
+                    positionOverlayAt(v, oDot, 10, 10);
+                    oDot.style.display = 'block';
+                }
+            }
+        });
+    }
+
+    function scheduleOverlayUpdate() {
+        if (rafScheduled) return;
+        rafScheduled = true;
+        requestAnimationFrame(() => {
+            rafScheduled = false;
+            updateAllOverlays();
+        });
+    }
+
+    function onFsChange() {
+        const fsEl = getFsEl();
+        if (!fsEl) {
+            document.querySelectorAll('video').forEach(v => {
+                if (fsWraps2.has(v)) restoreFromFsWrapper(v);
+            });
+        }
+        scheduleOverlayUpdate();
+    }
+
+    function mkGamma(ch, amp, exp, off) {
+        const f = document.createElementNS(svgNS, ch);
+        f.setAttribute('type', 'gamma');
+        f.setAttribute('amplitude', String(amp));
+        f.setAttribute('exponent', String(exp));
+        f.setAttribute('offset', String(off));
+        return f;
+    }
+
+    function mkOffsetCT(inId, outId, offset) {
+        const ct = document.createElementNS(svgNS, 'feComponentTransfer');
+        ct.setAttribute('in', inId);
+        ct.setAttribute('result', outId);
+        ct.appendChild(mkGamma('feFuncR', 1.0, 1.0, offset));
+        ct.appendChild(mkGamma('feFuncG', 1.0, 1.0, offset));
+        ct.appendChild(mkGamma('feFuncB', 1.0, 1.0, offset));
+        return ct;
+    }
+
+    function mkHighlightsTableCT(inId, outId, hiAdj) {
+        const knee = 0.78;
+        const steps = 17;
+        const vals = [];
+        for (let i = 0; i < steps; i++) {
+            const x = i / (steps - 1);
+            let y = x;
+            if (x > knee) {
+                const t = (x - knee) / (1 - knee);
+                y = x + hiAdj * t;
+            }
+            y = clamp(y, 0, 1);
+            vals.push(y.toFixed(4));
+        }
+
+        const ct = document.createElementNS(svgNS, 'feComponentTransfer');
+        ct.setAttribute('in', inId);
+        ct.setAttribute('result', outId);
+
+        const mkTable = (tag) => {
+            const f = document.createElementNS(svgNS, tag);
+            f.setAttribute('type', 'table');
+            f.setAttribute('tableValues', vals.join(' '));
+            return f;
+        };
+
+        ct.appendChild(mkTable('feFuncR'));
+        ct.appendChild(mkTable('feFuncG'));
+        ct.appendChild(mkTable('feFuncB'));
+        return ct;
+    }
+
+    function mkDenoiseBlend(inId, outId, sigma, mix) {
+        const blur = document.createElementNS(svgNS, 'feGaussianBlur');
+        blur.setAttribute('in', inId);
+        blur.setAttribute('stdDeviation', String(sigma));
+        blur.setAttribute('result', outId + '_b');
+
+        const comp = document.createElementNS(svgNS, 'feComposite');
+        comp.setAttribute('in', inId);
+        comp.setAttribute('in2', outId + '_b');
+        comp.setAttribute('operator', 'arithmetic');
+        comp.setAttribute('k1', '0');
+        comp.setAttribute('k2', String(1 - mix));
+        comp.setAttribute('k3', String(mix));
+        comp.setAttribute('k4', '0');
+        comp.setAttribute('result', outId);
+
+        return [blur, comp];
+    }
+
+    function mkGrain(inId, outId, alpha) {
+        const turb = document.createElementNS(svgNS, 'feTurbulence');
+        turb.setAttribute('type', 'fractalNoise');
+        turb.setAttribute('baseFrequency', '0.9');
+        turb.setAttribute('numOctaves', '2');
+        turb.setAttribute('seed', '2');
+        turb.setAttribute('result', outId + '_n');
+
+        const noiseCM = document.createElementNS(svgNS, 'feColorMatrix');
+        noiseCM.setAttribute('in', outId + '_n');
+        noiseCM.setAttribute('type', 'matrix');
+        noiseCM.setAttribute('values',
+            '0.33 0.33 0.33 0 0 ' +
+            '0.33 0.33 0.33 0 0 ' +
+            '0.33 0.33 0.33 0 0 ' +
+            '0    0    0    1 0'
+        );
+        noiseCM.setAttribute('result', outId + '_nm');
+
+        const comp = document.createElementNS(svgNS, 'feComposite');
+        comp.setAttribute('in', inId);
+        comp.setAttribute('in2', outId + '_nm');
+        comp.setAttribute('operator', 'arithmetic');
+        comp.setAttribute('k1', '0');
+        comp.setAttribute('k2', '1');
+        comp.setAttribute('k3', String(alpha));
+        comp.setAttribute('k4', '0');
+        comp.setAttribute('result', outId);
+
+        return [turb, noiseCM, comp];
+    }
+
+    function mkClarityHighpass(inId, outId, sigma, amount) {
+        const blur = document.createElementNS(svgNS, 'feGaussianBlur');
+        blur.setAttribute('in', inId);
+        blur.setAttribute('stdDeviation', String(sigma));
+        blur.setAttribute('result', outId + '_b');
+
+        const comp = document.createElementNS(svgNS, 'feComposite');
+        comp.setAttribute('in', inId);
+        comp.setAttribute('in2', outId + '_b');
+        comp.setAttribute('operator', 'arithmetic');
+        comp.setAttribute('k1', '0');
+        comp.setAttribute('k2', String(1 + amount));
+        comp.setAttribute('k3', String(-amount));
+        comp.setAttribute('k4', '0');
+        comp.setAttribute('result', outId);
+
+        return [blur, comp];
+    }
+
+    function mkBlend(inA, inB, outId, mixB) {
+        const comp = document.createElementNS(svgNS, 'feComposite');
+        comp.setAttribute('in', inA);
+        comp.setAttribute('in2', inB);
+        comp.setAttribute('operator', 'arithmetic');
+        comp.setAttribute('k1', '0');
+        comp.setAttribute('k2', String(1 - mixB));
+        comp.setAttribute('k3', String(mixB));
+        comp.setAttribute('k4', '0');
+        comp.setAttribute('result', outId);
+        return comp;
+    }
+
+    function mkLinearCT(inId, outId, slope, intercept) {
+        const ct = document.createElementNS(svgNS, 'feComponentTransfer');
+        ct.setAttribute('in', inId);
+        ct.setAttribute('result', outId);
+
+        const mkLin = (tag) => {
+            const f = document.createElementNS(svgNS, tag);
+            f.setAttribute('type', 'linear');
+            f.setAttribute('slope', String(slope));
+            f.setAttribute('intercept', String(intercept));
+            return f;
+        };
+
+        ct.appendChild(mkLin('feFuncR'));
+        ct.appendChild(mkLin('feFuncG'));
+        ct.appendChild(mkLin('feFuncB'));
+        return ct;
+    }
+
+    function mkSCurveTableCT(inId, outId, strength) {
+        const s = clamp(strength, 0, 2);
+
+        const steps = 33;
+        const vals = [];
+        const toe = 0.20 + s * 0.06;
+        const shoulder = 0.78 - s * 0.05;
+        const shoulderGain = 0.16 + s * 0.10;
+
+        for (let i = 0; i < steps; i++) {
+            const x = i / (steps - 1);
+            let y = x;
+
+            if (x < toe) {
+                const t = x / toe;
+                const ss = t * t * (3 - 2 * t);
+                y = x + (toe - x) * (0.10 + s * 0.10) * (1 - ss);
+            }
+
+            if (x > shoulder) {
+                const t = (x - shoulder) / (1 - shoulder);
+                const ss = t * t * (3 - 2 * t);
+                y = x - shoulderGain * ss * t;
+            }
+
+            y = clamp(y, 0, 1);
+            vals.push(y.toFixed(4));
+        }
+
+        const ct = document.createElementNS(svgNS, 'feComponentTransfer');
+        ct.setAttribute('in', inId);
+        ct.setAttribute('result', outId);
+
+        const mkTable = (tag) => {
+            const f = document.createElementNS(svgNS, tag);
+            f.setAttribute('type', 'table');
+            f.setAttribute('tableValues', vals.join(' '));
+            return f;
+        };
+
+        ct.appendChild(mkTable('feFuncR'));
+        ct.appendChild(mkTable('feFuncG'));
+        ct.appendChild(mkTable('feFuncB'));
+        return ct;
+    }
+
+    function mkProfileMatrixCT(prof) {
+        const cm = document.createElementNS(svgNS, 'feColorMatrix');
+        cm.setAttribute('type', 'matrix');
+
+        let values = null;
+
+        if (prof === 'film') {
+            values =
+                '1.06 0.02 0.00 0 -0.03 ' +
+                '0.01 1.03 0.01 0 -0.02 ' +
+                '0.00 0.03 1.05 0 -0.03 ' +
+                '0    0    0    1  0';
+        } else if (prof === 'anime') {
+            values =
+                '1.06 0.01 0.00 0 -0.012 ' +
+                '0.00 1.07 0.01 0 -0.012 ' +
+                '0.01 0.03 1.10 0 -0.016 ' +
+                '0    0    0    1  0';
+        } else if (prof === 'gaming') {
+            values =
+                '1.04 0.00 0.00 0 -0.010 ' +
+                '0.00 1.04 0.00 0 -0.010 ' +
+                '0.00 0.00 1.04 0 -0.010 ' +
+                '0    0    0    1  0';
+        } else if (prof === 'eyecare') {
+            values =
+                '1.08 0.00 0.00 0 0.00 ' +
+                '0.15 1.05 0.00 0 0.00 ' +
+                '0.25 0.00 0.50 0 0.00 ' +
+                '0    0    0    1  0';
+        } else {
+            return null;
+        }
+
+        cm.setAttribute('values', values);
+        return cm;
+    }
+
+    function userToneCss() {
+        if (profile !== 'user') return '';
+
+        const c = clamp(1.0 + (uDelta(u_contrast) * 0.04), 0.60, 1.60);
+        const sat = clamp(1.0 + (uDelta(u_sat) * 0.05), 0.40, 1.80);
+        const vib = clamp(1.0 + (uDelta(u_vib) * 0.02), 0.70, 1.35);
+        const hue = clamp(uDelta(u_hue) * 3.0, -30, 30);
+
+        const blk = clamp(uDelta(u_black) * 0.012, -0.12, 0.12);
+        const wht = clamp(uDelta(u_white) * 0.012, -0.12, 0.12);
+        const sh = clamp(uDelta(u_shadows) * 0.010, -0.10, 0.10);
+        const hi = clamp(uDelta(u_highlights) * 0.010, -0.10, 0.10);
+
+        const br = clamp(1.0 + (-blk + wht + sh + hi) * 0.6, 0.70, 1.35);
+
+        const g = clamp(1.0 + (uDelta(u_gamma) * 0.025), 0.60, 1.60);
+        const gBr = clamp(1.0 + (1.0 - g) * 0.18, 0.85, 1.20);
+        const gCt = clamp(1.0 + (g - 1.0) * 0.10, 0.90, 1.15);
+
+        const s = uDelta(u_sharp);
+        const cssSharp = s > 0 ? ` drop-shadow(0 0 ${Math.max(0.001, (s / 10) * 0.35).toFixed(3)}px rgba(0,0,0,0.0))` : '';
+
+        return ` brightness(${(br * gBr).toFixed(3)}) contrast(${(c * gCt).toFixed(3)}) saturate(${(sat * vib).toFixed(3)}) hue-rotate(${hue.toFixed(1)}deg)${cssSharp}`;
+    }
+
+    function buildFilter(svg, id, opts, radius, sharpenA, blurSigma, blackOffset, whiteAdj, dnVal, hdrVal, prof) {
+        const { moody, teal, vib } = opts;
+
+        const filter = document.createElementNS(svgNS, 'filter');
+        filter.setAttribute('id', id);
+        filter.setAttribute('color-interpolation-filters', 'sRGB');
+
+        let last = 'SourceGraphic';
+
+        if (blurSigma > 0) {
+            const b = document.createElementNS(svgNS, 'feGaussianBlur');
+            b.setAttribute('in', last);
+            b.setAttribute('stdDeviation', String(radius));
+            b.setAttribute('result', 'r_blur');
+            filter.appendChild(b);
+            last = 'r_blur';
+        } else {
+            const blur = document.createElementNS(svgNS, 'feGaussianBlur');
+            blur.setAttribute('in', 'SourceGraphic');
+            blur.setAttribute('stdDeviation', String(radius));
+            blur.setAttribute('result', 'blur');
+            filter.appendChild(blur);
+
+            const comp = document.createElementNS(svgNS, 'feComposite');
+            comp.setAttribute('in', 'SourceGraphic');
+            comp.setAttribute('in2', 'blur');
+            comp.setAttribute('operator', 'arithmetic');
+            comp.setAttribute('k1', '0');
+            comp.setAttribute('k2', String(1 + sharpenA));
+            comp.setAttribute('k3', String(-sharpenA));
+            comp.setAttribute('k4', '0');
+            comp.setAttribute('result', 'r0');
+            filter.appendChild(comp);
+
+            last = 'r0';
+        }
+
+        if (blackOffset !== 0) {
+            filter.appendChild(mkOffsetCT(last, 'r_bl', blackOffset));
+            last = 'r_bl';
+        }
+
+        if (whiteAdj !== 0) {
+            filter.appendChild(mkHighlightsTableCT(last, 'r_wl', whiteAdj));
+            last = 'r_wl';
+        }
+
+        if (dnVal > 0) {
+            const mix = dnToDenoiseMix(dnVal);
+            const sig = dnToDenoiseSigma(dnVal);
+            const [b, c] = mkDenoiseBlend(last, 'r_dn', sig, mix);
+            filter.appendChild(b);
+            filter.appendChild(c);
+            last = 'r_dn';
+        } else if (dnVal < 0) {
+            const alpha = dnToGrainAlpha(dnVal);
+            const parts = mkGrain(last, 'r_gr', alpha);
+            parts.forEach(p => filter.appendChild(p));
+            last = 'r_gr';
+        }
+
+        if (hdrVal !== 0) {
+            if (hdrVal > 0) {
+                const s = clamp(hdrVal, 0, 2);
+
+                const clarityAmt = 0.55 + s * 0.55;
+                const claritySigma = clamp(1.3 + radius * 0.75, 1.3, 3.6);
+                const [b, c] = mkClarityHighpass(last, 'r_hdr_cl', claritySigma, clarityAmt);
+                filter.appendChild(b);
+                filter.appendChild(c);
+
+                filter.appendChild(mkBlend(last, 'r_hdr_cl', 'r_hdr_clb', clamp(0.65 + s * 0.12, 0.65, 0.89)));
+                last = 'r_hdr_clb';
+
+                filter.appendChild(mkSCurveTableCT(last, 'r_hdr_tm', s));
+                last = 'r_hdr_tm';
+
+                const slope = 1.10 + s * 0.18;
+                const intercept = -0.015 + s * 0.006;
+                filter.appendChild(mkLinearCT(last, 'r_hdr_lin', slope, intercept));
+                last = 'r_hdr_lin';
+
+                const sat = document.createElementNS(svgNS, 'feColorMatrix');
+                sat.setAttribute('type', 'saturate');
+                sat.setAttribute('values', String(1.10 + s * 0.30));
+                sat.setAttribute('in', last);
+                sat.setAttribute('result', 'r_hdr_sat');
+                filter.appendChild(sat);
+                last = 'r_hdr_sat';
+            } else {
+                const s = clamp(-hdrVal, 0, 1);
+
+                const mix = clamp(s * 0.55, 0, 0.55);
+                const sig = clamp(0.9 + s * 1.8, 0.9, 2.7);
+                const [b, c] = mkDenoiseBlend(last, 'r_hdr_soft', sig, mix);
+                filter.appendChild(b);
+                filter.appendChild(c);
+                last = 'r_hdr_soft';
+
+                const sat = document.createElementNS(svgNS, 'feColorMatrix');
+                sat.setAttribute('type', 'saturate');
+                sat.setAttribute('values', String(1.0 - s * 0.18));
+                sat.setAttribute('in', last);
+                sat.setAttribute('result', 'r_hdr_soft2');
+                filter.appendChild(sat);
+                last = 'r_hdr_soft2';
+            }
+        }
+
+        // Apply color blindness filter if enabled
+        if (cbFilter !== 'none') {
+            const cbMatrix = getColorBlindnessMatrix(cbFilter);
+            const cbCM = document.createElementNS(svgNS, 'feColorMatrix');
+            cbCM.setAttribute('type', 'matrix');
+            cbCM.setAttribute('in', last);
+            cbCM.setAttribute('result', 'r_cb');
+            cbCM.setAttribute('values', matToSvgValues(cbMatrix));
+            filter.appendChild(cbCM);
+            last = 'r_cb';
+        }
+
+        if (profile === 'user') {
+            const rGain = rgbGainToFactor(u_r_gain);
+            const gGain = rgbGainToFactor(u_g_gain);
+            const bGain = rgbGainToFactor(u_b_gain);
+
+            if (Math.abs(rGain - 1.0) > 0.01 || Math.abs(gGain - 1.0) > 0.01 || Math.abs(bGain - 1.0) > 0.01) {
+
+                const rgbMatrix = matRGBGain(rGain, gGain, bGain);
+                const rgbCM = document.createElementNS(svgNS, 'feColorMatrix');
+                rgbCM.setAttribute('type', 'matrix');
+                rgbCM.setAttribute('in', last);
+                rgbCM.setAttribute('result', 'r_rgb');
+                rgbCM.setAttribute('values', matToSvgValues(rgbMatrix));
+                filter.appendChild(rgbCM);
+                last = 'r_rgb';
+            }
+        }
+
+        if (moody) {
+            const ct = document.createElementNS(svgNS, 'feComponentTransfer');
+            ct.setAttribute('in', last);
+            ct.setAttribute('result', 'r1');
+            ct.appendChild(mkGamma('feFuncR', 0.96, 1.14, -0.015));
+            ct.appendChild(mkGamma('feFuncG', 0.96, 1.13, -0.015));
+            ct.appendChild(mkGamma('feFuncB', 0.97, 1.11, -0.015));
+            filter.appendChild(ct);
+
+            const sat = document.createElementNS(svgNS, 'feColorMatrix');
+            sat.setAttribute('type', 'saturate');
+            sat.setAttribute('values', '0.90');
+            sat.setAttribute('in', 'r1');
+            sat.setAttribute('result', 'r2');
+            filter.appendChild(sat);
+
+            last = 'r2';
+        }
+
+        if (teal) {
+            const cool = document.createElementNS(svgNS, 'feColorMatrix');
+            cool.setAttribute('type', 'matrix');
+            cool.setAttribute('values',
+                '0.96 0.02 0.00 0 0 ' +
+                '0.02 1.02 0.02 0 0 ' +
+                '0.00 0.04 1.06 0 0 ' +
+                '0    0    0    1 0'
+            );
+            cool.setAttribute('in', last);
+            cool.setAttribute('result', 'r3');
+            filter.appendChild(cool);
+
+            const warm = document.createElementNS(svgNS, 'feColorMatrix');
+            warm.setAttribute('type', 'matrix');
+            warm.setAttribute('values',
+                '1.10 0.02 0.00 0 0 ' +
+                '0.02 1.00 0.00 0 0 ' +
+                '0.00 0.00 0.90 0 0 ' +
+                '0    0    0    1 0'
+            );
+            warm.setAttribute('in', 'r3');
+            warm.setAttribute('result', 'r4');
+            filter.appendChild(warm);
+
+            const pop = document.createElementNS(svgNS, 'feColorMatrix');
+            pop.setAttribute('type', 'saturate');
+            pop.setAttribute('values', '1.08');
+            pop.setAttribute('in', 'r4');
+            pop.setAttribute('result', 'r4b');
+            filter.appendChild(pop);
+
+            last = 'r4b';
+        }
+
+        if (vib) {
+            const vSat = document.createElementNS(svgNS, 'feColorMatrix');
+            vSat.setAttribute('type', 'saturate');
+            vSat.setAttribute('values', '1.35');
+            vSat.setAttribute('in', last);
+            vSat.setAttribute('result', 'r5');
+            filter.appendChild(vSat);
+            last = 'r5';
+        }
+
+        if (prof && (prof === 'film' || prof === 'anime' || prof === 'gaming' || prof === 'eyecare')) {
+            const pm = mkProfileMatrixCT(prof);
+            if (pm) {
+                pm.setAttribute('in', last);
+                pm.setAttribute('result', 'r_prof');
+                filter.appendChild(pm);
+                last = 'r_prof';
+
+                const sat = document.createElementNS(svgNS, 'feColorMatrix');
+                sat.setAttribute('type', 'saturate');
+                sat.setAttribute('in', last);
+                sat.setAttribute('result', 'r_prof_sat');
+                if (prof === 'film') sat.setAttribute('values', '1.08');
+                if (prof === 'anime') sat.setAttribute('values', '1.18');
+                if (prof === 'gaming') sat.setAttribute('values', '1.06');
+                if (prof === 'eyecare') sat.setAttribute('values', '0.90');
+                filter.appendChild(sat);
+                last = 'r_prof_sat';
+            }
+        }
+
+        const autoCM = document.createElementNS(svgNS, 'feColorMatrix');
+        autoCM.setAttribute('type', 'matrix');
+        autoCM.setAttribute('in', last);
+        autoCM.setAttribute('result', 'r_auto');
+        autoCM.setAttribute('data-gvf-auto', '1');
+        autoCM.setAttribute('values', autoMatrixStr || matToSvgValues(matIdentity4x5()));
+        filter.appendChild(autoCM);
+        last = 'r_auto';
+
+        const merge = document.createElementNS(svgNS, 'feMerge');
+        const n1 = document.createElementNS(svgNS, 'feMergeNode');
+        n1.setAttribute('in', last);
+        merge.appendChild(n1);
+        filter.appendChild(merge);
+
+        svg.appendChild(filter);
+    }
+
+    function ensureSvgFilter(force = false) {
+        const SL = Number(normSL().toFixed(1));
+        const SR = Number(normSR().toFixed(1));
+        const R = Number(getRadius().toFixed(1));
+        const A = Number(getSharpenA().toFixed(3));
+        const BS = Number(getBlurSigma().toFixed(3));
+        const BL = Number(normBL().toFixed(1));
+        const WL = Number(normWL().toFixed(1));
+        const DN = Number(normDN().toFixed(1));
+        const HDR = Number(normHDR().toFixed(1));
+        const P = (profile || 'off');
+        const CB = cbFilter;
+
+        const uSig = [
+            normU(u_contrast), normU(u_black), normU(u_white), normU(u_highlights), normU(u_shadows),
+            normU(u_sat), normU(u_vib), normU(u_sharp), normU(u_gamma), normU(u_grain), normU(u_hue),
+            normRGB(u_r_gain), normRGB(u_g_gain), normRGB(u_b_gain)
+        ].map(x => Number(x).toFixed(1)).join(',');
+
+        const want = `${SL}|${SR}|${R}|${A}|${BS}|${BL}|${WL}|${DN}|${HDR}|${P}|U:${uSig}|CB:${CB}`;
+
+        const existing = document.getElementById(SVG_ID);
+        if (existing) {
+            const has = existing.getAttribute('data-params') || '';
+            if (has === want) {
+                updateAutoMatrixInSvg(autoMatrixStr);
+                return;
+            }
+
+            if (!force) {
+                updateAutoMatrixInSvg(autoMatrixStr);
+                return;
+            }
+
+            existing.remove();
+        }
+
+        const svg = document.createElementNS(svgNS, 'svg');
+        svg.id = SVG_ID;
+        svg.setAttribute('data-params', want);
+        svg.setAttribute('width', '0');
+        svg.setAttribute('height', '0');
+        svg.style.position = 'absolute';
+        svg.style.left = '-9999px';
+        svg.style.top = '-9999px';
+
+        const blackOffset = blackToOffset(BL);
+        const whiteAdj = whiteToHiAdj(WL);
+
+        buildFilter(svg, 'gvf_s', { moody: false, teal: false, vib: false }, R, A, BS, blackOffset, whiteAdj, DN, HDR, P);
+        buildFilter(svg, 'gvf_sm', { moody: true, teal: false, vib: false }, R, A, BS, blackOffset, whiteAdj, DN, HDR, P);
+        buildFilter(svg, 'gvf_st', { moody: false, teal: true, vib: false }, R, A, BS, blackOffset, whiteAdj, DN, HDR, P);
+        buildFilter(svg, 'gvf_sv', { moody: false, teal: false, vib: true }, R, A, BS, blackOffset, whiteAdj, DN, HDR, P);
+        buildFilter(svg, 'gvf_smt', { moody: true, teal: true, vib: false }, R, A, BS, blackOffset, whiteAdj, DN, HDR, P);
+        buildFilter(svg, 'gvf_smv', { moody: true, teal: false, vib: true }, R, A, BS, blackOffset, whiteAdj, DN, HDR, P);
+        buildFilter(svg, 'gvf_stv', { moody: false, teal: true, vib: true }, R, A, BS, blackOffset, whiteAdj, DN, HDR, P);
+        buildFilter(svg, 'gvf_smtv', { moody: true, teal: true, vib: true }, R, A, BS, blackOffset, whiteAdj, DN, HDR, P);
+
+        (document.body || document.documentElement).appendChild(svg);
+
+        updateAutoMatrixInSvg(autoMatrixStr);
+    }
+
+    function pickComboId() {
+        const m = !!darkMoody;
+        const t = !!tealOrange;
+        const v = !!vibrantSat;
+
+        if (m && t && v) return 'gvf_smtv';
+        if (m && t && !v) return 'gvf_smt';
+        if (m && !t && v) return 'gvf_smv';
+        if (!m && t && v) return 'gvf_stv';
+        if (m && !t && !v) return 'gvf_sm';
+        if (!m && t && !v) return 'gvf_st';
+        if (!m && !t && v) return 'gvf_sv';
+        return 'gvf_s';
+    }
+
+    function profileToneCss() {
+        if (profile === 'film') return ' brightness(1.01) contrast(1.08) saturate(1.08)';
+        if (profile === 'anime') return ' brightness(1.03) contrast(1.10) saturate(1.16)';
+        if (profile === 'gaming') return ' brightness(1.01) contrast(1.12) saturate(1.06)';
+        if (profile === 'eyecare') return ' brightness(1.05) contrast(0.96) saturate(0.88) hue-rotate(-12deg)';
+        return '';
+    }
+
+    function applyFilter(opts = {}) {
+        if (renderMode === 'gpu') {
+            applyGpuFilter();
+            return;
+        }
+
+        let style = document.getElementById(STYLE_ID);
+
+        const nothingOn =
+            !enabled && !darkMoody && !tealOrange && !vibrantSat && normHDR() === 0 && (profile === 'off') && !autoOn && cbFilter === 'none';
+
+        if (nothingOn) {
+            if (style) style.remove();
+            scheduleOverlayUpdate();
+            return;
+        }
+
+        const skipSvgIfPossible = !!opts.skipSvgIfPossible;
+        const svgExists = !!document.getElementById(SVG_ID);
+
+        if (!skipSvgIfPossible || !svgExists) {
+            ensureSvgFilter(true);
+        }
+
+        if (!style) {
+            style = document.createElement('style');
+            style.id = STYLE_ID;
+            document.head.appendChild(style);
+        }
+
+        const baseTone = enabled ? ' brightness(1.02) contrast(1.05) saturate(1.21)' : '';
+        const profTone = profileToneCss();
+        const userTone = userToneCss();
+
+        const outlineCss = (PROFILE_VIDEO_OUTLINE && profile !== 'off')
+            ? `outline: 2px solid ${(PROF[profile] || PROF.off).color} !important; outline-offset: -2px;`
+            : `outline: none !important;`;
+
+        style.textContent = `
+      video {
+        will-change: filter;
+        transform: translateZ(0);
+        filter: url("#${pickComboId()}")${baseTone}${profTone}${userTone} !important;
+        ${outlineCss}
+      }
+    `;
+
+        scheduleOverlayUpdate();
+    }
+
+    function getSelfCode() {
+        try {
+            if (document.currentScript && document.currentScript.textContent) {
+                const t = document.currentScript.textContent.trim();
+                if (t.length > 200) return t;
+            }
+        } catch (_) { }
+        try {
+            if (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.source) {
+                return String(GM_info.script.source || '');
+            }
+        } catch (_) { }
+        return null;
+    }
+
+    function injectIntoIframe(iframe, code) {
+        try {
+            const doc = iframe.contentDocument;
+            const win = iframe.contentWindow;
+            if (!doc || !win) return;
+            if (win.__GLOBAL_VIDEO_FILTER__) return;
+            if (!code) return;
+
+            const s = doc.createElement('script');
+            s.type = 'text/javascript';
+            s.textContent = code;
+            (doc.head || doc.documentElement).appendChild(s);
+            s.remove();
+        } catch (_) { }
+    }
+
+    function watchIframes() {
+        const code = getSelfCode();
+        if (!code) return;
+
+        const scan = () => document.querySelectorAll('iframe').forEach(ifr => injectIntoIframe(ifr, code));
+        scan();
+
+        document.addEventListener('load', (e) => {
+            const t = e.target;
+            if (t && t.tagName && t.tagName.toLowerCase() === 'iframe') injectIntoIframe(t, code);
+        }, true);
+
+        new MutationObserver(scan).observe(document.documentElement, { childList: true, subtree: true });
+    }
+
+    function listenGlobalSync() {
+        const sync = () => {
+            if (_suspendSync) return;
+
+            _inSync = true;
+            try {
+                enabled = !!gmGet(K.enabled, enabled);
+                darkMoody = !!gmGet(K.moody, darkMoody);
+                tealOrange = !!gmGet(K.teal, tealOrange);
+                vibrantSat = !!gmGet(K.vib, vibrantSat);
+                iconsShown = !!gmGet(K.icons, iconsShown);
+
+                sl = Number(gmGet(K.SL, sl));
+                sr = Number(gmGet(K.SR, sr));
+                bl = Number(gmGet(K.BL, bl));
+                wl = Number(gmGet(K.WL, wl));
+                dn = Number(gmGet(K.DN, dn));
+                hdr = Number(gmGet(K.HDR, hdr));
+
+                profile = String(gmGet(K.PROF, profile)).toLowerCase();
+                if (!['off', 'film', 'anime', 'gaming', 'eyecare', 'user'].includes(profile)) profile = 'off';
+
+                renderMode = String(gmGet(K.RENDER_MODE, renderMode)).toLowerCase();
+                if (!['svg', 'gpu'].includes(renderMode)) renderMode = 'svg';
+
+                gradingHudShown = !!gmGet(K.G_HUD, gradingHudShown);
+                ioHudShown = !!gmGet(K.I_HUD, ioHudShown);
+                scopesHudShown = !!gmGet(K.S_HUD, scopesHudShown);
+
+                u_contrast = Number(gmGet(K.U_CONTRAST, u_contrast));
+                u_black = Number(gmGet(K.U_BLACK, u_black));
+                u_white = Number(gmGet(K.U_WHITE, u_white));
+                u_highlights = Number(gmGet(K.U_HIGHLIGHTS, u_highlights));
+                u_shadows = Number(gmGet(K.U_SHADOWS, u_shadows));
+                u_sat = Number(gmGet(K.U_SAT, u_sat));
+                u_vib = Number(gmGet(K.U_VIB, u_vib));
+                u_sharp = Number(gmGet(K.U_SHARP, u_sharp));
+                u_gamma = Number(gmGet(K.U_GAMMA, u_gamma));
+                u_grain = Number(gmGet(K.U_GRAIN, u_grain));
+                u_hue = Number(gmGet(K.U_HUE, u_hue));
+
+                u_r_gain = Number(gmGet(K.U_R_GAIN, u_r_gain));
+                u_g_gain = Number(gmGet(K.U_G_GAIN, u_g_gain));
+                u_b_gain = Number(gmGet(K.U_B_GAIN, u_b_gain));
+
+                autoOn = !!gmGet(K.AUTO_ON, autoOn);
+                autoStrength = clamp(Number(gmGet(K.AUTO_STRENGTH, autoStrength)), 0, 1);
+                autoLockWB = !!gmGet(K.AUTO_LOCK_WB, autoLockWB);
+
+                cbFilter = String(gmGet(K.CB_FILTER, cbFilter)).toLowerCase();
+                if (!['none', 'protanopia', 'deuteranopia', 'tritanomaly'].includes(cbFilter)) cbFilter = 'none';
+
+                // Debug/Load settings from storage
+                logs = !!gmGet(K.LOGS, logs);
+                debug = !!gmGet(K.DEBUG, debug);
+                LOG.on = logs;
+
+                setAutoOn(autoOn);
+
+                if (renderMode === 'gpu') {
+                    applyGpuFilter();
+                } else {
+                    regenerateSvgImmediately();
+                }
+                scheduleOverlayUpdate();
+            } finally {
+                _inSync = false;
+            }
+        };
+
+        Object.values(K).forEach(key => {
+            try { GM_addValueChangeListener(key, sync); } catch (_) { }
+        });
+    }
+
+    function cycleProfile() {
+        const order = ['off', 'film', 'anime', 'gaming', 'eyecare', 'user'];
+        const cur = order.indexOf(profile);
+        profile = order[(cur < 0 ? 0 : (cur + 1)) % order.length];
+        gmSet(K.PROF, profile);
+        log('Profile cycled:', profile);
+
+        // Save current settings in active profile
+        updateCurrentProfileSettings();
+
+        if (renderMode === 'gpu') {
+            applyGpuFilter();
+        } else {
+            regenerateSvgImmediately();
+        }
+        scheduleOverlayUpdate();
+    }
+
+    function toggleGradingHud() {
+        gradingHudShown = !gradingHudShown;
+        gmSet(K.G_HUD, gradingHudShown);
+        logToggle('Grading HUD (Ctrl+Alt+G)', gradingHudShown);
+        scheduleOverlayUpdate();
+    }
+
+    function toggleIOHud() {
+        ioHudShown = !ioHudShown;
+        gmSet(K.I_HUD, ioHudShown);
+        logToggle('IO HUD (Ctrl+Alt+I)', ioHudShown);
+        scheduleOverlayUpdate();
+    }
+
+    function toggleScopesHud() {
+        scopesHudShown = !scopesHudShown;
+        gmSet(K.S_HUD, scopesHudShown);
+        logToggle('Scopes HUD (Ctrl+Alt+S)', scopesHudShown);
+        scheduleOverlayUpdate();
+
+        if (scopesHudShown) {
+            startScopesLoop();
+        } else {
+            document.querySelectorAll('.gvf-scope-luma [data-index]').forEach(bar => {
+                bar.style.height = '2px';
+            });
+            document.querySelectorAll('.gvf-scope-red [data-index]').forEach(bar => {
+                bar.style.height = '2px';
+            });
+            document.querySelectorAll('.gvf-scope-green [data-index]').forEach(bar => {
+                bar.style.height = '2px';
+            });
+            document.querySelectorAll('.gvf-scope-blue [data-index]').forEach(bar => {
+                bar.style.height = '2px';
+            });
+            const satFill = document.querySelector('.gvf-scope-sat-fill');
+            if (satFill) satFill.style.width = '0%';
+            const satValue = document.querySelector('.gvf-scope-sat-value');
+            if (satValue) satValue.textContent = '0.00';
+
+            const avgYEl = document.querySelector('.gvf-scope-avg-y');
+            if (avgYEl) avgYEl.textContent = 'Y: 0.00';
+            const avgRGBEl = document.querySelector('.gvf-scope-avg-rgb');
+            if (avgRGBEl) avgRGBEl.textContent = 'RGB: 0.00';
+            const avgSatEl = document.querySelector('.gvf-scope-avg-sat');
+            if (avgSatEl) avgSatEl.textContent = 'Sat: 0.00';
+        }
+    }
+
+    function init() {
+        sl = normSL(); gmSet(K.SL, sl);
+        sr = normSR(); gmSet(K.SR, sr);
+        bl = normBL(); gmSet(K.BL, bl);
+        wl = normWL(); gmSet(K.WL, wl);
+        dn = normDN(); gmSet(K.DN, dn);
+        hdr = normHDR(); gmSet(K.HDR, hdr);
+        if (hdr !== 0) gmSet(K.HDR_LAST, hdr);
+
+        u_contrast = normU(u_contrast); gmSet(K.U_CONTRAST, u_contrast);
+        u_black = normU(u_black); gmSet(K.U_BLACK, u_black);
+        u_white = normU(u_white); gmSet(K.U_WHITE, u_white);
+        u_highlights = normU(u_highlights); gmSet(K.U_HIGHLIGHTS, u_highlights);
+        u_shadows = normU(u_shadows); gmSet(K.U_SHADOWS, u_shadows);
+        u_sat = normU(u_sat); gmSet(K.U_SAT, u_sat);
+        u_vib = normU(u_vib); gmSet(K.U_VIB, u_vib);
+        u_sharp = normU(u_sharp); gmSet(K.U_SHARP, u_sharp);
+        u_gamma = normU(u_gamma); gmSet(K.U_GAMMA, u_gamma);
+        u_grain = normU(u_grain); gmSet(K.U_GRAIN, u_grain);
+        u_hue = normU(u_hue); gmSet(K.U_HUE, u_hue);
+
+        u_r_gain = normRGB(u_r_gain); gmSet(K.U_R_GAIN, u_r_gain);
+        u_g_gain = normRGB(u_g_gain); gmSet(K.U_G_GAIN, u_g_gain);
+        u_b_gain = normRGB(u_b_gain); gmSet(K.U_B_GAIN, u_b_gain);
+
+        gmSet(K.G_HUD, gradingHudShown);
+        gmSet(K.I_HUD, ioHudShown);
+        gmSet(K.S_HUD, scopesHudShown);
+
+        if (!['off', 'film', 'anime', 'gaming', 'eyecare', 'user'].includes(profile)) profile = 'off';
+        gmSet(K.PROF, profile);
+
+        if (!['svg', 'gpu'].includes(renderMode)) renderMode = 'svg';
+        gmSet(K.RENDER_MODE, renderMode);
+
+        gmSet(K.AUTO_ON, autoOn);
+        gmSet(K.AUTO_STRENGTH, autoStrength);
+        gmSet(K.AUTO_LOCK_WB, autoLockWB);
+
+        gmSet(K.CB_FILTER, cbFilter);
+
+        gmSet(K.LOGS, logs);
+        gmSet(K.DEBUG, debug);
+
+        // Save user profiles
+        saveUserProfiles();
+
+        setAutoDotState(autoOn ? (debug ? 'idle' : 'off') : 'off');
+
+        autoMatrixStr = matToSvgValues(autoOn ? buildAutoMatrixValues() : matIdentity4x5());
+        _autoLastMatrixStr = autoMatrixStr;
+        AUTO.lastGoodMatrixStr = autoMatrixStr;
+        AUTO.lastAppliedMs = 0;
+
+        if (renderMode === 'gpu') {
+            applyGpuFilter();
+        } else {
+            regenerateSvgImmediately();
+        }
+
+        listenGlobalSync();
+        watchIframes();
+        primeAutoOnVideoActivity();
+
+        ensureAutoLoop();
+        setAutoOn(autoOn);
+
+        if (scopesHudShown) startScopesLoop();
+
+        // Initialize config menu (but do not display)
+        createConfigMenu();
+
+        log('Init complete with WebGL2 Canvas Pipeline! RGB Gain now works correctly!', {
+            enabled, darkMoody, tealOrange, vibrantSat, iconsShown,
+            hdr: normHDR(), profile, renderMode,
+            autoOn, autoStrength: Number(autoStrength.toFixed(2)), autoLockWB,
+            scopesHudShown,
+            rgb: { r_gain: u_r_gain, g_gain: u_g_gain, b_gain: u_b_gain },
+            adaptiveFps: { min: ADAPTIVE_FPS.MIN, max: ADAPTIVE_FPS.MAX, current: ADAPTIVE_FPS.current },
+            motionThresh: AUTO.motionThresh,
+            motionMinFrames: AUTO.motionMinFrames,
+            statsAlpha: AUTO.statsAlpha,
+            gpuPipeline: renderMode === 'gpu',
+            branchlessShader: true,
+            debug: debug,
+            logs: logs,
+            colorBlindnessFilter: cbFilter,
+            isFirefox: isFirefoxBrowser,
+            bugfixes: 'REC.stopRequested evaluated, AUTO.blink reset, null check in updateAutoMatrixInSvg',
+            userProfiles: userProfiles.length,
+            activeProfile: activeUserProfile?.name
+        });
+
+        document.addEventListener('keydown', (e) => {
+            const tag = (e.target && e.target.tagName || '').toLowerCase();
+            if (tag === 'input' || tag === 'textarea' || e.isComposing) return;
+
+            const k = (e.key || '').toLowerCase();
+
+            if (e.ctrlKey && e.altKey && !e.shiftKey && k === SCOPES_KEY) {
+                e.preventDefault();
+                toggleScopesHud();
+                return;
+            }
+
+            if (e.ctrlKey && e.altKey && !e.shiftKey && k === IO_HUD_KEY) {
+                e.preventDefault();
+                toggleIOHud();
+                return;
+            }
+
+            if (e.ctrlKey && e.altKey && !e.shiftKey && k === GRADE_HUD_KEY) {
+                e.preventDefault();
+                toggleGradingHud();
+                return;
+            }
+
+            if (e.ctrlKey && e.altKey && !e.shiftKey && k === GPU_MODE_KEY) {
+                e.preventDefault();
+                toggleRenderMode();
+                return;
+            }
+
+            if (e.ctrlKey && e.altKey && !e.shiftKey && k === PROF_TOGGLE_KEY) {
+                e.preventDefault();
+                cycleProfile();
+                return;
+            }
+
+            if (e.ctrlKey && e.altKey && !e.shiftKey && k === HDR_TOGGLE_KEY) {
+                e.preventDefault();
+                const cur = normHDR();
+                if (cur === 0) {
+                    const last = Number(gmGet(K.HDR_LAST, 0.3));
+                    hdr = clamp(last || 1.2, -1.0, 2.0);
+                    logToggle('HDR (Ctrl+Alt+P)', true, `value=${normHDR().toFixed(1)}`);
+                } else {
+                    gmSet(K.HDR_LAST, cur);
+                    hdr = 0;
+                    logToggle('HDR (Ctrl+Alt+P)', false);
+                }
+                gmSet(K.HDR, normHDR());
+
+                //  Save current settings in active profile
+                updateCurrentProfileSettings();
+
+                if (renderMode === 'gpu') {
+                    applyGpuFilter();
+                } else {
+                    regenerateSvgImmediately();
+                }
+                return;
+            }
+
+            if (e.ctrlKey && e.altKey && !e.shiftKey && k === AUTO_KEY) {
+                e.preventDefault();
+                setAutoOn(!autoOn);
+                return;
+            }
+
+            if (!(e.ctrlKey && e.altKey) || e.shiftKey) return;
+
+            if (k === HK.base) {
+                enabled = !enabled; gmSet(K.enabled, enabled); e.preventDefault(); logToggle('Base (Ctrl+Alt+B)', enabled);
+                updateCurrentProfileSettings();
+                if (renderMode === 'gpu') applyGpuFilter(); else regenerateSvgImmediately(); return;
+            }
+            if (k === HK.moody) {
+                darkMoody = !darkMoody; gmSet(K.moody, darkMoody); e.preventDefault(); logToggle('Dark&Moody (Ctrl+Alt+D)', darkMoody);
+                updateCurrentProfileSettings();
+                if (renderMode === 'gpu') applyGpuFilter(); else regenerateSvgImmediately(); return;
+            }
+            if (k === HK.teal) {
+                tealOrange = !tealOrange; gmSet(K.teal, tealOrange); e.preventDefault(); logToggle('Teal&Orange (Ctrl+Alt+O)', tealOrange);
+                updateCurrentProfileSettings();
+                if (renderMode === 'gpu') applyGpuFilter(); else regenerateSvgImmediately(); return;
+            }
+            if (k === HK.vib) {
+                vibrantSat = !vibrantSat; gmSet(K.vib, vibrantSat); e.preventDefault(); logToggle('Vibrant (Ctrl+Alt+V)', vibrantSat);
+                updateCurrentProfileSettings();
+                if (renderMode === 'gpu') applyGpuFilter(); else regenerateSvgImmediately(); return;
+            }
+            if (k === HK.icons) {
+                iconsShown = !iconsShown; gmSet(K.icons, iconsShown); e.preventDefault(); logToggle('Overlay Icons (Ctrl+Alt+H)', iconsShown); scheduleOverlayUpdate(); return;
+            }
+        });
+
+        window.addEventListener('scroll', scheduleOverlayUpdate, { passive: true });
+        window.addEventListener('resize', scheduleOverlayUpdate, { passive: true });
+
+        document.addEventListener('fullscreenchange', onFsChange);
+        document.addEventListener('webkitfullscreenchange', onFsChange);
+
+        new MutationObserver(() => {
+            if (!document.getElementById(SVG_ID) && renderMode === 'svg') {
+                regenerateSvgImmediately();
+            }
+            scheduleOverlayUpdate();
+        }).observe(document.documentElement, { childList: true, subtree: true });
+
+        scheduleOverlayUpdate();
+    }
+
+    document.readyState === 'loading'
+        ? document.addEventListener('DOMContentLoaded', init, { once: true })
+        : init();
+
+
+})();
