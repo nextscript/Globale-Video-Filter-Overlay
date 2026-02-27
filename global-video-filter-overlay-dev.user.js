@@ -1,11 +1,11 @@
 // ==UserScript==
-// @name         Global Video Filter Overlay
-// @name:de      Globale Video Filter Overlay
+// @name         Global Video Filter Overlay DEV
+// @name:de      Globale Video Filter Overlay DEV
 // @namespace    gvf
 // @author       Freak288
 // @version      1.6.4
-// @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads. Now with CLEAN Anime line darkening (no artifacts)!
-// @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern. Jetzt mit SAUBERER Anime-Konturen (keine Flecken)!
+// @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
+// @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
 // @run-at       document-idle
 // @grant        GM_getValue
@@ -5999,7 +5999,7 @@ if (!gl) {
         }
 
         if (prof === 'anime') {
-            
+
             const blur = document.createElementNS(svgNS, 'feGaussianBlur');
             blur.setAttribute('stdDeviation', '0.8');
             blur.setAttribute('in', last);
