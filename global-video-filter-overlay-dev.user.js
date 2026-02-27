@@ -1,11 +1,11 @@
 // ==UserScript==
-// @name         Global Video Filter Overlay DEV
-// @name:de      Globale Video Filter Overlay DEV
+// @name         Global Video Filter Overlay
+// @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.6.3
-// @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
-// @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
+// @version      1.6.4
+// @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads. Now with CLEAN Anime line darkening (no artifacts)!
+// @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern. Jetzt mit SAUBERER Anime-Konturen (keine Flecken)!
 // @match        *://*/*
 // @run-at       document-idle
 // @grant        GM_getValue
@@ -2328,6 +2328,8 @@ if (!gl) {
             filters.push('brightness(1.01) contrast(1.08) saturate(1.08)');
         } else if (profile === 'anime') {
             filters.push('brightness(1.03) contrast(1.10) saturate(1.16)');
+            // SANFTE CSS-Filter für GPU-Modus (keine Flecken)
+            filters.push('contrast(1.15) brightness(0.98)');
         } else if (profile === 'gaming') {
             filters.push('brightness(1.01) contrast(1.12) saturate(1.06)');
         } else if (profile === 'eyecare') {
@@ -4981,6 +4983,71 @@ if (!gl) {
             hue.setAttribute('values', '-22');
             f.appendChild(hue);
         }
+
+        if (profile === 'anime') {
+
+            const blur = document.createElementNS(svgNS, 'feGaussianBlur');
+            blur.setAttribute('stdDeviation', '0.8');
+            blur.setAttribute('in', 'SourceGraphic');
+            blur.setAttribute('result', 'denoised');
+            f.appendChild(blur);
+
+
+            const sobel = document.createElementNS(svgNS, 'feConvolveMatrix');
+            sobel.setAttribute('order', '3');
+            sobel.setAttribute('kernelMatrix',
+                '-1 -2 -1 ' +
+                ' 0  0  0 ' +
+                ' 1  2  1'
+            );
+            sobel.setAttribute('divisor', '1');
+            sobel.setAttribute('in', 'denoised');
+            sobel.setAttribute('result', 'edges');
+            f.appendChild(sobel);
+
+            const componentTransfer = document.createElementNS(svgNS, 'feComponentTransfer');
+            componentTransfer.setAttribute('in', 'edges');
+            componentTransfer.setAttribute('result', 'darkEdges');
+
+            const funcR = document.createElementNS(svgNS, 'feFuncR');
+            funcR.setAttribute('type', 'linear');
+            funcR.setAttribute('slope', '2.2');
+            funcR.setAttribute('intercept', '-0.3');
+            componentTransfer.appendChild(funcR);
+
+            const funcG = funcR.cloneNode();
+            const funcB = funcR.cloneNode();
+            componentTransfer.appendChild(funcG);
+            componentTransfer.appendChild(funcB);
+            f.appendChild(componentTransfer);
+
+            const threshold = document.createElementNS(svgNS, 'feComponentTransfer');
+            threshold.setAttribute('in', 'darkEdges');
+            threshold.setAttribute('result', 'thresholdEdges');
+
+            const tFuncR = document.createElementNS(svgNS, 'feFuncR');
+            tFuncR.setAttribute('type', 'linear');
+            tFuncR.setAttribute('slope', '3');
+            tFuncR.setAttribute('intercept', '-0.4');
+            threshold.appendChild(tFuncR);
+
+            const tFuncG = tFuncR.cloneNode();
+            const tFuncB = tFuncR.cloneNode();
+            threshold.appendChild(tFuncG);
+            threshold.appendChild(tFuncB);
+            f.appendChild(threshold);
+
+            const blend = document.createElementNS(svgNS, 'feComposite');
+            blend.setAttribute('operator', 'arithmetic');
+            blend.setAttribute('k1', '0');
+            blend.setAttribute('k2', '1');
+            blend.setAttribute('k3', '0.3');
+            blend.setAttribute('k4', '0');
+            blend.setAttribute('in', 'SourceGraphic');
+            blend.setAttribute('in2', 'thresholdEdges');
+            blend.setAttribute('result', 'final');
+            f.appendChild(blend);
+        }
     }
 
     function removeGpuProfileFilter() {
@@ -5931,6 +5998,72 @@ if (!gl) {
             }
         }
 
+        if (prof === 'anime') {
+            
+            const blur = document.createElementNS(svgNS, 'feGaussianBlur');
+            blur.setAttribute('stdDeviation', '0.8');
+            blur.setAttribute('in', last);
+            blur.setAttribute('result', 'anime_denoised');
+            filter.appendChild(blur);
+
+            const sobel = document.createElementNS(svgNS, 'feConvolveMatrix');
+            sobel.setAttribute('order', '3');
+            sobel.setAttribute('kernelMatrix',
+                '-1 -2 -1 ' +
+                ' 0  0  0 ' +
+                ' 1  2  1'
+            );
+            sobel.setAttribute('divisor', '1');
+            sobel.setAttribute('in', 'anime_denoised');
+            sobel.setAttribute('result', 'anime_edges');
+            filter.appendChild(sobel);
+
+            const componentTransfer = document.createElementNS(svgNS, 'feComponentTransfer');
+            componentTransfer.setAttribute('in', 'anime_edges');
+            componentTransfer.setAttribute('result', 'anime_darkEdges');
+
+            const funcR = document.createElementNS(svgNS, 'feFuncR');
+            funcR.setAttribute('type', 'linear');
+            funcR.setAttribute('slope', '2.2');
+            funcR.setAttribute('intercept', '-0.3');
+            componentTransfer.appendChild(funcR);
+
+            const funcG = funcR.cloneNode();
+            const funcB = funcR.cloneNode();
+            componentTransfer.appendChild(funcG);
+            componentTransfer.appendChild(funcB);
+            filter.appendChild(componentTransfer);
+
+            const threshold = document.createElementNS(svgNS, 'feComponentTransfer');
+            threshold.setAttribute('in', 'anime_darkEdges');
+            threshold.setAttribute('result', 'anime_threshold');
+
+            const tFuncR = document.createElementNS(svgNS, 'feFuncR');
+            tFuncR.setAttribute('type', 'linear');
+            tFuncR.setAttribute('slope', '3');
+            tFuncR.setAttribute('intercept', '-0.4');
+            threshold.appendChild(tFuncR);
+
+            const tFuncG = tFuncR.cloneNode();
+            const tFuncB = tFuncR.cloneNode();
+            threshold.appendChild(tFuncG);
+            threshold.appendChild(tFuncB);
+            filter.appendChild(threshold);
+
+            const blend = document.createElementNS(svgNS, 'feComposite');
+            blend.setAttribute('operator', 'arithmetic');
+            blend.setAttribute('k1', '0');
+            blend.setAttribute('k2', '1');
+            blend.setAttribute('k3', '0.3');
+            blend.setAttribute('k4', '0');
+            blend.setAttribute('in', last);
+            blend.setAttribute('in2', 'anime_threshold');
+            blend.setAttribute('result', 'r_anime_lines');
+            filter.appendChild(blend);
+
+            last = 'r_anime_lines';
+        }
+
         const autoCM = document.createElementNS(svgNS, 'feColorMatrix');
         autoCM.setAttribute('type', 'matrix');
         autoCM.setAttribute('in', last);
@@ -6363,7 +6496,8 @@ if (!gl) {
             isFirefox: isFirefoxBrowser,
             bugfixes: 'REC.stopRequested evaluated, AUTO.blink reset, null check in updateAutoMatrixInSvg',
             userProfiles: userProfiles.length,
-            activeProfile: activeUserProfile?.name
+            activeProfile: activeUserProfile?.name,
+            animeFeature: 'SAUBERE Kantenerkennung mit Rauschunterdrückung (keine Flecken)'
         });
 
         document.addEventListener('keydown', (e) => {
