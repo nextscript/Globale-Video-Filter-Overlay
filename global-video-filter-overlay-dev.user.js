@@ -3344,35 +3344,8 @@ if (!gl) {
             }, 1000);
         });
 
-        const closeBtn2 = document.createElement('button');
-        closeBtn2.textContent = '✕ Close';
-        closeBtn2.style.cssText = `
-            background: rgba(255, 68, 68, 0.2);
-            border: 1px solid #ff4444;
-            color: #ff8888;
-            padding: 10px 16px;
-            border-radius: 8px;
-            font-size: 13px;
-            font-weight: 900;
-            cursor: pointer;
-            transition: all 0.2s;
-        `;
-        closeBtn2.addEventListener('mouseenter', () => {
-            closeBtn2.style.background = 'rgba(255, 68, 68, 0.3)';
-            closeBtn2.style.color = '#fff';
-        });
-        closeBtn2.addEventListener('mouseleave', () => {
-            closeBtn2.style.background = 'rgba(255, 68, 68, 0.2)';
-            closeBtn2.style.color = '#ff8888';
-        });
-        closeBtn2.addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            toggleConfigMenu();
-        });
 
         buttonContainer.appendChild(saveCurrentBtn);
-        buttonContainer.appendChild(closeBtn2);
         menu.appendChild(buttonContainer);
 
         // Add to body
