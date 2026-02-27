@@ -1427,10 +1427,10 @@
 
                 vec3 linearToSrgb(vec3 c) {
                     c = max(c, vec3(0.0));
-                    bvec3 cutoff = lessThanEqual(c, vec3(0.0031308));
                     vec3 low = c * 12.92;
                     vec3 high = 1.055 * pow(c, vec3(1.0/2.4)) - 0.055;
-                    return mix(high, low, vec3(cutoff));
+                    vec3 t = step(vec3(0.0031308), c);
+                    return clamp(mix(low, high, t), 0.0, 1.0);
                 }
 
                 vec3 RRTAndODTFit(vec3 v) {
