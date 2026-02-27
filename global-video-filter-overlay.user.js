@@ -210,11 +210,11 @@
             darkMoody: true,
             tealOrange: false,
             vibrantSat: false,
-            sl: 1.3,
-            sr: -1.1,
-            bl: 0.3,
+            sl: 1.0,
+            sr: 0.5,
+            bl: -1.2,
             wl: 0.2,
-            dn: 0.6,
+            dn: 0.0,
             hdr: 0.0,
             profile: 'off',
             renderMode: 'svg',
@@ -1363,11 +1363,11 @@
     const isFirefoxBrowser = isFirefox();
 
     if (isFirefoxBrowser) {
-        var sl = Number(gmGet(K.SL, 1.3));
-        var sr = Number(gmGet(K.SR, -1.1));
-        var bl = Number(gmGet(K.BL, 0.3));
+        var sl = Number(gmGet(K.SL, 1.0));
+        var sr = Number(gmGet(K.SR, 0.5));
+        var bl = Number(gmGet(K.BL, -1.2));
         var wl = Number(gmGet(K.WL, 0.2));
-        var dn = Number(gmGet(K.DN, 0.6));
+        var dn = Number(gmGet(K.DN, 0.0));
         var profile = String(gmGet(K.PROF, 'off')).toLowerCase();
     } else {
         var sl = Number(gmGet(K.SL, 1.0));
@@ -4257,7 +4257,7 @@ if (!gl) {
 
                 defaults = {
                     enabled: true, darkMoody: true, tealOrange: false, vibrantSat: false, iconsShown: false,
-                    sl: 1.3, sr: -1.1, bl: 0.3, wl: 0.2, dn: 0.6,
+                    sl: 1.0, sr: 0.5, bl: -1.2, wl: 0.2, dn: 0.0,
                     hdr: 0.0, profile: 'off',
                     gradingHudShown: false,
                     renderMode: 'svg',
