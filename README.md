@@ -145,10 +145,10 @@ The function continuously analyzes the playing video image and calculates optima
 <br>
 <b>Visual feedback:</b>
 A small dot in the video shows the status(If debug=true Default: false):
-
-🟢 Green = Active, no changes
-🟢 Light Green = Active and currently adjusting
-🔴 Red = No updates (e.g., with DRM)
+<br>
+🟢 Green = Active, no changes<br>
+🟢 Light Green = Active and currently adjusting<br>
+🔴 Red = No updates (e.g., with DRM)<br>
 <br>
 <b>Goal:</b>
 Always optimally looking videos without manual intervention – especially useful for changing scenes or different video sources.
