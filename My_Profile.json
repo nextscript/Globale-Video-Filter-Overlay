@@ -40,7 +40,7 @@
     "g_gain": 128,
     "b_gain": 126
   },
-  "debug": true,
+  "debug": false,
   "logs": true,
   "cbFilter": "none"
 }
