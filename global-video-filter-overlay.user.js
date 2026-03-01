@@ -3,7 +3,7 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.6.5
+// @version      1.6.6
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
@@ -12,6 +12,7 @@
 // @grant        GM_setValue
 // @grant        GM_addValueChangeListener
 // @grant        GM_info
+// @grant        GM_download
 // @iconURL      https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/logomes.png
 // @downloadURL https://update.greasyfork.org/scripts/561189/Global%20Video%20Filter%20Overlay.user.js
 // @updateURL https://update.greasyfork.org/scripts/561189/Global%20Video%20Filter%20Overlay.meta.js
@@ -34,6 +35,7 @@
     const WEBGL_CANVAS_ID = 'gvf-webgl-canvas';
     const RECORDING_HUD_ID = 'gvf-recording-hud';
     const CONFIG_MENU_ID = 'gvf-config-menu';
+    const LUT_CONFIG_MENU_ID = 'gvf-lut-config-menu';
     const NOTIFICATION_ID = 'gvf-profile-notification';
     const svgNS = 'http://www.w3.org/2000/svg';
 
@@ -130,7 +132,11 @@
 
         // Profile Management
         ACTIVE_USER_PROFILE: 'gvf_active_user_profile',
-        USER_PROFILES: 'gvf_user_profiles'
+        USER_PROFILES: 'gvf_user_profiles',
+
+        // LUT Profile Management
+        LUT_ACTIVE_PROFILE: 'gvf_lut_active_profile',
+        LUT_PROFILES: 'gvf_lut_profiles'
     };
 
     // -------------------------
@@ -160,6 +166,15 @@
     // -------------------------
     let userProfiles = [];
     let activeUserProfile = null;
+
+    // -------------------------
+    // LUT Profile Management
+    // -------------------------
+    let lutProfiles = [];
+    let activeLutProfileName = String(gmGet(K.LUT_ACTIVE_PROFILE, 'none') || 'none');
+    let activeLutMatrix4x5 = null; // Array[20] or null
+    let lutSelectEl = null;
+    let refreshLutDropdownFn = null;
 
     // Standard-User-Profile
     const DEFAULT_USER_PROFILE = {
@@ -275,6 +290,495 @@
         } catch (e) {
             logW('Error saving user profiles:', e);
         }
+    }
+
+
+    // LUT Profiles (Storage + Apply)
+    // -------------------------
+    function loadLutProfiles() {
+        try {
+            const stored = gmGet(K.LUT_PROFILES, null);
+            lutProfiles = (stored && Array.isArray(stored)) ? stored : [];
+        } catch (e) {
+            lutProfiles = [];
+            logW('Error loading LUT profiles:', e);
+        }
+        activeLutProfileName = String(gmGet(K.LUT_ACTIVE_PROFILE, 'none') || 'none');
+        if (!activeLutProfileName) activeLutProfileName = 'none';
+        const p = lutProfiles.find(x => String(x.name) === activeLutProfileName);
+        activeLutMatrix4x5 = p && Array.isArray(p.matrix4x5) && p.matrix4x5.length === 20 ? p.matrix4x5 : null;
+        log('LUT profiles loaded:', lutProfiles.length, 'Active:', activeLutProfileName);
+    }
+
+    function saveLutProfiles() {
+        try {
+            gmSet(K.LUT_PROFILES, lutProfiles);
+            gmSet(K.LUT_ACTIVE_PROFILE, activeLutProfileName);
+        } catch (e) {
+            logW('Error saving LUT profiles:', e);
+        }
+    }
+
+    function setActiveLutProfile(name) {
+        const n = String(name || 'none');
+        activeLutProfileName = n;
+        const p = lutProfiles.find(x => String(x.name) === n);
+        activeLutMatrix4x5 = p && Array.isArray(p.matrix4x5) && p.matrix4x5.length === 20 ? p.matrix4x5 : null;
+        saveLutProfiles();
+
+        log('Active LUT profile set:', activeLutProfileName);
+
+        // Sync LUT dropdown immediately
+        try {
+            if (lutSelectEl) lutSelectEl.value = String(activeLutProfileName || 'none');
+            if (typeof refreshLutDropdownFn === 'function') refreshLutDropdownFn();
+        } catch (_) { }
+
+        // Apply immediately (no page reload, no artificial delay)
+        updateCurrentProfileSettings();
+
+        if (renderMode === 'gpu') {
+            applyGpuFilter();
+        } else {
+            ensureSvgFilter(true);
+            applyFilter({ skipSvgIfPossible: false });
+        }
+
+        scheduleOverlayUpdate();
+    }
+
+    function getActiveLutProfile() {
+        return lutProfiles.find(x => String(x.name) === String(activeLutProfileName)) || null;
+    }
+
+    function upsertLutProfile(profile) {
+        const name = String(profile && profile.name ? profile.name : '').trim();
+        if (!name) throw new Error('Profile name is empty.');
+        const idx = lutProfiles.findIndex(p => String(p.name) === name);
+        const now = Date.now();
+        const next = {
+            name,
+            createdAt: (idx >= 0 && lutProfiles[idx].createdAt) ? lutProfiles[idx].createdAt : now,
+            updatedAt: now,
+            matrix4x5: profile.matrix4x5
+        };
+        if (idx >= 0) lutProfiles[idx] = next;
+        else lutProfiles.push(next);
+        saveLutProfiles();
+        return next;
+    }
+
+    function deleteLutProfile(name) {
+        const n = String(name || '').trim();
+        if (!n) return;
+        lutProfiles = lutProfiles.filter(p => String(p.name) !== n);
+        if (activeLutProfileName === n) {
+            activeLutProfileName = 'none';
+            activeLutMatrix4x5 = null;
+        }
+        saveLutProfiles();
+        log('Deleted LUT profile:', n);
+    }
+
+    // -------------------------
+    // JSZip Loader (CDN) - DOM method only
+    // -------------------------
+    let _jszipPromise = null;
+    function ensureJsZipLoaded() {
+        if (window.JSZip) return Promise.resolve(window.JSZip);
+        if (_jszipPromise) return _jszipPromise;
+
+        _jszipPromise = new Promise((resolve, reject) => {
+            const existing = document.querySelector('script[data-gvf-jszip="1"]');
+            if (existing && window.JSZip) return resolve(window.JSZip);
+
+            const s = document.createElement('script');
+            s.dataset.gvfJszip = '1';
+            s.setAttribute('data-gvf-jszip', '1');
+            s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+            s.async = true;
+            s.onload = () => (window.JSZip ? resolve(window.JSZip) : reject(new Error('JSZip loaded but window.JSZip is missing.')));
+            s.onerror = () => reject(new Error('Failed to load JSZip from CDN.'));
+            (document.head || document.documentElement).appendChild(s);
+        });
+        return _jszipPromise;
+    }
+
+    // -------------------------
+    // PNG -> 4x5 Matrix (Least Squares)
+    // Supports tiled 2D LUT layouts (e.g. 512x512 => LUT_SIZE=64, tiles 8x8).
+    // -------------------------
+    function detectTiledLutLayout(w, h) {
+        const candidates = [16, 32, 64, 128];
+        for (const lutSize of candidates) {
+            if ((w % lutSize) !== 0 || (h % lutSize) !== 0) continue;
+            const tilesX = w / lutSize;
+            const tilesY = h / lutSize;
+            if (tilesX * tilesY !== lutSize) continue;
+            return { lutSize, tilesX, tilesY };
+        }
+        return null;
+    }
+
+    function imgDataGetRGBA(imgData, x, y) {
+        const i = (y * imgData.width + x) * 4;
+        return [
+            imgData.data[i] / 255,
+            imgData.data[i + 1] / 255,
+            imgData.data[i + 2] / 255,
+            imgData.data[i + 3] / 255
+        ];
+    }
+
+    function lutSampleTiled(imgData, r, g, b, layout, flipY) {
+        const { lutSize, tilesX } = layout;
+        r = clamp(r, 0, 1); g = clamp(g, 0, 1); b = clamp(b, 0, 1);
+
+        const lerp = (a, c, t) => a + (c - a) * t;
+
+        const bf = b * (lutSize - 1);
+        const b0 = Math.floor(bf);
+        const b1 = Math.min(b0 + 1, lutSize - 1);
+        const bt = bf - b0;
+
+        const sampleSlice = (bslice) => {
+            const tileX = bslice % tilesX;
+            const tileY = Math.floor(bslice / tilesX);
+
+            const xf = r * (lutSize - 1);
+            const yf = g * (lutSize - 1);
+            const x0 = Math.floor(xf), x1 = Math.min(x0 + 1, lutSize - 1);
+            const y0 = Math.floor(yf), y1 = Math.min(y0 + 1, lutSize - 1);
+            const tx = xf - x0, ty = yf - y0;
+
+            const px = (ix, iy) => {
+                let x = tileX * lutSize + ix;
+                let y = tileY * lutSize + iy;
+                if (flipY) y = (imgData.height - 1) - y;
+                return imgDataGetRGBA(imgData, x, y);
+            };
+
+            const c00 = px(x0, y0), c10 = px(x1, y0), c01 = px(x0, y1), c11 = px(x1, y1);
+
+            const out = [0,0,0];
+            for (let i = 0; i < 3; i++) {
+                const c0 = lerp(c00[i], c10[i], tx);
+                const c1 = lerp(c01[i], c11[i], tx);
+                out[i] = lerp(c0, c1, ty);
+            }
+            return out;
+        };
+
+        const c0 = sampleSlice(b0);
+        const c1 = sampleSlice(b1);
+        return [lerp(c0[0], c1[0], bt), lerp(c0[1], c1[1], bt), lerp(c0[2], c1[2], bt)];
+    }
+
+    function invert4x4(A) {
+        const M = A.map(r => r.slice());
+        const I = [
+            [1,0,0,0],
+            [0,1,0,0],
+            [0,0,1,0],
+            [0,0,0,1],
+        ];
+
+        for (let col = 0; col < 4; col++) {
+            let piv = col;
+            let pivVal = Math.abs(M[piv][col]);
+            for (let r = col + 1; r < 4; r++) {
+                const v = Math.abs(M[r][col]);
+                if (v > pivVal) { pivVal = v; piv = r; }
+            }
+            if (pivVal < 1e-12) throw new Error('Matrix inversion failed (singular).');
+
+            if (piv !== col) {
+                [M[col], M[piv]] = [M[piv], M[col]];
+                [I[col], I[piv]] = [I[piv], I[col]];
+            }
+
+            const pivot = M[col][col];
+            for (let j = 0; j < 4; j++) { M[col][j] /= pivot; I[col][j] /= pivot; }
+
+            for (let r = 0; r < 4; r++) {
+                if (r === col) continue;
+                const f = M[r][col];
+                for (let j = 0; j < 4; j++) {
+                    M[r][j] -= f * M[col][j];
+                    I[r][j] -= f * I[col][j];
+                }
+            }
+        }
+        return I;
+    }
+
+    function fitAffineRGB(X, Y) {
+        const XtX = [
+            [0,0,0,0],
+            [0,0,0,0],
+            [0,0,0,0],
+            [0,0,0,0],
+        ];
+        const XtY = [
+            [0,0,0],
+            [0,0,0],
+            [0,0,0],
+            [0,0,0],
+        ];
+
+        for (let i = 0; i < X.length; i++) {
+            const x = X[i];
+            const y = Y[i];
+            for (let a = 0; a < 4; a++) {
+                for (let b = 0; b < 4; b++) XtX[a][b] += x[a] * x[b];
+                XtY[a][0] += x[a] * y[0];
+                XtY[a][1] += x[a] * y[1];
+                XtY[a][2] += x[a] * y[2];
+            }
+        }
+
+        const inv = invert4x4(XtX);
+
+        const M = [
+            [0,0,0],
+            [0,0,0],
+            [0,0,0],
+            [0,0,0],
+        ];
+        for (let i = 0; i < 4; i++) {
+            for (let k = 0; k < 3; k++) {
+                let sum = 0;
+                for (let j = 0; j < 4; j++) sum += inv[i][j] * XtY[j][k];
+                M[i][k] = sum;
+            }
+        }
+        return M;
+    }
+
+    function buildMatrix4x5FromAffine(M4x3) {
+        return [
+            M4x3[0][0], M4x3[1][0], M4x3[2][0], 0.0, M4x3[3][0],
+            M4x3[0][1], M4x3[1][1], M4x3[2][1], 0.0, M4x3[3][1],
+            M4x3[0][2], M4x3[1][2], M4x3[2][2], 0.0, M4x3[3][2],
+            0.0,       0.0,       0.0,       1.0, 0.0
+        ];
+    }
+
+    function _lutSrgbToLinear(v) { return (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)); }
+    function _lutLinearToSrgb(v) { return (v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1/2.4) - 0.055); }
+
+    function buildSamplesGrid(samplesPerAxis, linearizeIn) {
+        const X = [];
+        for (let bi = 0; bi < samplesPerAxis; bi++) {
+            for (let gi = 0; gi < samplesPerAxis; gi++) {
+                for (let ri = 0; ri < samplesPerAxis; ri++) {
+                    let r = ri / (samplesPerAxis - 1);
+                    let g = gi / (samplesPerAxis - 1);
+                    let b = bi / (samplesPerAxis - 1);
+                    if (linearizeIn) {
+                        r = _lutSrgbToLinear(r);
+                        g = _lutSrgbToLinear(g);
+                        b = _lutSrgbToLinear(b);
+                    }
+                    X.push([r, g, b, 1.0]);
+                }
+            }
+        }
+        return X;
+    }
+
+    async function pngFileToMatrix4x5(file, opts = {}) {
+        const flipY = !!opts.flipY;
+        const linearizeIn = !!opts.linearizeIn;
+        const delinearizeOut = !!opts.delinearizeOut;
+        const samplesPerAxis = clamp(Number(opts.samplesPerAxis || 11), 5, 25);
+
+        const url = URL.createObjectURL(file);
+        try {
+            const img = new Image();
+            img.decoding = 'async';
+            img.src = url;
+            await new Promise((resolve, reject) => {
+                img.onload = () => resolve();
+                img.onerror = () => reject(new Error('Failed to load LUT PNG.'));
+            });
+
+            const w = img.naturalWidth || img.width;
+            const h = img.naturalHeight || img.height;
+
+            const layout = detectTiledLutLayout(w, h);
+            if (!layout) throw new Error(`Unsupported LUT layout for ${w}x${h}. Expected tiled layout (e.g. 512x512 => LUT_SIZE=64 tiles 8x8).`);
+
+            const canvas = document.createElement('canvas');
+            canvas.width = w;
+            canvas.height = h;
+            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+            if (!ctx) throw new Error('Canvas 2D context unavailable.');
+
+            ctx.drawImage(img, 0, 0, w, h);
+            const imgData = ctx.getImageData(0, 0, w, h);
+
+            const X = buildSamplesGrid(samplesPerAxis, linearizeIn);
+            const Y = [];
+
+            for (let i = 0; i < X.length; i++) {
+                const x = X[i];
+                const rgb = lutSampleTiled(imgData, x[0], x[1], x[2], layout, flipY);
+                let out = rgb;
+                if (delinearizeOut) out = [_lutLinearToSrgb(out[0]), _lutLinearToSrgb(out[1]), _lutLinearToSrgb(out[2])];
+                Y.push(out);
+            }
+
+            const M4x3 = fitAffineRGB(X, Y);
+            const m4x5 = buildMatrix4x5FromAffine(M4x3);
+
+            return { matrix4x5: m4x5, layout, width: w, height: h };
+        } finally {
+            URL.revokeObjectURL(url);
+        }
+    }
+
+
+
+    // -------------------------
+    // CUBE 3D LUT (.cube) -> 4x5 matrix (row-major)
+    // -------------------------
+
+    function parseCubeText(text) {
+        const lines = String(text || '').split(/\r?\n/);
+        let size = 0;
+        let domainMin = [0, 0, 0];
+        let domainMax = [1, 1, 1];
+        const data = [];
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+            if (!line || line.startsWith('#')) continue;
+
+            const parts = line.split(/\s+/);
+            if (parts[0] === 'TITLE') continue;
+
+            if (parts[0] === 'LUT_3D_SIZE') {
+                size = parseInt(parts[1], 10) || 0;
+                continue;
+            }
+            if (parts[0] === 'DOMAIN_MIN' && parts.length >= 4) {
+                domainMin = [Number(parts[1]), Number(parts[2]), Number(parts[3])];
+                continue;
+            }
+            if (parts[0] === 'DOMAIN_MAX' && parts.length >= 4) {
+                domainMax = [Number(parts[1]), Number(parts[2]), Number(parts[3])];
+                continue;
+            }
+
+            // data line: r g b
+            if (parts.length >= 3) {
+                const r = Number(parts[0]), g = Number(parts[1]), b = Number(parts[2]);
+                if (Number.isFinite(r) && Number.isFinite(g) && Number.isFinite(b)) data.push([r, g, b]);
+            }
+        }
+
+        if (!size || data.length !== size * size * size) {
+            throw new Error('Invalid .cube file: missing LUT_3D_SIZE or wrong data length.');
+        }
+
+        return { size, domainMin, domainMax, data };
+    }
+
+    function cubeSampleTrilinear(lut, r, g, b) {
+        const size = lut.size;
+        const data = lut.data;
+        const dmin = lut.domainMin;
+        const dmax = lut.domainMax;
+
+        const scale = (v, mn, mx) => (v - mn) / (mx - mn);
+
+        let rr = scale(r, dmin[0], dmax[0]);
+        let gg = scale(g, dmin[1], dmax[1]);
+        let bb = scale(b, dmin[2], dmax[2]);
+
+        rr = clamp(rr, 0, 1);
+        gg = clamp(gg, 0, 1);
+        bb = clamp(bb, 0, 1);
+
+        const rf = rr * (size - 1);
+        const gf = gg * (size - 1);
+        const bf = bb * (size - 1);
+
+        const r0 = Math.floor(rf), r1 = Math.min(r0 + 1, size - 1);
+        const g0 = Math.floor(gf), g1 = Math.min(g0 + 1, size - 1);
+        const b0 = Math.floor(bf), b1 = Math.min(b0 + 1, size - 1);
+
+        const tr = rf - r0;
+        const tg = gf - g0;
+        const tb = bf - b0;
+
+        // .cube standard ordering: R fastest, then G, then B (same as: idx = r + size*g + size*size*b)
+        const idx = (ri, gi, bi) => ri + size * gi + size * size * bi;
+
+        const c000 = data[idx(r0, g0, b0)];
+        const c100 = data[idx(r1, g0, b0)];
+        const c010 = data[idx(r0, g1, b0)];
+        const c110 = data[idx(r1, g1, b0)];
+        const c001 = data[idx(r0, g0, b1)];
+        const c101 = data[idx(r1, g0, b1)];
+        const c011 = data[idx(r0, g1, b1)];
+        const c111 = data[idx(r1, g1, b1)];
+
+        const lerp = (a, c, t) => a + (c - a) * t;
+
+        const out = [0, 0, 0];
+        for (let i = 0; i < 3; i++) {
+            const x00 = lerp(c000[i], c100[i], tr);
+            const x10 = lerp(c010[i], c110[i], tr);
+            const x01 = lerp(c001[i], c101[i], tr);
+            const x11 = lerp(c011[i], c111[i], tr);
+            const y0 = lerp(x00, x10, tg);
+            const y1 = lerp(x01, x11, tg);
+            out[i] = lerp(y0, y1, tb);
+        }
+        return out;
+    }
+
+    function cubeTextToMatrix4x5(text, samplesPerAxis = 11, opts = {}) {
+        const linearizeIn = !!opts.linearizeIn;
+        const delinearizeOut = !!opts.delinearizeOut;
+
+        const lut = parseCubeText(text);
+        const X = buildSamplesGrid(clamp(Number(samplesPerAxis || 11), 5, 25), linearizeIn);
+        const Y = [];
+
+        for (let i = 0; i < X.length; i++) {
+            const x = X[i];
+            let out = cubeSampleTrilinear(lut, x[0], x[1], x[2]);
+            if (delinearizeOut) out = [_lutLinearToSrgb(out[0]), _lutLinearToSrgb(out[1]), _lutLinearToSrgb(out[2])];
+            Y.push(out);
+        }
+
+        const M4x3 = fitAffineRGB(X, Y);
+        return buildMatrix4x5FromAffine(M4x3);
+    }
+
+    async function cubeFileToMatrix4x5(file, opts = {}) {
+        const samplesPerAxis = clamp(Number(opts.samplesPerAxis || 11), 5, 25);
+        const linearizeIn = !!opts.linearizeIn;
+        const delinearizeOut = !!opts.delinearizeOut;
+
+        const text = await file.text();
+        const m4x5 = cubeTextToMatrix4x5(text, samplesPerAxis, { linearizeIn, delinearizeOut });
+        return { matrix4x5: m4x5, size: (parseCubeText(text).size || 0) };
+    }
+
+    function matrixCopyNoBrackets(m20) {
+        const arr = Array.isArray(m20) ? m20 : [];
+        return arr.map(v => {
+            const n = Number(v);
+            if (!Number.isFinite(n)) return '0';
+            // stable precision for copy/paste
+            let s = n.toFixed(10);
+            s = s.replace(/0+$/,'').replace(/\.$/,'');
+            return s;
+        }).join(', ');
     }
 
     function createNewUserProfile(name) {
@@ -489,7 +993,38 @@
         return makeZipBlob(entries);
     }
 
-    function downloadBlob(blob, filename) {
+
+    function exportAllLutProfilesAsZip() {
+        const enc = new TextEncoder();
+        const entries = [];
+
+        (lutProfiles || []).forEach((p) => {
+            try {
+                const name = String(p && p.name || '').trim();
+                if (!name) return;
+
+                const fileBase = sanitizeProfileFilename(name);
+                const fileName = `${fileBase}.json`;
+
+                const payload = {
+                    schema: 'gvf-lut-profile',
+                    ver: 1,
+                    name,
+                    createdAt: (p && p.createdAt) || Date.now(),
+                    updatedAt: (p && p.updatedAt) || Date.now(),
+                    matrix4x5: (p && p.matrix4x5) || null
+                };
+
+                const jsonStr = JSON.stringify(payload, null, 2);
+                entries.push({ name: fileName, data: enc.encode(jsonStr) });
+            } catch (_) { }
+        });
+
+        if (!entries.length) return null;
+        return makeZipBlob(entries);
+    }
+
+function downloadBlob(blob, filename) {
         try {
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -558,6 +1093,78 @@
             setStatus('Import failed (invalid file).');
             return false;
         }
+    }
+
+
+    async function importLutProfilesFromZipOrJsonFile(file) {
+        const name = String(file && file.name || '').toLowerCase();
+        const isZip = name.endsWith('.zip') || (file && file.type === 'application/zip');
+
+        try {
+            const buf = await file.arrayBuffer();
+            if (!buf || !buf.byteLength) return { ok: false, msg: 'Import failed (empty file).' };
+
+            if (!isZip) {
+                // Single JSON LUT profile
+                const raw = new TextDecoder().decode(new Uint8Array(buf));
+                const obj = JSON.parse(String(raw || '').trim());
+                const ok = importSingleLutProfileObject(obj);
+                if (ok) {
+                    saveLutProfiles();
+                    try { updateLutProfileList(); } catch (_) { }
+                    try { setActiveLutInfo(); } catch (_) { }
+                    try { setActiveLutProfile(activeLutProfileName); } catch (_) { }
+                }
+                return ok ? { ok: true, msg: 'Imported 1 LUT profile.' } : { ok: false, msg: 'Import failed (invalid LUT JSON).' };
+            }
+
+            // ZIP
+            const files = await unzipToFiles(new Uint8Array(buf), null);
+            if (!files || !files.length) return { ok: false, msg: 'Import failed (no files in zip).' };
+
+            let imported = 0;
+            for (const f of files) {
+                if (!f || !f.name || !f.data) continue;
+                if (!String(f.name).toLowerCase().endsWith('.json')) continue;
+                try {
+                    const raw = new TextDecoder().decode(f.data);
+                    const obj = JSON.parse(String(raw || '').trim());
+                    if (importSingleLutProfileObject(obj)) imported++;
+                } catch (_) { }
+            }
+
+            if (imported > 0) {
+                saveLutProfiles();
+                try { updateLutProfileList(); } catch (_) { }
+                try { setActiveLutInfo(); } catch (_) { }
+                try { setActiveLutProfile(activeLutProfileName); } catch (_) { }
+                return { ok: true, msg: `Imported ${imported} LUT profile(s) from ZIP.` };
+            }
+
+            return { ok: false, msg: 'Import failed (no valid LUT JSON found).' };
+        } catch (e) {
+            logW('LUT import error:', e);
+            return { ok: false, msg: 'Import failed (invalid file).' };
+        }
+    }
+
+    function importSingleLutProfileObject(obj) {
+        if (!obj || typeof obj !== 'object') return false;
+
+        // Accept {schema:'gvf-lut-profile', name, matrix4x5} or {name, matrix4x5}
+        const name = String(obj.name || '').trim();
+        const m = obj.matrix4x5;
+
+        if (!name) return false;
+        if (!Array.isArray(m) || m.length !== 20) return false;
+
+        // Normalize to numbers
+        const mat = m.map(v => Number(v));
+        if (mat.some(v => !isFinite(v))) return false;
+
+        // Overwrite on duplicate name (upsert behavior)
+        upsertLutProfile({ name, matrix4x5: mat });
+        return true;
     }
 
     function importSingleUserProfileObject(obj, setStatus) {
@@ -906,12 +1513,12 @@
     function regenerateSvgImmediately() {
         if (_svgNeedsRegeneration) return;
         _svgNeedsRegeneration = true;
-
-        queueMicrotask(() => {
-            _svgNeedsRegeneration = false;
+        try {
             ensureSvgFilter(true);
-            applyFilter();
-        });
+            applyFilter({ skipSvgIfPossible: false });
+        } finally {
+            _svgNeedsRegeneration = false;
+        }
     }
 
 
@@ -1751,6 +2358,7 @@
 
     // Initialize Profile Management
     loadUserProfiles();
+    loadLutProfiles();
 
     const HK = { base: 'b', moody: 'd', teal: 'o', vib: 'v', icons: 'h' };
 
@@ -4084,6 +4692,570 @@ if (!gl) {
         }
     }
 
+    // LUT Config Menu (LUT Profile Manager)
+    // -------------------------
+    let lutConfigMenuVisible = false;
+
+    function createLutConfigMenu() {
+        let existingMenu = document.getElementById(LUT_CONFIG_MENU_ID);
+        if (existingMenu) existingMenu.remove();
+
+        const menu = document.createElement('div');
+        menu.id = LUT_CONFIG_MENU_ID;
+        menu.style.cssText = `
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 520px;
+            max-width: 92vw;
+            max-height: 82vh;
+            background: rgba(20, 20, 20, 0.98);
+            backdrop-filter: blur(10px);
+            border: 2px solid #ff8a00;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(255,255,255,0.1) inset;
+            color: #eaeaea;
+            font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+            z-index: 2147483647;
+            display: none;
+            flex-direction: column;
+            padding: 20px;
+            user-select: none;
+            pointer-events: auto;
+        `;
+        stopEventsOn(menu);
+
+        const header = document.createElement('div');
+        header.style.cssText = `
+            display:flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #ff8a00;
+        `;
+
+        const title = document.createElement('div');
+        title.textContent = '🎨 LUT Profile Manager';
+        title.style.cssText = `
+            font-size: 20px;
+            font-weight: 900;
+            color: #fff;
+            text-shadow: 0 0 10px rgba(255,138,0,0.55);
+        `;
+
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.textContent = '✕';
+        closeBtn.style.cssText = `
+            background: rgba(255, 255, 255, 0.1);
+            border: none;
+            color: #fff;
+            font-size: 20px;
+            cursor: pointer;
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+            border: 1px solid rgba(255,255,255,0.2);
+        `;
+        closeBtn.addEventListener('click', (e) => {
+            e.preventDefault(); e.stopPropagation();
+            toggleLutConfigMenu();
+        });
+        stopEventsOn(closeBtn);
+
+        header.appendChild(title);
+        header.appendChild(closeBtn);
+        menu.appendChild(header);
+
+        const activeInfo = document.createElement('div');
+        activeInfo.id = 'gvf-active-lut-profile-info';
+        activeInfo.style.cssText = `
+            background: rgba(255, 138, 0, 0.18);
+            border: 1px solid rgba(255, 138, 0, 0.65);
+            border-radius: 8px;
+            padding: 10px;
+            margin-bottom: 12px;
+            font-size: 13px;
+            display:flex;
+            align-items:center;
+            gap:8px;
+        `;
+
+        const setActiveLutInfo = () => {
+            while (activeInfo.firstChild) activeInfo.removeChild(activeInfo.firstChild);
+            activeInfo.append('🟠 Active LUT: ');
+            const strong = document.createElement('strong');
+            strong.textContent = (activeLutProfileName && activeLutProfileName !== 'none') ? activeLutProfileName : 'None';
+            activeInfo.appendChild(strong);
+        };
+        setActiveLutInfo();
+        menu.appendChild(activeInfo);
+
+        const ctlRow = document.createElement('div');
+        ctlRow.style.cssText = `display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;`;
+
+        const mkCtlBtn = (text) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.textContent = text;
+            b.style.cssText = `
+                cursor:pointer;
+                padding: 8px 10px;border-radius: 10px;
+                border: 1px solid rgba(255, 138, 0, 0.55);
+                background: rgba(255, 138, 0, 0.18);
+                color: #ffd7a6;
+                font-weight: 900;
+                font-size: 12px;
+            `;
+            stopEventsOn(b);
+            return b;
+        };
+
+        const exportBtn = mkCtlBtn('Export ZIP');
+        const importBtn = mkCtlBtn('Import ZIP');
+
+        const importInput = document.createElement('input');
+        importInput.type = 'file';
+        importInput.accept = '.zip,.json,application/zip,application/json';
+        importInput.style.display = 'none';
+
+        importBtn.addEventListener('click', () => importInput.click());
+
+
+exportBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+
+            try {
+                const zipBlob = exportAllLutProfilesAsZip();
+                if (!zipBlob) {
+                    logW('No LUT profiles to export.');
+                    return;
+                }
+
+                const zipName = _zipName('gvf_lut_profiles');
+                downloadBlob(zipBlob, zipName);
+
+                log('Exported LUT profiles ZIP:', zipName);
+            } catch (err) {
+                logW('LUT export failed:', err);
+                alert('LUT export failed. Check console for details.');
+            }
+        });
+importInput.addEventListener('change', async () => {
+            const file = importInput.files && importInput.files[0] ? importInput.files[0] : null;
+            importInput.value = '';
+            if (!file) return;
+
+            try {
+                const res = await importLutProfilesFromZipOrJsonFile(file);
+                if (!res || !res.ok) {
+                    logW('LUT import failed:', res && res.msg ? res.msg : 'unknown');
+                    alert(res && res.msg ? res.msg : 'LUT import failed. Check console for details.');
+                    return;
+                }
+
+                log(res.msg || 'LUT import ok.');
+            } catch (e) {
+                logW('LUT import failed:', e);
+                alert('LUT import failed. Check console for details.');
+            }
+        });
+
+        ctlRow.appendChild(exportBtn);
+        ctlRow.appendChild(importBtn);
+        ctlRow.appendChild(importInput);
+        menu.appendChild(ctlRow);
+
+        const listContainer = document.createElement('div');
+        listContainer.style.cssText = `
+            flex: 1;
+            overflow-y: auto;
+            margin-bottom: 14px;
+            max-height: 320px;
+            background: rgba(0,0,0,0.3);
+            border-radius: 8px;
+            padding: 6px;
+        `;
+
+        const lutList = document.createElement('div');
+        lutList.id = 'gvf-lut-profile-list';
+        lutList.style.cssText = `display:flex;flex-direction:column;gap:8px;`;
+
+        listContainer.appendChild(lutList);
+        menu.appendChild(listContainer);
+
+        const form = document.createElement('div');
+        form.style.cssText = `
+            border-top: 1px solid rgba(255, 138, 0, 0.35);
+            padding-top: 12px;
+            display:flex;
+            flex-direction: column;
+            gap: 10px;
+        `;
+
+        const nameRow = document.createElement('div');
+        nameRow.style.cssText = `display:flex;gap:8px;align-items:center;flex-wrap:wrap;`;
+
+        const nameInput = document.createElement('input');
+        nameInput.type = 'text';
+        nameInput.placeholder = 'Profile name...';
+        nameInput.style.cssText = `
+            flex: 1;
+            min-width: 220px;
+            background: rgba(0,0,0,0.5);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 8px;
+            padding: 10px 12px;
+            color: #fff;
+            font-size: 14px;
+            outline: none;
+        `;
+        stopEventsOn(nameInput);
+
+        const fileInput = document.createElement('input');
+        fileInput.type = 'file';
+        fileInput.accept = 'image/png,.cube,text/plain,application/octet-stream';
+        fileInput.style.cssText = `
+            flex: 1;
+            min-width: 220px;
+            color: #eaeaea;
+            font-size: 12px;
+        `;
+        stopEventsOn(fileInput);
+
+        fileInput.addEventListener('change', async () => {
+            try {
+                const f = fileInput.files && fileInput.files[0] ? fileInput.files[0] : null;
+                if (!f) return;
+
+                const lower = String(f.name || '').toLowerCase();
+                if (lower.endsWith('.cube')) {
+                    const N = 11;
+                    const conv = await cubeFileToMatrix4x5(f, { samplesPerAxis: N, linearizeIn: false, delinearizeOut: false });
+                    matrixArea.value = matrixCopyNoBrackets(conv.matrix4x5);
+                    if (!nameInput.value.trim()) nameInput.value = f.name.replace(/\.[^.]+$/, '');
+                    log('CUBE -> 4x5 matrix generated:', f.name, `size=${conv.size}`);
+                } else {
+                    // PNG: keep current behavior (fill matrix area for convenience)
+                    const conv = await pngFileToMatrix4x5(f, { samplesPerAxis: 11, flipY: false, linearizeIn: false, delinearizeOut: false });
+                    matrixArea.value = matrixCopyNoBrackets(conv.matrix4x5);
+                    if (!nameInput.value.trim()) nameInput.value = f.name.replace(/\.[^.]+$/, '');
+                    log('PNG -> 4x5 matrix generated:', f.name, `(${conv.width}x${conv.height})`, `lutSize=${conv.layout.lutSize}`);
+                }
+            } catch (e) {
+                logW('LUT file convert failed:', e);
+            }
+        });
+
+
+        const matrixArea = document.createElement('textarea');
+        matrixArea.placeholder = 'Or paste a 4x5 row-major matrix here (20 numbers) or JSON {matrix4x5:[...]}...';
+        matrixArea.style.cssText = `
+            width: 100%;
+            min-height: 110px;
+            resize: vertical;
+            background: rgba(0,0,0,0.5);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 8px;
+            padding: 10px 12px;
+            color: #fff;
+            font-size: 12px;
+            outline: none;
+            line-height: 1.35;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        `;
+        stopEventsOn(matrixArea);
+
+        const helpRow = document.createElement('div');
+        helpRow.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;';
+        const clearBtn = document.createElement('button');
+        clearBtn.type = 'button';
+        clearBtn.textContent = 'Clear';
+        clearBtn.style.cssText = `
+            cursor:pointer;
+            padding: 6px 10px;border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.14);
+            background: rgba(255,255,255,0.10);
+            color: #fff;
+            font-weight: 900;
+            font-size: 12px;
+        `;
+        stopEventsOn(clearBtn);
+        clearBtn.addEventListener('click', () => { matrixArea.value = ''; });
+
+        const loadActiveBtn = document.createElement('button');
+        loadActiveBtn.type = 'button';
+        loadActiveBtn.textContent = 'Load Active';
+        loadActiveBtn.style.cssText = `
+            cursor:pointer;
+            padding: 6px 10px;border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.14);
+            background: rgba(255, 138, 0, 0.18);
+            color: #ffd7a6;
+            font-weight: 900;
+            font-size: 12px;
+        `;
+        stopEventsOn(loadActiveBtn);
+        loadActiveBtn.addEventListener('click', () => {
+            const activeName = String(activeLutProfileName || '').trim();
+            if (!activeName || activeName === 'none') { alert('No active LUT profile.'); return; }
+            const p = (Array.isArray(lutProfiles) ? lutProfiles : []).find(x => String(x.name) === activeName);
+            if (!p || !Array.isArray(p.matrix4x5) || p.matrix4x5.length !== 20) { alert('Active LUT profile has no valid matrix.'); return; }
+            matrixArea.value = p.matrix4x5.join(' ');
+            nameInput.value = activeName;
+        });
+
+
+        helpRow.appendChild(loadActiveBtn);
+        helpRow.appendChild(clearBtn);
+
+
+        const saveBtn = document.createElement('button');
+        saveBtn.type = 'button';
+        saveBtn.textContent = 'Save / Replace';
+        saveBtn.style.cssText = `
+            background: #ff8a00;
+            border: none;
+            color: #111;
+            padding: 10px 14px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 900;
+            cursor: pointer;
+        `;
+        stopEventsOn(saveBtn);
+
+        const hint = document.createElement('div');
+        hint.textContent = 'Upload a PNG LUT (e.g. 512×512). Same names will be overwritten.';
+        hint.style.cssText = `font-size: 12px; color: rgba(255,255,255,0.75);`;
+
+        saveBtn.addEventListener('click', async () => {
+            const name = String(nameInput.value || '').trim();
+            const file = fileInput.files && fileInput.files[0] ? fileInput.files[0] : null;
+            const raw = String(matrixArea.value || '').trim();
+
+            if (!name) { alert('Please enter a profile name.'); return; }
+
+            const parseMatrix4x5 = (input) => {
+                const s = String(input || '').trim();
+                if (!s) return null;
+
+                // Try JSON first
+                if (s[0] === '{' || s[0] === '[') {
+                    try {
+                        const obj = JSON.parse(s);
+                        if (Array.isArray(obj) && obj.length === 20) return obj.map(Number);
+                        if (obj && Array.isArray(obj.matrix4x5) && obj.matrix4x5.length === 20) return obj.matrix4x5.map(Number);
+                        if (obj && Array.isArray(obj.matrix4x5) && obj.matrix4x5.length === 4 && obj.matrix4x5.every(r => Array.isArray(r) && r.length === 5)) {
+                            return obj.matrix4x5.flat().map(Number);
+                        }
+                    } catch (_) { /* ignore */ }
+                }
+
+                // Parse numbers from text (commas/spaces/newlines)
+                const nums = s.replace(/\[/g, ' ')
+                              .replace(/\]/g, ' ')
+                              .replace(/,/g, ' ')
+                              .trim()
+                              .split(/\s+/)
+                              .filter(Boolean)
+                              .map((v) => Number(v));
+
+                if (nums.length !== 20 || nums.some((n) => !Number.isFinite(n))) return null;
+                return nums;
+            };
+
+            try {
+                // Priority: manual matrix textarea
+                let matrix = parseMatrix4x5(raw);
+
+                if (!matrix) {
+                    // Fallback: PNG conversion
+                    if (!file) { alert('Please select a PNG LUT file or paste a 4x5 matrix.'); return; }
+                    const lower = String(file.name || '').toLowerCase();
+                    if (lower.endsWith('.cube')) {
+                        const conv = await cubeFileToMatrix4x5(file, { samplesPerAxis: 11, linearizeIn: false, delinearizeOut: false });
+                        matrix = conv.matrix4x5;
+                        log('CUBE -> 4x5 matrix generated:', name, `size=${conv.size}`);
+                    } else {
+                        const conv = await pngFileToMatrix4x5(file, { samplesPerAxis: 11, flipY: false, linearizeIn: false, delinearizeOut: false });
+                        matrix = conv.matrix4x5;
+                        log('PNG -> 4x5 matrix generated:', name, `(${conv.width}x${conv.height})`, `lutSize=${conv.layout.lutSize}`, `tiles=${conv.layout.tilesX}x${conv.layout.tilesY}`);
+                    }
+                } else {
+                    log('Manual 4x5 matrix saved:', name);
+                }
+
+                upsertLutProfile({ name, matrix4x5: matrix });
+                setActiveLutProfile(name);
+
+                nameInput.value = '';
+                fileInput.value = '';
+                matrixArea.value = '';
+
+                updateLutProfileList();
+                setActiveLutInfo();
+
+            } catch (e) {
+                logW('LUT save failed:', e);
+                alert('LUT save failed. Check console for details.');
+            }
+        });
+        nameRow.appendChild(nameInput);
+        nameRow.appendChild(fileInput);
+        nameRow.appendChild(saveBtn);
+
+        form.appendChild(nameRow);
+        form.appendChild(helpRow);
+        form.appendChild(matrixArea);
+        form.appendChild(hint);
+        menu.appendChild(form);
+
+        function updateLutProfileListInner() {
+            const container = menu.querySelector('#gvf-lut-profile-list');
+            if (!container) return;
+
+            while (container.firstChild) container.removeChild(container.firstChild);
+
+            const list = Array.isArray(lutProfiles) ? lutProfiles.slice() : [];
+            list.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+
+            if (list.length === 0) {
+                const empty = document.createElement('div');
+                empty.textContent = 'No LUT profiles yet.';
+                empty.style.cssText = 'opacity:0.7;font-size:13px;padding:6px;';
+                container.appendChild(empty);
+                return;
+            }
+
+            const mkBtn = (text, bg, fg) => {
+                const b = document.createElement('button');
+                b.type = 'button';
+                b.textContent = text;
+                b.style.cssText = `
+                    cursor:pointer;
+                    padding: 6px 10px;border-radius: 10px;
+                    border: 1px solid rgba(255,255,255,0.14);
+                    background: ${bg};
+                    color: ${fg};
+                    font-weight: 900;
+                    font-size: 12px;
+                `;
+                stopEventsOn(b);
+                return b;
+            };
+
+            for (const p of list) {
+                const row = document.createElement('div');
+                row.style.cssText = `
+                    display:flex;align-items:center;justify-content:space-between;gap:10px;
+                    padding: 10px 10px;border-radius: 10px;
+                    background: rgba(0,0,0,0.35);
+                    border: 1px solid rgba(255,255,255,0.12);
+                `;
+
+                const left = document.createElement('div');
+                left.style.cssText = 'display:flex;flex-direction:column;gap:2px;';
+
+                const nm = document.createElement('div');
+                nm.textContent = String(p.name);
+                nm.style.cssText = `font-weight:900;font-size:14px;color:#fff;`;
+
+                const meta = document.createElement('div');
+                const isActive = (String(p.name) === String(activeLutProfileName));
+                meta.textContent = isActive ? 'Active' : '';
+                meta.style.cssText = isActive ? 'font-size:12px;color:#ffb35a;font-weight:900;' : 'font-size:12px;opacity:0.7;';
+
+                left.appendChild(nm);
+                left.appendChild(meta);
+
+                const right = document.createElement('div');
+                right.style.cssText = 'display:flex;gap:8px;align-items:center;';
+
+                const useBtn = mkBtn('Use', 'rgba(255, 138, 0, 0.18)', '#ffd7a6');
+                useBtn.addEventListener('click', () => {
+                    setActiveLutProfile(String(p.name));
+                    setActiveLutInfo();
+                    updateLutProfileListInner();
+                });
+
+                const editBtn = mkBtn('Edit', 'rgba(255, 255, 255, 0.10)', '#ffffff');
+                editBtn.addEventListener('click', () => {
+                    nameInput.value = String(p.name);
+                    fileInput.value = '';
+                    if (Array.isArray(p.matrix4x5) && p.matrix4x5.length === 20) {
+                        matrixArea.value = p.matrix4x5.join(' ');
+                    } else {
+                        matrixArea.value = '';
+                    }
+                });
+
+                const delBtn = mkBtn('Delete', 'rgba(255, 68, 68, 0.20)', '#ffd0d0');
+                delBtn.addEventListener('click', () => {
+                    deleteLutProfile(String(p.name)); // no confirm
+                    setActiveLutInfo();
+                    updateLutProfileListInner();
+                });
+
+                right.appendChild(useBtn);
+                right.appendChild(editBtn);
+                right.appendChild(delBtn);
+
+                row.appendChild(left);
+                row.appendChild(right);
+                container.appendChild(row);
+            }
+        }
+
+        menu._gvfUpdateLutProfileList = updateLutProfileListInner;
+        menu._gvfSetActiveLutInfo = setActiveLutInfo;
+
+        updateLutProfileListInner();
+
+        (document.body || document.documentElement).appendChild(menu);
+        return menu;
+    }
+
+    function updateLutProfileList() {
+        const menu = document.getElementById(LUT_CONFIG_MENU_ID);
+        if (menu && typeof menu._gvfUpdateLutProfileList === 'function') menu._gvfUpdateLutProfileList();
+    }
+
+    function toggleLutConfigMenu() {
+        lutConfigMenuVisible = !lutConfigMenuVisible;
+        const menu = document.getElementById(LUT_CONFIG_MENU_ID);
+
+        if (!menu) {
+            const newMenu = createLutConfigMenu();
+            if (lutConfigMenuVisible) {
+                setTimeout(() => {
+                    updateLutProfileList();
+                    if (typeof newMenu._gvfSetActiveLutInfo === 'function') newMenu._gvfSetActiveLutInfo();
+                    newMenu.style.display = 'flex';
+                }, 10);
+            }
+            return;
+        }
+
+        if (lutConfigMenuVisible) {
+            updateLutProfileList();
+            if (typeof menu._gvfSetActiveLutInfo === 'function') menu._gvfSetActiveLutInfo();
+            menu.style.display = 'flex';
+        } else {
+            menu.style.display = 'none';
+        }
+    }
+
+        // -------------------------
+
+
     // -------------------------
     // Overlay infrastructure
     // -------------------------
@@ -4473,6 +5645,91 @@ if (!gl) {
         cbSection.appendChild(cbSelect);
         cbSection.appendChild(cbHint);
         overlay.appendChild(cbSection);
+
+        // Add LUT dropdown + manager button (below Color Blind)
+            const lutSection = document.createElement('div');
+            lutSection.style.cssText = `
+          display:flex;align-items:center;gap:8px;padding: 6px 8px;border-radius: 10px;
+          background: rgba(0,0,0,0.92);box-shadow: 0 0 0 1px rgba(255,255,255,0.14) inset;
+          margin-top: 6px;
+        `;
+
+            const lutLabel = document.createElement('div');
+            lutLabel.textContent = 'LUT';
+            lutLabel.style.cssText = `
+          min-width: 100px;text-align:left;font-size: 11px;font-weight: 900;
+          color:#cfcfcf;padding-left: 2px;
+        `;
+
+            const lutSelect = document.createElement('select');
+            lutSelect.dataset.gvfSelect = 'lut_profile';
+            lutSelect.style.cssText = `
+          width: 180px;background: rgba(30,30,30,0.9);color: #eaeaea;
+          border: 1px solid rgba(255,255,255,0.2);border-radius: 6px;
+          padding: 4px;font-size: 11px;font-weight: 900;cursor: pointer;
+        `;
+
+            const lutPlus = document.createElement('button');
+            lutPlus.type = 'button';
+            lutPlus.textContent = '+';
+            lutPlus.title = 'Open LUT Profile Manager';
+            lutPlus.style.cssText = `
+          width: 28px;height: 24px;display:flex;align-items:center;justify-content:center;
+          border-radius: 6px;cursor:pointer;
+          background: rgba(255, 138, 0, 0.22);
+          color: #ffd7a6;
+          border: 1px solid rgba(255, 138, 0, 0.55);
+          font-weight: 900;
+        `;
+
+            stopEventsOn(lutSelect);
+            stopEventsOn(lutPlus);
+
+
+            // Expose for immediate sync/apply
+            lutSelectEl = lutSelect;
+            const refreshLutDropdown = () => {
+                while (lutSelect.firstChild) lutSelect.removeChild(lutSelect.firstChild);
+
+                const optNone = document.createElement('option');
+                optNone.value = 'none';
+                optNone.textContent = 'None';
+                lutSelect.appendChild(optNone);
+
+                const list = Array.isArray(lutProfiles) ? lutProfiles.slice() : [];
+                list.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+
+                for (const p of list) {
+                    const o = document.createElement('option');
+                    o.value = String(p.name);
+                    o.textContent = String(p.name);
+                    lutSelect.appendChild(o);
+                }
+
+                lutSelect.value = String(activeLutProfileName || 'none');
+            };
+
+
+            refreshLutDropdownFn = refreshLutDropdown;
+            refreshLutDropdown();
+
+            lutSelect.addEventListener('change', () => {
+                const v = String(lutSelect.value || 'none');
+                if (v === String(activeLutProfileName || 'none')) return;
+                setActiveLutProfile(v);
+            });
+
+            lutPlus.addEventListener('click', () => {
+                toggleLutConfigMenu();
+                refreshLutDropdown();
+            });
+
+            lutSection.appendChild(lutLabel);
+            lutSection.appendChild(lutSelect);
+            lutSection.appendChild(lutPlus);
+            overlay.appendChild(lutSection);
+
+
 
         (document.body || document.documentElement).appendChild(overlay);
         return overlay;
@@ -5622,7 +6879,8 @@ if (!gl) {
         let style = document.getElementById(STYLE_ID);
 
         const nothingOn =
-            !enabled && !darkMoody && !tealOrange && !vibrantSat && normHDR() === 0 && (profile === 'off') && !autoOn && cbFilter === 'none';
+            !enabled && !darkMoody && !tealOrange && !vibrantSat && normHDR() === 0 && (profile === 'off') && !autoOn && cbFilter === 'none'
+            && (!activeLutMatrix4x5 || String(activeLutProfileName || 'none') === 'none');
 
         if (nothingOn) {
             if (style) style.remove();
@@ -6437,6 +7695,18 @@ if (!gl) {
             last = 'r_cb';
         }
 
+        // Apply LUT matrix if a LUT profile is active (approximation)
+        if (activeLutMatrix4x5 && Array.isArray(activeLutMatrix4x5) && activeLutMatrix4x5.length === 20 && activeLutProfileName !== 'none') {
+            const lutCM = document.createElementNS(svgNS, 'feColorMatrix');
+            lutCM.setAttribute('type', 'matrix');
+            lutCM.setAttribute('in', last);
+            lutCM.setAttribute('result', 'r_lut');
+            lutCM.setAttribute('values', matToSvgValues(activeLutMatrix4x5));
+            filter.appendChild(lutCM);
+            last = 'r_lut';
+        }
+
+
         if (profile === 'user') {
             const rGain = rgbGainToFactor(u_r_gain);
             const gGain = rgbGainToFactor(u_g_gain);
@@ -6637,20 +7907,24 @@ if (!gl) {
         const P = (profile || 'off');
         const CB = cbFilter;
 
+        const LUTN = String(activeLutProfileName || 'none');
         const uSig = [
             normU(u_contrast), normU(u_black), normU(u_white), normU(u_highlights), normU(u_shadows),
             normU(u_sat), normU(u_vib), normU(u_sharp), normU(u_gamma), normU(u_grain), normU(u_hue),
             normRGB(u_r_gain), normRGB(u_g_gain), normRGB(u_b_gain)
         ].map(x => Number(x).toFixed(1)).join(',');
 
-        const want = `${SL}|${SR}|${R}|${A}|${BS}|${BL}|${WL}|${DN}|${HDR}|${P}|U:${uSig}|CB:${CB}`;
+        const want = `${SL}|${SR}|${R}|${A}|${BS}|${BL}|${WL}|${DN}|${HDR}|${P}|U:${uSig}|CB:${CB}|LUT:${LUTN}`;
 
         const existing = document.getElementById(SVG_ID);
         if (existing) {
             const has = existing.getAttribute('data-params') || '';
-            if (has === want) {
+            if (has === want && !force) {
                 updateAutoMatrixInSvg(autoMatrixStr);
                 return;
+            }
+            if (has === want && force) {
+                existing.remove();
             }
 
             if (!force) {
