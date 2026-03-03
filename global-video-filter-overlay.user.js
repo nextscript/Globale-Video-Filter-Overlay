@@ -3,7 +3,7 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.6.6
+// @version      1.6.7
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
@@ -194,6 +194,7 @@
             hdr: 0.0,
             profile: 'user',
             renderMode: 'svg',
+            lutProfile: 'none',
             autoOn: true,
             autoStrength: 0.65,
             autoLockWB: true,
@@ -233,6 +234,7 @@
             hdr: 0.0,
             profile: 'off',
             renderMode: 'svg',
+            lutProfile: 'none',
             autoOn: true,
             autoStrength: 0.65,
             autoLockWB: true,
@@ -1385,6 +1387,7 @@ function downloadBlob(blob, filename) {
             hdr: hdr,
             profile: profile,
             renderMode: renderMode,
+            lutProfile: activeLutProfileName,
             autoOn: autoOn,
             autoStrength: autoStrength,
             autoLockWB: autoLockWB,
@@ -1425,6 +1428,19 @@ function downloadBlob(blob, filename) {
             hdr = settings.hdr ?? hdr;
             profile = settings.profile ?? profile;
             renderMode = settings.renderMode ?? renderMode;
+
+            // Restore LUT profile for this user profile (if present)
+            if (Object.prototype.hasOwnProperty.call(settings, 'lutProfile')) {
+                const lp = String(settings.lutProfile || 'none');
+                activeLutProfileName = lp;
+                const p = (Array.isArray(lutProfiles) ? lutProfiles : []).find(x => String(x.name) === lp);
+                activeLutMatrix4x5 = (p && Array.isArray(p.matrix4x5) && p.matrix4x5.length === 20) ? p.matrix4x5 : null;
+                saveLutProfiles();
+                try {
+                    if (lutSelectEl) lutSelectEl.value = String(activeLutProfileName || 'none');
+                    if (typeof refreshLutDropdownFn === 'function') refreshLutDropdownFn();
+                } catch (_) { }
+            }
 
             autoOn = settings.autoOn ?? autoOn;
             autoStrength = settings.autoStrength ?? autoStrength;
@@ -5968,6 +5984,7 @@ importInput.addEventListener('change', async () => {
                     hdr: 0.0, profile: 'off',
                     gradingHudShown: false,
                     renderMode: 'svg',
+            lutProfile: 'none',
                     autoOn: true,
                     autoStrength: 0.65,
                     autoLockWB: true,
@@ -5987,6 +6004,7 @@ importInput.addEventListener('change', async () => {
                     hdr: 0.0, profile: 'user',
                     gradingHudShown: false,
                     renderMode: 'svg',
+            lutProfile: 'none',
                     autoOn: true,
                     autoStrength: 0.65,
                     autoLockWB: true,
@@ -6456,6 +6474,7 @@ importInput.addEventListener('change', async () => {
 
             hdr: nFix(normHDR(), 1),
             profile: String(profile),
+            lutProfile: String((typeof activeLutProfileName==='string' && activeLutProfileName.trim()) ? activeLutProfileName.trim() : 'none'),
             renderMode: String(renderMode),
 
             gradingHudShown: !!gradingHudShown,
@@ -6550,7 +6569,23 @@ importInput.addEventListener('change', async () => {
                 gmSet(K.CB_FILTER, cbFilter);
             }
 
-            if ('contrast' in u) u_contrast = normU(u.contrast);
+
+// LUT profile selection (persist/restore via IO HUD config)
+if ('lutProfile' in obj) {
+    const lp = String(obj.lutProfile || 'none').trim() || 'none';
+    activeLutProfileName = lp;
+
+    const pL = (Array.isArray(lutProfiles) ? lutProfiles : []).find(x => String(x && x.name) === lp);
+    activeLutMatrix4x5 = (pL && Array.isArray(pL.matrix4x5) && pL.matrix4x5.length === 20) ? pL.matrix4x5 : null;
+
+    try { saveLutProfiles(); } catch (_) { }
+    try {
+        if (lutSelectEl) lutSelectEl.value = String(activeLutProfileName || 'none');
+        if (typeof refreshLutDropdownFn === 'function') refreshLutDropdownFn();
+    } catch (_) { }
+
+    log('Imported LUT profile selection:', activeLutProfileName);
+}            if ('contrast' in u) u_contrast = normU(u.contrast);
             if ('black' in u) u_black = normU(u.black);
             if ('white' in u) u_white = normU(u.white);
             if ('highlights' in u) u_highlights = normU(u.highlights);
