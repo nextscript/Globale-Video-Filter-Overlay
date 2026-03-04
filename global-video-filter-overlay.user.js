@@ -3,9 +3,9 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.6.7
-// @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, and pseudo-HDR. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
-// @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung und Pseudo-HDR. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
+// @version      1.6.8
+// @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, HDR and LUTs. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
+// @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung, HDR und LUTs. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
 // @run-at       document-idle
 // @grant        GM_getValue
@@ -2423,10 +2423,10 @@ function downloadBlob(blob, filename) {
     if (type === 'protanopia') {
 
         const M = [
-            0.90, 0.10, 0.00, 0, 0,
-            0.15, 0.85, 0.00, 0, 0,
-            0.35,-0.35, 1.00, 0, 0,
-            0,    0,    0,    1, 0
+            0.9715365562, 0.0000451198, 0.0000221655, 0, 0.0054466531,
+            0.4906507166, 0.4721896523, 0.0000465477, 0, 0.0045839181,
+            0.4515750655, -0.3950199862, 0.7845041177, 0, 0.0772238079,
+            0, 0, 0, 1, 0
         ];
         return mix(M);
     }
@@ -2434,10 +2434,10 @@ function downloadBlob(blob, filename) {
     if (type === 'deuteranopia') {
 
         const M = [
-            0.85, 0.15, 0.00, 0, 0,
-            0.05, 0.95, 0.00, 0, 0,
-           -0.35, 0.35, 1.00, 0, 0,
-            0,    0,    0,    1, 0
+            1.1313510788, -0.2442083804, 0.0000487006, 0, 0.0570148323,
+            0.0001729681, 0.9711718674, 0.0000761152, 0, 0.0057285327,
+            -0.1474623881, 0.1563820548, 0.9401548784, 0, 0.0166599033,
+            0, 0, 0, 1, 0
         ];
         return mix(M);
     }
@@ -2445,10 +2445,10 @@ function downloadBlob(blob, filename) {
     if (type === 'tritanomaly' || type === 'tritanopia') {
 
         const M = [
-            1.00, 0.00, 0.35, 0, 0,
-            0.00, 1.00, 0.35, 0, 0,
-            0.00, 0.00, 1.00, 0, 0,
-            0,    0,    0,    1, 0
+            1.1164214618, -0.5290694601, -0.0003683142, 0, 0.2138343331,
+            1.1410194434, -0.2761555186, 0.0000451161, 0, 0.0698783986,
+            0.0000190143, 0.0000189183, 0.9717251384, 0, 0.0053905468,
+            0, 0, 0, 1, 0
         ];
         return mix(M);
     }
