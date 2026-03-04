@@ -3,7 +3,7 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.6.8
+// @version      1.6.9
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, HDR and LUTs. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung, HDR und LUTs. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
@@ -136,7 +136,8 @@
 
         // LUT Profile Management
         LUT_ACTIVE_PROFILE: 'gvf_lut_active_profile',
-        LUT_PROFILES: 'gvf_lut_profiles'
+        LUT_PROFILES: 'gvf_lut_profiles',
+        LUT_GROUPS: 'gvf_lut_groups'
     };
 
     // -------------------------
@@ -171,6 +172,7 @@
     // LUT Profile Management
     // -------------------------
     let lutProfiles = [];
+    let lutGroups = [];
     let activeLutProfileName = String(gmGet(K.LUT_ACTIVE_PROFILE, 'none') || 'none');
     let activeLutMatrix4x5 = null; // Array[20] or null
     let lutSelectEl = null;
@@ -305,6 +307,24 @@
             lutProfiles = [];
             logW('Error loading LUT profiles:', e);
         }
+
+        // Load and normalize LUT group list (supports empty groups)
+        loadLutGroups();
+        try {
+            let changed = false;
+            const set = new Set(Array.isArray(lutGroups) ? lutGroups.map(g => String(g || '').trim()).filter(Boolean) : []);
+            for (const p of (Array.isArray(lutProfiles) ? lutProfiles : [])) {
+                const g = (p && p.group) ? String(p.group).trim() : '';
+                if (g && !set.has(g)) { set.add(g); changed = true; }
+            }
+            if (changed) {
+                lutGroups = Array.from(set).sort((a, b) => a.localeCompare(b));
+                saveLutGroups();
+            } else {
+                lutGroups = Array.from(set).sort((a, b) => a.localeCompare(b));
+            }
+        } catch (_) { }
+
         activeLutProfileName = String(gmGet(K.LUT_ACTIVE_PROFILE, 'none') || 'none');
         if (!activeLutProfileName) activeLutProfileName = 'none';
         const p = lutProfiles.find(x => String(x.name) === activeLutProfileName);
@@ -318,6 +338,41 @@
             gmSet(K.LUT_ACTIVE_PROFILE, activeLutProfileName);
         } catch (e) {
             logW('Error saving LUT profiles:', e);
+        }
+    }
+
+
+    function loadLutGroups() {
+        try {
+            const stored = gmGet(K.LUT_GROUPS, null);
+            if (stored && Array.isArray(stored)) {
+                lutGroups = stored.map(v => String(v || '').trim()).filter(Boolean);
+            } else {
+                lutGroups = [];
+            }
+        } catch (e) {
+            lutGroups = [];
+            logW('Error loading LUT groups:', e);
+        }
+        // normalize / unique
+        try {
+            const set = new Set();
+            for (const g of lutGroups) { if (g) set.add(String(g).trim()); }
+            lutGroups = Array.from(set).filter(Boolean).sort((a, b) => a.localeCompare(b));
+        } catch (_) { }
+    }
+
+    function saveLutGroups() {
+        try {
+            const set = new Set();
+            for (const g of (Array.isArray(lutGroups) ? lutGroups : [])) {
+                const gg = String(g || '').trim();
+                if (gg) set.add(gg);
+            }
+            lutGroups = Array.from(set).sort((a, b) => a.localeCompare(b));
+            gmSet(K.LUT_GROUPS, lutGroups);
+        } catch (e) {
+            logW('Error saving LUT groups:', e);
         }
     }
 
@@ -356,16 +411,40 @@
     function upsertLutProfile(profile) {
         const name = String(profile && profile.name ? profile.name : '').trim();
         if (!name) throw new Error('Profile name is empty.');
+
+        const groupRaw = (profile && Object.prototype.hasOwnProperty.call(profile, 'group')) ? profile.group : undefined;
+        let group = (groupRaw === undefined || groupRaw === null) ? undefined : String(groupRaw).trim();
+        if (group === '') group = undefined;
+
         const idx = lutProfiles.findIndex(p => String(p.name) === name);
         const now = Date.now();
+
+        const prev = (idx >= 0) ? lutProfiles[idx] : null;
+        const prevGroup = prev && prev.group ? String(prev.group).trim() : undefined;
+        if (group === undefined) group = prevGroup;
+
         const next = {
             name,
+            group: group || undefined,
             createdAt: (idx >= 0 && lutProfiles[idx].createdAt) ? lutProfiles[idx].createdAt : now,
             updatedAt: now,
             matrix4x5: profile.matrix4x5
         };
+
         if (idx >= 0) lutProfiles[idx] = next;
         else lutProfiles.push(next);
+
+        if (next.group) {
+            const g = String(next.group).trim();
+            if (g) {
+                if (!Array.isArray(lutGroups)) lutGroups = [];
+                if (!lutGroups.some(x => String(x).trim() === g)) {
+                    lutGroups.push(g);
+                    saveLutGroups();
+                }
+            }
+        }
+
         saveLutProfiles();
         return next;
     }
@@ -991,6 +1070,7 @@
             } catch (_) { }
         });
 
+
         if (!entries.length) return null;
         return makeZipBlob(entries);
     }
@@ -1012,6 +1092,7 @@
                     schema: 'gvf-lut-profile',
                     ver: 1,
                     name,
+                    group: (p && p.group) ? String(p.group) : undefined,
                     createdAt: (p && p.createdAt) || Date.now(),
                     updatedAt: (p && p.updatedAt) || Date.now(),
                     matrix4x5: (p && p.matrix4x5) || null
@@ -1021,6 +1102,24 @@
                 entries.push({ name: fileName, data: enc.encode(jsonStr) });
             } catch (_) { }
         });
+
+        // Export group list as separate file to support empty groups
+        try {
+            const set = new Set();
+            for (const g0 of (Array.isArray(lutGroups) ? lutGroups : [])) {
+                const g = String(g0 || '').trim();
+                if (g) set.add(g);
+            }
+            for (const p of (Array.isArray(lutProfiles) ? lutProfiles : [])) {
+                const g = (p && p.group) ? String(p.group).trim() : '';
+                if (g) set.add(g);
+            }
+            const groupsOut = Array.from(set).sort((a, b) => a.localeCompare(b));
+            if (groupsOut.length) {
+                const payload = { schema: 'gvf-lut-groups', ver: 1, groups: groupsOut, exportedAt: Date.now() };
+                entries.push({ name: '_lut_groups.json', data: enc.encode(JSON.stringify(payload, null, 2)) });
+            }
+        } catch (_) { }
 
         if (!entries.length) return null;
         return makeZipBlob(entries);
@@ -1110,14 +1209,25 @@ function downloadBlob(blob, filename) {
                 // Single JSON LUT profile
                 const raw = new TextDecoder().decode(new Uint8Array(buf));
                 const obj = JSON.parse(String(raw || '').trim());
-                const ok = importSingleLutProfileObject(obj);
+                let ok = false;
+                if (obj && obj.schema === 'gvf-lut-groups' && Array.isArray(obj.groups)) {
+                    if (!Array.isArray(lutGroups)) lutGroups = [];
+                    for (const g0 of obj.groups) {
+                        const g = String(g0 || '').trim();
+                        if (g && !lutGroups.some(x => String(x).trim() === g)) lutGroups.push(g);
+                    }
+                    saveLutGroups();
+                    ok = true;
+                } else {
+                    ok = importSingleLutProfileObject(obj);
+                }
                 if (ok) {
                     saveLutProfiles();
                     try { updateLutProfileList(); } catch (_) { }
                     try { setActiveLutInfo(); } catch (_) { }
                     try { setActiveLutProfile(activeLutProfileName); } catch (_) { }
                 }
-                return ok ? { ok: true, msg: 'Imported 1 LUT profile.' } : { ok: false, msg: 'Import failed (invalid LUT JSON).' };
+                return ok ? { ok: true, msg: (obj && obj.schema === 'gvf-lut-groups') ? 'Imported LUT groups.' : 'Imported 1 LUT profile.' } : { ok: false, msg: 'Import failed (invalid LUT JSON).' };
             }
 
             // ZIP
@@ -1131,7 +1241,17 @@ function downloadBlob(blob, filename) {
                 try {
                     const raw = new TextDecoder().decode(f.data);
                     const obj = JSON.parse(String(raw || '').trim());
-                    if (importSingleLutProfileObject(obj)) imported++;
+                    if (obj && obj.schema === 'gvf-lut-groups' && Array.isArray(obj.groups)) {
+                        // Merge group list
+                        if (!Array.isArray(lutGroups)) lutGroups = [];
+                        for (const g0 of obj.groups) {
+                            const g = String(g0 || '').trim();
+                            if (g && !lutGroups.some(x => String(x).trim() === g)) lutGroups.push(g);
+                        }
+                        saveLutGroups();
+                    } else {
+                        if (importSingleLutProfileObject(obj)) imported++;
+                    }
                 } catch (_) { }
             }
 
@@ -1153,9 +1273,12 @@ function downloadBlob(blob, filename) {
     function importSingleLutProfileObject(obj) {
         if (!obj || typeof obj !== 'object') return false;
 
-        // Accept {schema:'gvf-lut-profile', name, matrix4x5} or {name, matrix4x5}
+        // Accept {schema:'gvf-lut-profile', name, matrix4x5, group?} or {name, matrix4x5, group?}
         const name = String(obj.name || '').trim();
         const m = obj.matrix4x5;
+        const groupRaw = (Object.prototype.hasOwnProperty.call(obj, 'group')) ? obj.group : undefined;
+        let group = (groupRaw === undefined || groupRaw === null) ? undefined : String(groupRaw).trim();
+        if (group === '') group = undefined;
 
         if (!name) return false;
         if (!Array.isArray(m) || m.length !== 20) return false;
@@ -1165,7 +1288,7 @@ function downloadBlob(blob, filename) {
         if (mat.some(v => !isFinite(v))) return false;
 
         // Overwrite on duplicate name (upsert behavior)
-        upsertLutProfile({ name, matrix4x5: mat });
+        upsertLutProfile({ name, group, matrix4x5: mat });
         return true;
     }
 
@@ -4813,6 +4936,192 @@ if (!gl) {
         setActiveLutInfo();
         menu.appendChild(activeInfo);
 
+        // Group controls (for better overview)
+        const groupCtlRow = document.createElement('div');
+        groupCtlRow.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;';
+
+        const groupLabel = document.createElement('div');
+        groupLabel.textContent = 'Group';
+        groupLabel.style.cssText = 'font-size:12px;font-weight:900;opacity:0.85;min-width:52px;';
+
+        const groupFilter = document.createElement('select');
+        groupFilter.id = 'gvf-lut-group-filter';
+        groupFilter.style.cssText = `
+            flex: 1;
+            min-width: 160px;
+            background: rgba(30,30,30,0.9);
+            color: #eaeaea;
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 8px;
+            padding: 6px 8px;
+            font-size: 12px;
+            font-weight: 900;
+            cursor: pointer;
+        `;
+        stopEventsOn(groupFilter);
+
+        const mkSmallBtn = (text, bg, fg) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.textContent = text;
+            b.style.cssText = `
+                cursor:pointer;
+                padding: 8px 10px;border-radius: 10px;
+                border: 1px solid rgba(255,255,255,0.14);
+                background: ${bg};
+                color: ${fg};
+                font-weight: 900;
+                font-size: 12px;
+            `;
+            stopEventsOn(b);
+            return b;
+        };
+
+        const addGroupBtn = mkSmallBtn('Add Group', 'rgba(255, 255, 255, 0.10)', '#ffffff');
+        const renameGroupBtn = mkSmallBtn('Rename', 'rgba(255, 255, 255, 0.10)', '#ffffff');
+        const deleteGroupBtn = mkSmallBtn('Delete', 'rgba(255, 68, 68, 0.20)', '#ffd0d0');
+
+        const getAllGroupNames = () => {
+            const set = new Set();
+            // explicit groups (supports empty groups)
+            for (const g0 of (Array.isArray(lutGroups) ? lutGroups : [])) {
+                const g = String(g0 || '').trim();
+                if (g) set.add(g);
+            }
+            // groups referenced by profiles
+            for (const p of (Array.isArray(lutProfiles) ? lutProfiles : [])) {
+                const g = (p && p.group) ? String(p.group).trim() : '';
+                if (g) set.add(g);
+            }
+            return Array.from(set).sort((a, b) => a.localeCompare(b));
+        };
+
+        const rebuildGroupFilter = () => {
+            while (groupFilter.firstChild) groupFilter.removeChild(groupFilter.firstChild);
+
+            const optAll = document.createElement('option');
+            optAll.value = '__all__';
+            optAll.textContent = 'All groups';
+            groupFilter.appendChild(optAll);
+
+            const names = getAllGroupNames();
+            for (const g of names) {
+                const o = document.createElement('option');
+                o.value = g;
+                o.textContent = g;
+                groupFilter.appendChild(o);
+            }
+
+            const optUng = document.createElement('option');
+            optUng.value = '__ungrouped__';
+            optUng.textContent = 'Ungrouped';
+            groupFilter.appendChild(optUng);
+
+            // keep selection if still exists
+            const cur = String(groupFilter.dataset.gvfValue || '__all__');
+            const canKeep = Array.from(groupFilter.options).some(o => String(o.value) === cur);
+            groupFilter.value = canKeep ? cur : '__all__';
+            groupFilter.dataset.gvfValue = groupFilter.value;
+        };
+
+        // will be extended later (also updates the per-profile group selector)
+        let _rebuildLutGroupUis = () => { rebuildGroupFilter(); };
+
+        groupFilter.addEventListener('change', () => {
+            groupFilter.dataset.gvfValue = String(groupFilter.value || '__all__');
+            updateLutProfileList();
+        });
+
+        addGroupBtn.addEventListener('click', () => {
+            const n = prompt('New group name:');
+            if (!n) return;
+            const g = String(n).trim();
+            if (!g) return;
+
+            if (!Array.isArray(lutGroups)) lutGroups = [];
+            if (!lutGroups.some(x => String(x).trim() === g)) {
+                lutGroups.push(g);
+                saveLutGroups();
+            }
+
+            groupFilter.dataset.gvfValue = g;
+            _rebuildLutGroupUis();
+            groupFilter.value = g;
+            updateLutProfileList();
+
+            log('LUT group created:', g);
+        });
+
+        renameGroupBtn.addEventListener('click', () => {
+            const cur = String(groupFilter.value || '__all__');
+            if (cur === '__all__' || cur === '__ungrouped__') {
+                alert('Select a concrete group first.');
+                return;
+            }
+            const n = prompt(`Rename group "${cur}" to:`, cur);
+            if (!n) return;
+            const next = String(n).trim();
+            if (!next || next === cur) return;
+
+            for (const p of (Array.isArray(lutProfiles) ? lutProfiles : [])) {
+                if (p && String(p.group || '').trim() === cur) p.group = next;
+            }
+
+            // rename in explicit group list
+            if (!Array.isArray(lutGroups)) lutGroups = [];
+            lutGroups = lutGroups.map(x => (String(x || '').trim() === cur ? next : String(x || '').trim())).filter(Boolean);
+            saveLutGroups();
+
+            saveLutProfiles();
+
+            groupFilter.dataset.gvfValue = next;
+            _rebuildLutGroupUis();
+            groupFilter.value = next;
+
+            try { if (typeof refreshLutDropdownFn === 'function') refreshLutDropdownFn(); } catch (_) { }
+
+            updateLutProfileList();
+            log('LUT group renamed:', cur, '->', next);
+        });
+
+        deleteGroupBtn.addEventListener('click', () => {
+            const cur = String(groupFilter.value || '__all__');
+            if (cur === '__all__') { alert('Select a concrete group first.'); return; }
+            if (cur === '__ungrouped__') { alert('Ungrouped cannot be deleted.'); return; }
+
+            const ok = confirm(`Delete group "${cur}"? (Profiles will become ungrouped)`);
+            if (!ok) return;
+
+            for (const p of (Array.isArray(lutProfiles) ? lutProfiles : [])) {
+                if (p && String(p.group || '').trim() === cur) delete p.group;
+            }
+
+            // remove from explicit group list
+            if (!Array.isArray(lutGroups)) lutGroups = [];
+            lutGroups = lutGroups.filter(x => String(x || '').trim() !== cur);
+            saveLutGroups();
+
+            saveLutProfiles();
+
+            groupFilter.dataset.gvfValue = '__all__';
+            _rebuildLutGroupUis();
+            groupFilter.value = '__all__';
+
+            try { if (typeof refreshLutDropdownFn === 'function') refreshLutDropdownFn(); } catch (_) { }
+
+            updateLutProfileList();
+            log('LUT group deleted:', cur);
+        });
+
+        groupCtlRow.appendChild(groupLabel);
+        groupCtlRow.appendChild(groupFilter);
+        groupCtlRow.appendChild(addGroupBtn);
+        groupCtlRow.appendChild(renameGroupBtn);
+        groupCtlRow.appendChild(deleteGroupBtn);
+
+        menu.appendChild(groupCtlRow);
+        try { _rebuildLutGroupUis(); } catch (_) { }
+
         const ctlRow = document.createElement('div');
         ctlRow.style.cssText = `display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;`;
 
@@ -4935,7 +5244,46 @@ importInput.addEventListener('change', async () => {
         `;
         stopEventsOn(nameInput);
 
-        const fileInput = document.createElement('input');
+
+        const groupSelect = document.createElement('select');
+        groupSelect.id = 'gvf-lut-group-select';
+        groupSelect.title = 'Assign group';
+        groupSelect.style.cssText = `
+            width: 160px;
+            background: rgba(30,30,30,0.9);
+            color: #eaeaea;
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 8px;
+            padding: 6px 8px;
+            font-size: 12px;
+            font-weight: 900;
+            cursor: pointer;
+        `;
+        stopEventsOn(groupSelect);
+
+        const rebuildGroupSelect = () => {
+            while (groupSelect.firstChild) groupSelect.removeChild(groupSelect.firstChild);
+
+            const optUng = document.createElement('option');
+            optUng.value = '';
+            optUng.textContent = 'Ungrouped';
+            groupSelect.appendChild(optUng);
+
+            const names = getAllGroupNames();
+            for (const g of names) {
+                const o = document.createElement('option');
+                o.value = g;
+                o.textContent = g;
+                groupSelect.appendChild(o);
+            }
+        };
+
+        rebuildGroupSelect();
+
+        // extend group UI rebuilder to also refresh the selector
+        _rebuildLutGroupUis = () => { rebuildGroupFilter(); rebuildGroupSelect(); };
+
+const fileInput = document.createElement('input');
         fileInput.type = 'file';
         fileInput.accept = 'image/png,.cube,text/plain,application/octet-stream';
         fileInput.style.cssText = `
@@ -5109,12 +5457,15 @@ importInput.addEventListener('change', async () => {
                     log('Manual 4x5 matrix saved:', name);
                 }
 
-                upsertLutProfile({ name, matrix4x5: matrix });
+                upsertLutProfile({ name, group: (groupSelect.value ? String(groupSelect.value) : undefined), matrix4x5: matrix });
                 setActiveLutProfile(name);
 
                 nameInput.value = '';
                 fileInput.value = '';
                 matrixArea.value = '';
+
+                try { _rebuildLutGroupUis(); } catch (_) { }
+                try { if (typeof refreshLutDropdownFn === 'function') refreshLutDropdownFn(); } catch (_) { }
 
                 updateLutProfileList();
                 setActiveLutInfo();
@@ -5125,6 +5476,7 @@ importInput.addEventListener('change', async () => {
             }
         });
         nameRow.appendChild(nameInput);
+        nameRow.appendChild(groupSelect);
         nameRow.appendChild(fileInput);
         nameRow.appendChild(saveBtn);
 
@@ -5140,10 +5492,21 @@ importInput.addEventListener('change', async () => {
 
             while (container.firstChild) container.removeChild(container.firstChild);
 
+            try { _rebuildLutGroupUis(); } catch (_) { }
+
             const list = Array.isArray(lutProfiles) ? lutProfiles.slice() : [];
             list.sort((a, b) => String(a.name).localeCompare(String(b.name)));
 
-            if (list.length === 0) {
+            // Group filter
+            const gf = String((groupFilter && (groupFilter.dataset.gvfValue || groupFilter.value)) || '__all__');
+            let filtered = list;
+            if (gf === '__ungrouped__') {
+                filtered = list.filter(p => !(p && p.group && String(p.group).trim()));
+            } else if (gf !== '__all__') {
+                filtered = list.filter(p => (p && p.group && String(p.group).trim() === gf));
+            }
+
+            if (filtered.length === 0) {
                 const empty = document.createElement('div');
                 empty.textContent = 'No LUT profiles yet.';
                 empty.style.cssText = 'opacity:0.7;font-size:13px;padding:6px;';
@@ -5168,7 +5531,7 @@ importInput.addEventListener('change', async () => {
                 return b;
             };
 
-            for (const p of list) {
+            for (const p of filtered) {
                 const row = document.createElement('div');
                 row.style.cssText = `
                     display:flex;align-items:center;justify-content:space-between;gap:10px;
@@ -5192,6 +5555,14 @@ importInput.addEventListener('change', async () => {
                 left.appendChild(nm);
                 left.appendChild(meta);
 
+                const grp = (p && p.group && String(p.group).trim()) ? String(p.group).trim() : '';
+                if (grp) {
+                    const gEl = document.createElement('div');
+                    gEl.textContent = 'Group: ' + grp;
+                    gEl.style.cssText = 'font-size:12px;opacity:0.75;';
+                    left.appendChild(gEl);
+                }
+
                 const right = document.createElement('div');
                 right.style.cssText = 'display:flex;gap:8px;align-items:center;';
 
@@ -5206,6 +5577,7 @@ importInput.addEventListener('change', async () => {
                 editBtn.addEventListener('click', () => {
                     nameInput.value = String(p.name);
                     fileInput.value = '';
+                    try { groupSelect.value = (p && p.group) ? String(p.group).trim() : ''; } catch (_) { }
                     if (Array.isArray(p.matrix4x5) && p.matrix4x5.length === 20) {
                         matrixArea.value = p.matrix4x5.join(' ');
                     } else {
@@ -5713,13 +6085,49 @@ importInput.addEventListener('change', async () => {
                 lutSelect.appendChild(optNone);
 
                 const list = Array.isArray(lutProfiles) ? lutProfiles.slice() : [];
-                list.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+                const normGroup = (g) => {
+                    const s = String(g || '').trim();
+                    return s ? s : '';
+                };
 
+                // group -> profiles
+                const groups = new Map();
                 for (const p of list) {
-                    const o = document.createElement('option');
-                    o.value = String(p.name);
-                    o.textContent = String(p.name);
-                    lutSelect.appendChild(o);
+                    const g = normGroup(p && p.group);
+                    if (!groups.has(g)) groups.set(g, []);
+                    groups.get(g).push(p);
+                }
+
+                // sort groups + members
+                const groupNames = Array.from(groups.keys()).sort((a, b) => {
+                    if (a === '' && b !== '') return 1; // ungrouped last
+                    if (b === '' && a !== '') return -1;
+                    return a.localeCompare(b);
+                });
+
+                for (const g of groupNames) {
+                    const arr = groups.get(g) || [];
+                    arr.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+
+                    if (g) {
+                        const og = document.createElement('optgroup');
+                        og.label = g;
+                        for (const p of arr) {
+                            const o = document.createElement('option');
+                            o.value = String(p.name);
+                            o.textContent = String(p.name);
+                            og.appendChild(o);
+                        }
+                        lutSelect.appendChild(og);
+                    } else {
+                        // Ungrouped
+                        for (const p of arr) {
+                            const o = document.createElement('option');
+                            o.value = String(p.name);
+                            o.textContent = String(p.name);
+                            lutSelect.appendChild(o);
+                        }
+                    }
                 }
 
                 lutSelect.value = String(activeLutProfileName || 'none');
