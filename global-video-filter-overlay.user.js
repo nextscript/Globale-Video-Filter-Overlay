@@ -3,7 +3,7 @@
 // @name:de      Globale Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.6.9
+// @version      1.7.0
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, HDR and LUTs. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung, HDR und LUTs. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
@@ -53,7 +53,7 @@
     // Throttling for less computationally intensive operations
     // -------------------------
     let lastRenderTime = 0;
-    const RENDER_THROTTLE = 16; // ~60fps
+    const RENDER_THROTTLE = 33; // ~30 FPS cap to reduce GPU load // ~60fps
 
     function throttledRender(timestamp) {
         if (timestamp - lastRenderTime >= RENDER_THROTTLE) {
@@ -173,8 +173,41 @@
     // -------------------------
     let lutProfiles = [];
     let lutGroups = [];
-    let activeLutProfileName = String(gmGet(K.LUT_ACTIVE_PROFILE, 'none') || 'none');
+
+    // Active LUT selection is stored as a composite key so duplicate names are allowed across groups.
+    // Key format: "<group>||<name>" (group may be empty for ungrouped, e.g. "||Warm").
+    let activeLutProfileKey = String(gmGet(K.LUT_ACTIVE_PROFILE, 'none') || 'none');
     let activeLutMatrix4x5 = null; // Array[20] or null
+
+    function _lutNormGroup(g) {
+        const s = (g === undefined || g === null) ? '' : String(g);
+        return s.trim();
+    }
+    function _lutNormName(n) { return String(n || '').trim(); }
+    function lutMakeKey(name, group) {
+        const nm = _lutNormName(name);
+        const gr = _lutNormGroup(group);
+        if (!nm) return 'none';
+        return `${gr}||${nm}`;
+    }
+    function lutParseKey(key) {
+        const k = String(key || '').trim();
+        if (!k || k === 'none') return { group: '', name: 'none', key: 'none' };
+        const i = k.indexOf('||');
+        if (i >= 0) {
+            const g = k.slice(0, i);
+            const n = k.slice(i + 2);
+            return { group: _lutNormGroup(g), name: _lutNormName(n), key: `${_lutNormGroup(g)}||${_lutNormName(n)}` };
+        }
+        // Back-compat: old storage used only the name.
+        return { group: '', name: _lutNormName(k), key: `||${_lutNormName(k)}` };
+    }
+    function lutKeyFromProfile(p) {
+        const n = _lutNormName(p && p.name);
+        const g = _lutNormGroup(p && p.group);
+        return lutMakeKey(n, g);
+    }
+
     let lutSelectEl = null;
     let refreshLutDropdownFn = null;
 
@@ -325,17 +358,32 @@
             }
         } catch (_) { }
 
-        activeLutProfileName = String(gmGet(K.LUT_ACTIVE_PROFILE, 'none') || 'none');
-        if (!activeLutProfileName) activeLutProfileName = 'none';
-        const p = lutProfiles.find(x => String(x.name) === activeLutProfileName);
-        activeLutMatrix4x5 = p && Array.isArray(p.matrix4x5) && p.matrix4x5.length === 20 ? p.matrix4x5 : null;
-        log('LUT profiles loaded:', lutProfiles.length, 'Active:', activeLutProfileName);
+        // Active LUT profile key (supports legacy name-only values)
+        activeLutProfileKey = String(gmGet(K.LUT_ACTIVE_PROFILE, 'none') || 'none');
+        if (!activeLutProfileKey) activeLutProfileKey = 'none';
+
+        const want = lutParseKey(activeLutProfileKey);
+        let p = null;
+
+        if (want.key !== 'none') {
+            // First try exact key match
+            p = (Array.isArray(lutProfiles) ? lutProfiles : []).find(x => lutKeyFromProfile(x) === want.key) || null;
+
+            // Back-compat: if legacy name-only was stored, pick the first match by name.
+            if (!p && want.name && want.name !== 'none') {
+                p = (Array.isArray(lutProfiles) ? lutProfiles : []).find(x => _lutNormName(x && x.name) === want.name) || null;
+                if (p) activeLutProfileKey = lutKeyFromProfile(p);
+            }
+        }
+
+        activeLutMatrix4x5 = (p && Array.isArray(p.matrix4x5) && p.matrix4x5.length === 20) ? p.matrix4x5 : null;
+        log('LUT profiles loaded:', lutProfiles.length, 'Active:', activeLutProfileKey);
     }
 
     function saveLutProfiles() {
         try {
             gmSet(K.LUT_PROFILES, lutProfiles);
-            gmSet(K.LUT_ACTIVE_PROFILE, activeLutProfileName);
+            gmSet(K.LUT_ACTIVE_PROFILE, activeLutProfileKey);
         } catch (e) {
             logW('Error saving LUT profiles:', e);
         }
@@ -376,22 +424,33 @@
         }
     }
 
-    function setActiveLutProfile(name) {
-        const n = String(name || 'none');
-        activeLutProfileName = n;
-        const p = lutProfiles.find(x => String(x.name) === n);
-        activeLutMatrix4x5 = p && Array.isArray(p.matrix4x5) && p.matrix4x5.length === 20 ? p.matrix4x5 : null;
+    function setActiveLutProfile(keyOrName, groupMaybe) {
+        const inVal = String(keyOrName || 'none').trim() || 'none';
+        const key = (inVal.includes('||') || inVal === 'none') ? inVal : lutMakeKey(inVal, groupMaybe);
+        activeLutProfileKey = key;
+
+        const want = lutParseKey(activeLutProfileKey);
+        let p = null;
+        if (want.key !== 'none') {
+            p = (Array.isArray(lutProfiles) ? lutProfiles : []).find(x => lutKeyFromProfile(x) === want.key) || null;
+            if (!p && want.name && want.name !== 'none') {
+                // fallback: first match by name (legacy)
+                p = (Array.isArray(lutProfiles) ? lutProfiles : []).find(x => _lutNormName(x && x.name) === want.name) || null;
+                if (p) activeLutProfileKey = lutKeyFromProfile(p);
+            }
+        }
+
+        activeLutMatrix4x5 = (p && Array.isArray(p.matrix4x5) && p.matrix4x5.length === 20) ? p.matrix4x5 : null;
         saveLutProfiles();
 
-        log('Active LUT profile set:', activeLutProfileName);
+        log('Active LUT profile set:', activeLutProfileKey);
 
         // Sync LUT dropdown immediately
         try {
-            if (lutSelectEl) lutSelectEl.value = String(activeLutProfileName || 'none');
+            if (lutSelectEl) lutSelectEl.value = String(activeLutProfileKey || 'none');
             if (typeof refreshLutDropdownFn === 'function') refreshLutDropdownFn();
         } catch (_) { }
-
-        // Apply immediately (no page reload, no artificial delay)
+// Apply immediately (no page reload, no artificial delay)
         updateCurrentProfileSettings();
 
         if (renderMode === 'gpu') {
@@ -405,7 +464,9 @@
     }
 
     function getActiveLutProfile() {
-        return lutProfiles.find(x => String(x.name) === String(activeLutProfileName)) || null;
+        const want = lutParseKey(activeLutProfileKey);
+        if (want.key === 'none') return null;
+        return (Array.isArray(lutProfiles) ? lutProfiles : []).find(x => lutKeyFromProfile(x) === want.key) || null;
     }
 
     function upsertLutProfile(profile) {
@@ -416,7 +477,12 @@
         let group = (groupRaw === undefined || groupRaw === null) ? undefined : String(groupRaw).trim();
         if (group === '') group = undefined;
 
-        const idx = lutProfiles.findIndex(p => String(p.name) === name);
+        const idx = lutProfiles.findIndex(p => {
+            const pn = _lutNormName(p && p.name);
+            const pg = _lutNormGroup(p && p.group);
+            const ng = _lutNormGroup(group);
+            return (pn === name) && (pg === ng);
+        });
         const now = Date.now();
 
         const prev = (idx >= 0) ? lutProfiles[idx] : null;
@@ -449,16 +515,23 @@
         return next;
     }
 
-    function deleteLutProfile(name) {
-        const n = String(name || '').trim();
-        if (!n) return;
-        lutProfiles = lutProfiles.filter(p => String(p.name) !== n);
-        if (activeLutProfileName === n) {
-            activeLutProfileName = 'none';
+    function deleteLutProfile(keyOrName, groupMaybe) {
+        const inVal = String(keyOrName || '').trim();
+        if (!inVal) return;
+
+        const key = (inVal.includes('||')) ? inVal : lutMakeKey(inVal, groupMaybe);
+        const want = lutParseKey(key);
+        if (want.key === 'none') return;
+
+        lutProfiles = (Array.isArray(lutProfiles) ? lutProfiles : []).filter(p => lutKeyFromProfile(p) !== want.key);
+
+        if (String(activeLutProfileKey) === want.key) {
+            activeLutProfileKey = 'none';
             activeLutMatrix4x5 = null;
         }
+
         saveLutProfiles();
-        log('Deleted LUT profile:', n);
+        log('Deleted LUT profile:', want.key);
     }
 
     // -------------------------
@@ -1086,7 +1159,9 @@
                 if (!name) return;
 
                 const fileBase = sanitizeProfileFilename(name);
-                const fileName = `${fileBase}.json`;
+                const grp = (p && p.group) ? String(p.group).trim() : '';
+                const grpBase = grp ? sanitizeProfileFilename(grp) : '';
+                const fileName = grpBase ? `${grpBase}__${fileBase}.json` : `${fileBase}.json`;
 
                 const payload = {
                     schema: 'gvf-lut-profile',
@@ -1225,7 +1300,7 @@ function downloadBlob(blob, filename) {
                     saveLutProfiles();
                     try { updateLutProfileList(); } catch (_) { }
                     try { setActiveLutInfo(); } catch (_) { }
-                    try { setActiveLutProfile(activeLutProfileName); } catch (_) { }
+                    try { setActiveLutProfile(activeLutProfileKey); } catch (_) { }
                 }
                 return ok ? { ok: true, msg: (obj && obj.schema === 'gvf-lut-groups') ? 'Imported LUT groups.' : 'Imported 1 LUT profile.' } : { ok: false, msg: 'Import failed (invalid LUT JSON).' };
             }
@@ -1259,7 +1334,7 @@ function downloadBlob(blob, filename) {
                 saveLutProfiles();
                 try { updateLutProfileList(); } catch (_) { }
                 try { setActiveLutInfo(); } catch (_) { }
-                try { setActiveLutProfile(activeLutProfileName); } catch (_) { }
+                try { setActiveLutProfile(activeLutProfileKey); } catch (_) { }
                 return { ok: true, msg: `Imported ${imported} LUT profile(s) from ZIP.` };
             }
 
@@ -1510,7 +1585,7 @@ function downloadBlob(blob, filename) {
             hdr: hdr,
             profile: profile,
             renderMode: renderMode,
-            lutProfile: activeLutProfileName,
+            lutProfile: activeLutProfileKey,
             autoOn: autoOn,
             autoStrength: autoStrength,
             autoLockWB: autoLockWB,
@@ -1554,15 +1629,8 @@ function downloadBlob(blob, filename) {
 
             // Restore LUT profile for this user profile (if present)
             if (Object.prototype.hasOwnProperty.call(settings, 'lutProfile')) {
-                const lp = String(settings.lutProfile || 'none');
-                activeLutProfileName = lp;
-                const p = (Array.isArray(lutProfiles) ? lutProfiles : []).find(x => String(x.name) === lp);
-                activeLutMatrix4x5 = (p && Array.isArray(p.matrix4x5) && p.matrix4x5.length === 20) ? p.matrix4x5 : null;
-                saveLutProfiles();
-                try {
-                    if (lutSelectEl) lutSelectEl.value = String(activeLutProfileName || 'none');
-                    if (typeof refreshLutDropdownFn === 'function') refreshLutDropdownFn();
-                } catch (_) { }
+                const lpRaw = String(settings.lutProfile || 'none').trim() || 'none';
+                try { setActiveLutProfile(lpRaw); } catch (_) { }
             }
 
             autoOn = settings.autoOn ?? autoOn;
@@ -3356,14 +3424,38 @@ if (!gl) {
         }
 
         startRenderLoop() {
-            if (this.rafId) cancelAnimationFrame(this.rafId);
+            // Reduce GPU usage:
+            // - Cap rendering to ~30 FPS (RENDER_THROTTLE)
+            // - Render only when the video is playing and the tab is visible
+            // - Prefer requestVideoFrameCallback when available (ties work to decoded frames)
+            this.stopRenderLoop();
+
+            const canRVFC = this.video && typeof this.video.requestVideoFrameCallback === 'function';
+            const shouldRenderNow = () => {
+                if (!this.active || !this.video) return false;
+                if (document.hidden) return false;
+                if (this.video.paused || this.video.ended) return false;
+                if (this.video.readyState < 2) return false;
+                return true;
+            };
+
+            if (canRVFC) {
+                const onFrame = (now) => {
+                    if (!this.active || !this.video) { this.rafId = null; return; }
+                    if (shouldRenderNow() && (now - lastRenderTime >= RENDER_THROTTLE)) {
+                        lastRenderTime = now;
+                        this.render();
+                    }
+                    // Schedule next decoded frame callback
+                    this.rafId = this.video.requestVideoFrameCallback(onFrame);
+                };
+                this.rafId = this.video.requestVideoFrameCallback(onFrame);
+                return;
+            }
 
             const loop = (timestamp) => {
-                if (!this.active || !this.video) {
-                    this.rafId = null;
-                    return;
-                }
-                if (timestamp - lastRenderTime >= RENDER_THROTTLE) {
+                if (!this.active || !this.video) { this.rafId = null; return; }
+                if (shouldRenderNow() && (timestamp - lastRenderTime >= RENDER_THROTTLE)) {
                     lastRenderTime = timestamp;
                     this.render();
                 }
@@ -3373,14 +3465,23 @@ if (!gl) {
             this.rafId = requestAnimationFrame(loop);
         }
 
+        stopRenderLoop() {
+            if (!this.rafId) return;
+            try {
+                // Could be an rAF id or a requestVideoFrameCallback id
+                if (this.video && typeof this.video.cancelVideoFrameCallback === 'function') {
+                    try { this.video.cancelVideoFrameCallback(this.rafId); } catch (_) { }
+                }
+                cancelAnimationFrame(this.rafId);
+            } catch (_) { }
+            this.rafId = null;
+        }
+
         shutdown() {
             this.active = false;
-            if (this.rafId) {
-                cancelAnimationFrame(this.rafId);
-                this.rafId = null;
-            }
+            this.stopRenderLoop();
 
-            // Restore original video
+// Restore original video
             if (this.video && this.originalParent) {
                 this.video.style.cssText = this.originalStyle || '';
                 this.video.style.position = '';
@@ -4930,7 +5031,7 @@ if (!gl) {
             while (activeInfo.firstChild) activeInfo.removeChild(activeInfo.firstChild);
             activeInfo.append('🟠 Active LUT: ');
             const strong = document.createElement('strong');
-            strong.textContent = (activeLutProfileName && activeLutProfileName !== 'none') ? activeLutProfileName : 'None';
+            strong.textContent = (activeLutProfileKey && activeLutProfileKey !== 'none') ? lutParseKey(activeLutProfileKey).name : 'None';
             activeInfo.appendChild(strong);
         };
         setActiveLutInfo();
@@ -5368,7 +5469,7 @@ const fileInput = document.createElement('input');
         `;
         stopEventsOn(loadActiveBtn);
         loadActiveBtn.addEventListener('click', () => {
-            const activeName = String(activeLutProfileName || '').trim();
+            const activeName = (activeLutProfileKey && activeLutProfileKey !== 'none') ? lutParseKey(activeLutProfileKey).name : '';
             if (!activeName || activeName === 'none') { alert('No active LUT profile.'); return; }
             const p = (Array.isArray(lutProfiles) ? lutProfiles : []).find(x => String(x.name) === activeName);
             if (!p || !Array.isArray(p.matrix4x5) || p.matrix4x5.length !== 20) { alert('Active LUT profile has no valid matrix.'); return; }
@@ -5457,8 +5558,30 @@ const fileInput = document.createElement('input');
                     log('Manual 4x5 matrix saved:', name);
                 }
 
-                upsertLutProfile({ name, group: (groupSelect.value ? String(groupSelect.value) : undefined), matrix4x5: matrix });
-                setActiveLutProfile(name);
+                // Allow duplicate names across different groups, but enforce uniqueness within the same group.
+                const newGroup = groupSelect.value ? String(groupSelect.value).trim() : '';
+                const newKey = lutMakeKey(name, newGroup);
+
+                const oldKey = String(nameInput.dataset.gvfLutEditKey || '').trim();
+                if (oldKey) {
+                    const old = lutParseKey(oldKey);
+                    // If key changed (rename and/or move group), prevent collision in target group.
+                    if (old.key !== newKey) {
+                        const exists = (Array.isArray(lutProfiles) ? lutProfiles : []).some(p =>
+                            lutKeyFromProfile(p) === newKey
+                        );
+                        if (exists) { alert('A profile with the same name already exists in this group.'); return; }
+                        // Remove old entry first to avoid stale duplicates.
+                        deleteLutProfile(old.key);
+                    }
+                }
+
+                // Upsert into the target group
+                upsertLutProfile({ name, group: (newGroup ? newGroup : undefined), matrix4x5: matrix });
+                setActiveLutProfile(newKey);
+
+                // Clear edit marker
+                try { delete nameInput.dataset.gvfLutEditKey; } catch (_) { }
 
                 nameInput.value = '';
                 fileInput.value = '';
@@ -5548,7 +5671,7 @@ const fileInput = document.createElement('input');
                 nm.style.cssText = `font-weight:900;font-size:14px;color:#fff;`;
 
                 const meta = document.createElement('div');
-                const isActive = (String(p.name) === String(activeLutProfileName));
+                const isActive = (lutKeyFromProfile(p) === String(activeLutProfileKey));
                 meta.textContent = isActive ? 'Active' : '';
                 meta.style.cssText = isActive ? 'font-size:12px;color:#ffb35a;font-weight:900;' : 'font-size:12px;opacity:0.7;';
 
@@ -5568,7 +5691,7 @@ const fileInput = document.createElement('input');
 
                 const useBtn = mkBtn('Use', 'rgba(255, 138, 0, 0.18)', '#ffd7a6');
                 useBtn.addEventListener('click', () => {
-                    setActiveLutProfile(String(p.name));
+                    setActiveLutProfile(lutKeyFromProfile(p));
                     setActiveLutInfo();
                     updateLutProfileListInner();
                 });
@@ -5576,6 +5699,7 @@ const fileInput = document.createElement('input');
                 const editBtn = mkBtn('Edit', 'rgba(255, 255, 255, 0.10)', '#ffffff');
                 editBtn.addEventListener('click', () => {
                     nameInput.value = String(p.name);
+                    try { nameInput.dataset.gvfLutEditKey = lutKeyFromProfile(p); } catch (_) { }
                     fileInput.value = '';
                     try { groupSelect.value = (p && p.group) ? String(p.group).trim() : ''; } catch (_) { }
                     if (Array.isArray(p.matrix4x5) && p.matrix4x5.length === 20) {
@@ -5587,7 +5711,7 @@ const fileInput = document.createElement('input');
 
                 const delBtn = mkBtn('Delete', 'rgba(255, 68, 68, 0.20)', '#ffd0d0');
                 delBtn.addEventListener('click', () => {
-                    deleteLutProfile(String(p.name)); // no confirm
+                    deleteLutProfile(lutKeyFromProfile(p)); // no confirm
                     setActiveLutInfo();
                     updateLutProfileListInner();
                 });
@@ -6114,7 +6238,7 @@ const fileInput = document.createElement('input');
                         og.label = g;
                         for (const p of arr) {
                             const o = document.createElement('option');
-                            o.value = String(p.name);
+                            o.value = lutKeyFromProfile(p);
                             o.textContent = String(p.name);
                             og.appendChild(o);
                         }
@@ -6123,14 +6247,14 @@ const fileInput = document.createElement('input');
                         // Ungrouped
                         for (const p of arr) {
                             const o = document.createElement('option');
-                            o.value = String(p.name);
+                            o.value = lutKeyFromProfile(p);
                             o.textContent = String(p.name);
                             lutSelect.appendChild(o);
                         }
                     }
                 }
 
-                lutSelect.value = String(activeLutProfileName || 'none');
+                lutSelect.value = String(activeLutProfileKey || 'none');
             };
 
 
@@ -6139,7 +6263,7 @@ const fileInput = document.createElement('input');
 
             lutSelect.addEventListener('change', () => {
                 const v = String(lutSelect.value || 'none');
-                if (v === String(activeLutProfileName || 'none')) return;
+                if (v === String(activeLutProfileKey || 'none')) return;
                 setActiveLutProfile(v);
             });
 
@@ -6882,7 +7006,7 @@ const fileInput = document.createElement('input');
 
             hdr: nFix(normHDR(), 1),
             profile: String(profile),
-            lutProfile: String((typeof activeLutProfileName==='string' && activeLutProfileName.trim()) ? activeLutProfileName.trim() : 'none'),
+            lutProfile: String((typeof activeLutProfileKey==='string' && activeLutProfileKey.trim()) ? activeLutProfileKey.trim() : 'none'),
             renderMode: String(renderMode),
 
             gradingHudShown: !!gradingHudShown,
@@ -6980,19 +7104,26 @@ const fileInput = document.createElement('input');
 
 // LUT profile selection (persist/restore via IO HUD config)
 if ('lutProfile' in obj) {
-    const lp = String(obj.lutProfile || 'none').trim() || 'none';
-    activeLutProfileName = lp;
+    const raw = String(obj.lutProfile || 'none').trim() || 'none';
 
-    const pL = (Array.isArray(lutProfiles) ? lutProfiles : []).find(x => String(x && x.name) === lp);
-    activeLutMatrix4x5 = (pL && Array.isArray(pL.matrix4x5) && pL.matrix4x5.length === 20) ? pL.matrix4x5 : null;
+    // Accept either a key ("group||name") or legacy name-only value.
+    const want = lutParseKey(raw);
+    let key = (raw.includes('||') || raw === 'none') ? raw : want.key;
 
-    try { saveLutProfiles(); } catch (_) { }
+    // If legacy name-only was stored, pick the first matching profile (any group).
+    if (!raw.includes('||') && raw !== 'none') {
+        const p0 = (Array.isArray(lutProfiles) ? lutProfiles : []).find(x => _lutNormName(x && x.name) === want.name) || null;
+        if (p0) key = lutKeyFromProfile(p0);
+    }
+
+    setActiveLutProfile(key);
+
     try {
-        if (lutSelectEl) lutSelectEl.value = String(activeLutProfileName || 'none');
+        if (lutSelectEl) lutSelectEl.value = String(activeLutProfileKey || 'none');
         if (typeof refreshLutDropdownFn === 'function') refreshLutDropdownFn();
     } catch (_) { }
 
-    log('Imported LUT profile selection:', activeLutProfileName);
+    log('Imported LUT profile selection:', activeLutProfileKey);
 }            if ('contrast' in u) u_contrast = normU(u.contrast);
             if ('black' in u) u_black = normU(u.black);
             if ('white' in u) u_white = normU(u.white);
@@ -7323,7 +7454,7 @@ if ('lutProfile' in obj) {
 
         const nothingOn =
             !enabled && !darkMoody && !tealOrange && !vibrantSat && normHDR() === 0 && (profile === 'off') && !autoOn && cbFilter === 'none'
-            && (!activeLutMatrix4x5 || String(activeLutProfileName || 'none') === 'none');
+            && (!activeLutMatrix4x5 || String(activeLutProfileKey || 'none') === 'none');
 
         if (nothingOn) {
             if (style) style.remove();
@@ -8139,7 +8270,7 @@ if ('lutProfile' in obj) {
         }
 
         // Apply LUT matrix if a LUT profile is active (approximation)
-        if (activeLutMatrix4x5 && Array.isArray(activeLutMatrix4x5) && activeLutMatrix4x5.length === 20 && activeLutProfileName !== 'none') {
+        if (activeLutMatrix4x5 && Array.isArray(activeLutMatrix4x5) && activeLutMatrix4x5.length === 20 && activeLutProfileKey !== 'none') {
             const lutCM = document.createElementNS(svgNS, 'feColorMatrix');
             lutCM.setAttribute('type', 'matrix');
             lutCM.setAttribute('in', last);
@@ -8350,7 +8481,7 @@ if ('lutProfile' in obj) {
         const P = (profile || 'off');
         const CB = cbFilter;
 
-        const LUTN = String(activeLutProfileName || 'none');
+        const LUTN = String(activeLutProfileKey || 'none');
         const uSig = [
             normU(u_contrast), normU(u_black), normU(u_white), normU(u_highlights), normU(u_shadows),
             normU(u_sat), normU(u_vib), normU(u_sharp), normU(u_gamma), normU(u_grain), normU(u_hue),
