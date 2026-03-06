@@ -11,7 +11,7 @@
   "bl": -0.4,
   "wl": 0.6,
   "dn": 0,
-  "hdr": 0.1,
+  "hdr": 0.01,
   "profile": "user",
   "lutProfile": "Fresh LUTs||Cinematic 1",
   "renderMode": "svg",
