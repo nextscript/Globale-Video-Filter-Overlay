@@ -414,7 +414,7 @@
             if (!activeUserProfile && userProfiles.length) activeUserProfile = userProfiles[0];
             if (!activeUserProfile) {
                 userProfiles = getDefaultUserProfilesFallback();
-                activeUserProfile = userProfiles[0];
+                activeUserProfile = userProfiles[0] || null;
             }
 
             saveUserProfiles();
@@ -2723,14 +2723,6 @@ function downloadBlob(blob, filename) {
 
     // Initialize Profile Management
     loadUserProfiles();
-    try {
-        window.addEventListener('beforeunload', () => {
-            try {
-                if (activeUserProfile) updateCurrentProfileSettings();
-                saveUserProfiles();
-            } catch (_) { }
-        }, { capture: true });
-    } catch (_) { }
     loadLutProfiles();
 
     const HK = { base: 'b', moody: 'd', teal: 'o', vib: 'v', icons: 'h' };
@@ -4866,10 +4858,7 @@ if (!gl) {
             e.stopPropagation();
             const name = newProfileInput.value.trim();
             if (name) {
-                const createdProfile = createNewUserProfile(name);
-                if (createdProfile && createdProfile.id) {
-                    activeUserProfile = createdProfile;
-                }
+                createNewUserProfile(name);
                 updateProfileList();
                 newProfileInput.value = '';
 
@@ -4921,7 +4910,11 @@ if (!gl) {
         saveCurrentBtn.addEventListener('click', (e) => {
             e.preventDefault();
             e.stopPropagation();
+            if (!activeUserProfile && Array.isArray(userProfiles) && userProfiles.length) {
+                activeUserProfile = userProfiles[0];
+            }
             updateCurrentProfileSettings();
+            saveUserProfiles();
             updateProfileList();
 
             // Brief feedback
