@@ -3,7 +3,7 @@
 // @name:de      Global Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.7.1
+// @version      1.7.2
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, HDR and LUTs. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, HDR and LUTs. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @match        *://*/*
@@ -344,40 +344,114 @@
     };
 
     // Profile Management Functions
+    function getDefaultUserProfilesFallback() {
+        const isFirefoxBrowser = isFirefox();
+        const defaultProfile = isFirefoxBrowser ? DEFAULT_USER_PROFILE_FIREFOX : DEFAULT_USER_PROFILE;
+        return [JSON.parse(JSON.stringify(defaultProfile))];
+    }
+
+    function normalizeUserProfilesForStorage(list) {
+        const src = Array.isArray(list) ? list : [];
+        const out = [];
+        const seen = new Set();
+        for (const raw of src) {
+            if (!raw || typeof raw !== 'object') continue;
+            const id = String(raw.id || '').trim();
+            const name = String(raw.name || '').trim();
+            if (!id || !name || seen.has(id)) continue;
+            seen.add(id);
+            out.push({
+                id,
+                name,
+                createdAt: Number(raw.createdAt || Date.now()),
+                updatedAt: Number(raw.updatedAt || raw.createdAt || Date.now()),
+                settings: { ...(raw.settings && typeof raw.settings === 'object' ? raw.settings : {}) }
+            });
+        }
+        return out;
+    }
+
+    function readUserProfilesFromLocalStorage() {
+        try {
+            const raw = localStorage.getItem(K.USER_PROFILES);
+            if (!raw) return null;
+            const parsed = JSON.parse(raw);
+            const normalized = normalizeUserProfilesForStorage(parsed);
+            return normalized.length ? normalized : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function writeUserProfilesToLocalStorage(profiles, activeId) {
+        try { localStorage.setItem(K.USER_PROFILES, JSON.stringify(profiles)); } catch (_) { }
+        try { localStorage.setItem(K.ACTIVE_USER_PROFILE, String(activeId || 'default')); } catch (_) { }
+    }
+
     function loadUserProfiles() {
         try {
-            const stored = gmGet(K.USER_PROFILES, null);
-            if (stored && Array.isArray(stored) && stored.length > 0) {
-                userProfiles = stored;
+            const storedGm = gmGet(K.USER_PROFILES, null);
+            const normalizedGm = normalizeUserProfilesForStorage(storedGm);
+            const storedLs = readUserProfilesFromLocalStorage();
+
+            if (normalizedGm.length && storedLs && storedLs.length > normalizedGm.length) {
+                userProfiles = storedLs;
+            } else if (normalizedGm.length) {
+                userProfiles = normalizedGm;
+            } else if (storedLs && storedLs.length) {
+                userProfiles = storedLs;
             } else {
-                // Create default profile based on browser
-                const isFirefoxBrowser = isFirefox();
-                const defaultProfile = isFirefoxBrowser ? DEFAULT_USER_PROFILE_FIREFOX : DEFAULT_USER_PROFILE;
-                userProfiles = [defaultProfile];
+                userProfiles = getDefaultUserProfilesFallback();
             }
 
-            // Load active profile
-            const activeId = gmGet(K.ACTIVE_USER_PROFILE, 'default');
-            activeUserProfile = userProfiles.find(p => p.id === activeId) || userProfiles[0];
+            let activeId = String(gmGet(K.ACTIVE_USER_PROFILE, '') || '').trim();
+            if (!activeId) {
+                try { activeId = String(localStorage.getItem(K.ACTIVE_USER_PROFILE) || '').trim(); } catch (_) { }
+            }
+            if (!activeId) activeId = 'default';
 
+            activeUserProfile = userProfiles.find(p => p.id === activeId) || userProfiles[0] || null;
+            if (!activeUserProfile && userProfiles.length) activeUserProfile = userProfiles[0];
+            if (!activeUserProfile) {
+                userProfiles = getDefaultUserProfilesFallback();
+                activeUserProfile = userProfiles[0];
+            }
+
+            saveUserProfiles();
             log('User profiles loaded:', userProfiles.length, 'Active:', activeUserProfile?.name);
         } catch (e) {
             logW('Error loading user profiles:', e);
-            const isFirefoxBrowser = isFirefox();
-            const defaultProfile = isFirefoxBrowser ? DEFAULT_USER_PROFILE_FIREFOX : DEFAULT_USER_PROFILE;
-            userProfiles = [defaultProfile];
-            activeUserProfile = defaultProfile;
+            userProfiles = getDefaultUserProfilesFallback();
+            activeUserProfile = userProfiles[0] || null;
+            saveUserProfiles();
         }
     }
 
     function saveUserProfiles() {
         try {
-            gmSet(K.USER_PROFILES, userProfiles);
+            userProfiles = normalizeUserProfilesForStorage(userProfiles);
+            if (!userProfiles.length) {
+                userProfiles = getDefaultUserProfilesFallback();
+            }
+
+            if (activeUserProfile) {
+                const freshActive = userProfiles.find(p => p.id === activeUserProfile.id);
+                activeUserProfile = freshActive || userProfiles[0] || null;
+            } else {
+                activeUserProfile = userProfiles[0] || null;
+            }
+
+            const snapshot = JSON.parse(JSON.stringify(userProfiles));
+            gmSet(K.USER_PROFILES, snapshot);
             if (activeUserProfile) {
                 gmSet(K.ACTIVE_USER_PROFILE, activeUserProfile.id);
             }
+            writeUserProfilesToLocalStorage(snapshot, activeUserProfile ? activeUserProfile.id : 'default');
         } catch (e) {
             logW('Error saving user profiles:', e);
+            try {
+                writeUserProfilesToLocalStorage(normalizeUserProfilesForStorage(userProfiles), activeUserProfile ? activeUserProfile.id : 'default');
+            } catch (_) { }
         }
     }
 
@@ -988,15 +1062,18 @@
     }
 
     function createNewUserProfile(name) {
+        const now = Date.now();
         const newProfile = {
-            id: 'profile_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
-            name: name || 'New profile',
-            createdAt: Date.now(),
+            id: 'profile_' + now + '_' + Math.random().toString(36).slice(2, 11),
+            name: String(name || 'New profile').trim() || 'New profile',
+            createdAt: now,
+            updatedAt: now,
             settings: { ...getCurrentSettings() }
         };
-        userProfiles.push(newProfile);
+        userProfiles = normalizeUserProfilesForStorage([...(Array.isArray(userProfiles) ? userProfiles : []), newProfile]);
+        activeUserProfile = userProfiles.find(p => p.id === newProfile.id) || newProfile;
         saveUserProfiles();
-        return newProfile;
+        return activeUserProfile || newProfile;
     }
 
     function deleteUserProfile(profileId) {
@@ -2646,6 +2723,14 @@ function downloadBlob(blob, filename) {
 
     // Initialize Profile Management
     loadUserProfiles();
+    try {
+        window.addEventListener('beforeunload', () => {
+            try {
+                if (activeUserProfile) updateCurrentProfileSettings();
+                saveUserProfiles();
+            } catch (_) { }
+        }, { capture: true });
+    } catch (_) { }
     loadLutProfiles();
 
     const HK = { base: 'b', moody: 'd', teal: 'o', vib: 'v', icons: 'h' };
@@ -4781,7 +4866,10 @@ if (!gl) {
             e.stopPropagation();
             const name = newProfileInput.value.trim();
             if (name) {
-                createNewUserProfile(name);
+                const createdProfile = createNewUserProfile(name);
+                if (createdProfile && createdProfile.id) {
+                    activeUserProfile = createdProfile;
+                }
                 updateProfileList();
                 newProfileInput.value = '';
 
