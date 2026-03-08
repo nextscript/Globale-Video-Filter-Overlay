@@ -3286,11 +3286,6 @@ function downloadBlob(blob, filename) {
             this.originalParent = null;
             this.originalNextSibling = null;
             this.originalStyle = null;
-            this.overlayHost = null;
-            this.overlayHostCreated = false;
-            this.overlayHostOriginalStyle = '';
-            this.videoOriginalInlineStyle = '';
-            this.firstFrameDrawn = false;
 
             // Parameter cache
             this.params = {
@@ -3319,6 +3314,17 @@ function downloadBlob(blob, filename) {
             this.hdrStartDelayMs = 650;
             this._boundWarmupHandler = null;
             this._boundVisibilityHandler = null;
+
+            // DOM / render state
+            this.wrapper = null;
+            this.wrapperNextSibling = null;
+            this.originalParentPosition = '';
+            this.firstFrameDrawn = false;
+            this.lastVideoTime = -1;
+            this.lastSuccessfulDrawAt = 0;
+            this.lastFrameCallbackAt = 0;
+            this.rafFallbackId = null;
+            this.useVideoFrameCallback = false;
         }
 
         markHdrWarmup(durationMs) {
@@ -3419,10 +3425,10 @@ if (!gl) {
                 }
 
                 this.gl = gl;
-
-                // Keep uploaded HTMLVideoElement orientation correct in WebGL.
-                // Without this, switching to GPU mode while the video is already playing can appear upside down.
                 try { gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true); } catch (_) { }
+                try { gl.disable(gl.DEPTH_TEST); } catch (_) { }
+                try { gl.disable(gl.CULL_FACE); } catch (_) { }
+                try { gl.disable(gl.BLEND); } catch (_) { }
 
                 if (!this.setupShaders()) {
                     return false;
@@ -3752,15 +3758,14 @@ if (!gl) {
             this.bindHdrWarmupEvents(video);
             this.markHdrWarmup();
             this.firstFrameDrawn = false;
+            this.lastVideoTime = -1;
+            this.lastSuccessfulDrawAt = 0;
+            this.lastFrameCallbackAt = 0;
 
-            // Save original DOM/style state
+            // Save original position in DOM
             this.originalParent = video.parentNode;
             this.originalNextSibling = video.nextSibling;
-            this.originalStyle = video.style.cssText;
-            this.videoOriginalInlineStyle = video.getAttribute('style') || '';
-            this.overlayHost = null;
-            this.overlayHostCreated = false;
-            this.overlayHostOriginalStyle = '';
+            this.originalStyle = video.getAttribute('style') || '';
 
             // Create texture if needed
             if (!this.videoTexture) {
@@ -3773,60 +3778,55 @@ if (!gl) {
                 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
             }
 
-            if (this.originalParent) {
+            // DOM wrapper overlay: keep the real video alive, draw canvas above it.
+            if (this.originalParent && !this.wrapper) {
                 const wrapper = document.createElement('div');
-                const cs = window.getComputedStyle(video);
-                const rect = video.getBoundingClientRect();
-                const inlineDisplay = (cs.display && cs.display !== 'inline') ? cs.display : 'inline-block';
-                const hasExplicitWidth = !!(video.style.width && video.style.width.trim());
-                const hasExplicitHeight = !!(video.style.height && video.style.height.trim());
-
-                wrapper.setAttribute('data-gvf-webgl-host', '1');
+                wrapper.className = 'gvf-webgl-wrap';
                 wrapper.style.position = 'relative';
-                wrapper.style.display = inlineDisplay;
-                wrapper.style.verticalAlign = cs.verticalAlign || 'top';
+                wrapper.style.display = 'inline-block';
+                wrapper.style.width = '100%';
+                wrapper.style.height = '100%';
+                wrapper.style.verticalAlign = 'top';
                 wrapper.style.overflow = 'hidden';
                 wrapper.style.background = 'transparent';
-                if (hasExplicitWidth) {
-                    wrapper.style.width = video.style.width;
-                } else if (rect.width > 0) {
-                    wrapper.style.width = Math.round(rect.width) + 'px';
-                    wrapper.style.maxWidth = '100%';
-                }
-                if (hasExplicitHeight) {
-                    wrapper.style.height = video.style.height;
-                } else if (rect.height > 0) {
-                    wrapper.style.height = Math.round(rect.height) + 'px';
-                }
 
-                this.overlayHost = wrapper;
-                this.overlayHostCreated = true;
-
-                this.originalParent.insertBefore(wrapper, video);
+                if (this.originalNextSibling) {
+                    this.originalParent.insertBefore(wrapper, this.originalNextSibling);
+                } else {
+                    this.originalParent.appendChild(wrapper);
+                }
                 wrapper.appendChild(video);
                 wrapper.appendChild(this.canvas);
-
-                video.style.display = 'block';
-                if (!hasExplicitWidth) video.style.width = '100%';
-                if (!hasExplicitHeight) video.style.height = '100%';
-                video.style.visibility = 'visible';
-                video.style.opacity = '1';
-                video.style.pointerEvents = '';
-
-                this.canvas.style.position = 'absolute';
-                this.canvas.style.inset = '0';
-                this.canvas.style.width = '100%';
-                this.canvas.style.height = '100%';
-                this.canvas.style.display = 'block';
-                this.canvas.style.pointerEvents = 'none';
-                this.canvas.style.background = 'transparent';
-                this.canvas.style.opacity = '0';
-                this.canvas.style.visibility = 'hidden';
-                this.canvas.style.zIndex = '2';
-
-                this.canvas.width = Math.max(1, video.videoWidth || Math.round(video.clientWidth) || 640);
-                this.canvas.height = Math.max(1, video.videoHeight || Math.round(video.clientHeight) || 360);
+                this.wrapper = wrapper;
+            } else if (this.wrapper && this.canvas.parentNode !== this.wrapper) {
+                this.wrapper.appendChild(this.canvas);
             }
+
+            this.canvas.style.position = 'absolute';
+            this.canvas.style.left = '0';
+            this.canvas.style.top = '0';
+            this.canvas.style.width = '100%';
+            this.canvas.style.height = '100%';
+            this.canvas.style.objectFit = 'contain';
+            this.canvas.style.pointerEvents = 'none';
+            this.canvas.style.opacity = '0';
+            this.canvas.style.visibility = 'hidden';
+            this.canvas.style.zIndex = '2147483646';
+            this.canvas.style.background = 'transparent';
+            this.canvas.style.display = 'block';
+
+            // Keep the video decodable/renderable; only fade it after the first GPU frame.
+            video.style.transform = 'translateZ(0)';
+            video.style.willChange = 'transform, opacity';
+            video.style.opacity = '1';
+            video.style.visibility = 'visible';
+            video.style.pointerEvents = video.style.pointerEvents || '';
+            video.style.width = video.style.width || '';
+            video.style.height = video.style.height || '';
+
+            // Copy dimensions
+            this.canvas.width = Math.max(2, video.videoWidth || video.clientWidth || 640);
+            this.canvas.height = Math.max(2, video.videoHeight || video.clientHeight || 360);
 
             this.startRenderLoop();
             return true;
@@ -4050,8 +4050,7 @@ if (!gl) {
                 gl.bindTexture(gl.TEXTURE_2D, this.videoTexture);
                 try { gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true); } catch (_) { }
                 gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
-
-                gl.clearColor(0.0, 0.0, 0.0, 1.0);
+                gl.clearColor(0.0, 0.0, 0.0, 0.0);
                 gl.clear(gl.COLOR_BUFFER_BIT);
 
                 gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
@@ -4063,28 +4062,21 @@ if (!gl) {
                 gl.vertexAttribPointer(this.aTexCoord, 2, gl.FLOAT, false, 0, 0);
 
                 gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+                try { gl.flush(); } catch (_) { }
 
+                this.lastSuccessfulDrawAt = nowMs();
+                this.lastVideoTime = Number(video.currentTime) || 0;
                 if (!this.firstFrameDrawn) {
                     this.firstFrameDrawn = true;
-                    if (this.canvas) {
-                        this.canvas.style.opacity = '1';
-                        this.canvas.style.visibility = 'visible';
-                    }
-                    if (this.video) {
-                        this.video.style.visibility = 'visible';
-                        this.video.style.opacity = '0';
-                    }
+                    this.canvas.style.visibility = 'visible';
+                    this.canvas.style.opacity = '1';
+                    video.style.opacity = '0.001';
                 }
 
             } catch (e) {
-                if (this.canvas) {
-                    this.canvas.style.opacity = '0';
-                    this.canvas.style.visibility = 'hidden';
-                }
-                if (this.video) {
-                    this.video.style.visibility = 'visible';
-                    this.video.style.opacity = '1';
-                }
+                this.canvas.style.visibility = 'hidden';
+                this.canvas.style.opacity = '0';
+                if (video) video.style.opacity = '1';
                 logW('WebGL render error:', e);
             }
         }
@@ -4092,45 +4084,55 @@ if (!gl) {
         startRenderLoop() {
             this.stopRenderLoop();
 
-            const canRVFC = this.video && typeof this.video.requestVideoFrameCallback === 'function';
+            this.useVideoFrameCallback = !!(this.video && typeof this.video.requestVideoFrameCallback === 'function');
+            const STALL_MS = 260;
 
-            if (canRVFC) {
+            const drawIfNeeded = (stamp) => {
+                if (!this.active || !this.video) return;
+                const throttle = this.getRenderThrottleMs();
+                const t = Number(stamp) || performance.now();
+                if (this.shouldRenderNow() && (t - lastRenderTime >= throttle)) {
+                    lastRenderTime = t;
+                    this.render();
+                }
+            };
+
+            if (this.useVideoFrameCallback) {
                 const onFrame = (now) => {
                     if (!this.active || !this.video) { this.rafId = null; return; }
-                    const throttle = this.getRenderThrottleMs();
-                    if (this.shouldRenderNow() && (now - lastRenderTime >= throttle)) {
-                        lastRenderTime = now;
-                        this.render();
-                    }
+                    this.lastFrameCallbackAt = nowMs();
+                    drawIfNeeded(now);
                     this.rafId = this.video.requestVideoFrameCallback(onFrame);
                 };
                 this.rafId = this.video.requestVideoFrameCallback(onFrame);
-                return;
             }
 
-            const loop = (timestamp) => {
-                if (!this.active || !this.video) { this.rafId = null; return; }
-                const throttle = this.getRenderThrottleMs();
-                if (this.shouldRenderNow() && (timestamp - lastRenderTime >= throttle)) {
-                    lastRenderTime = timestamp;
-                    this.render();
+            const fallbackLoop = (timestamp) => {
+                if (!this.active || !this.video) { this.rafFallbackId = null; return; }
+                const now = nowMs();
+                const frameCbStalled = !this.useVideoFrameCallback || !this.lastFrameCallbackAt || (now - this.lastFrameCallbackAt > STALL_MS);
+                if (frameCbStalled) {
+                    drawIfNeeded(timestamp);
                 }
-                this.rafId = requestAnimationFrame(loop);
+                this.rafFallbackId = requestAnimationFrame(fallbackLoop);
             };
-
-            this.rafId = requestAnimationFrame(loop);
+            this.rafFallbackId = requestAnimationFrame(fallbackLoop);
         }
 
         stopRenderLoop() {
-            if (!this.rafId) return;
-            try {
-                // Could be an rAF id or a requestVideoFrameCallback id
-                if (this.video && typeof this.video.cancelVideoFrameCallback === 'function') {
-                    try { this.video.cancelVideoFrameCallback(this.rafId); } catch (_) { }
-                }
-                cancelAnimationFrame(this.rafId);
-            } catch (_) { }
-            this.rafId = null;
+            if (this.rafId) {
+                try {
+                    if (this.video && typeof this.video.cancelVideoFrameCallback === 'function') {
+                        try { this.video.cancelVideoFrameCallback(this.rafId); } catch (_) { }
+                    }
+                    cancelAnimationFrame(this.rafId);
+                } catch (_) { }
+                this.rafId = null;
+            }
+            if (this.rafFallbackId) {
+                try { cancelAnimationFrame(this.rafFallbackId); } catch (_) { }
+                this.rafFallbackId = null;
+            }
         }
 
         shutdown() {
@@ -4138,20 +4140,24 @@ if (!gl) {
             this.stopRenderLoop();
             this.unbindHdrWarmupEvents(this.video);
 
-            if (this.canvas) {
-                this.canvas.style.opacity = '0';
-                this.canvas.style.visibility = 'hidden';
-            }
-
-            // Restore original video DOM/state
+// Restore original video
             if (this.video) {
-                this.video.style.cssText = this.originalStyle || this.videoOriginalInlineStyle || '';
-                this.video.style.visibility = '';
-                this.video.style.opacity = '';
+                if (this.originalStyle) this.video.setAttribute('style', this.originalStyle);
+                else this.video.removeAttribute('style');
             }
 
-            if (this.overlayHostCreated && this.overlayHost && this.overlayHost.parentNode && this.video) {
-                this.overlayHost.parentNode.insertBefore(this.video, this.overlayHost);
+            // Remove canvas / wrapper and restore DOM order
+            if (this.canvas && this.canvas.parentNode) {
+                this.canvas.parentNode.removeChild(this.canvas);
+            }
+            if (this.wrapper && this.originalParent && this.video) {
+                if (this.originalNextSibling && this.originalNextSibling.parentNode === this.originalParent) {
+                    this.originalParent.insertBefore(this.video, this.originalNextSibling);
+                    this.originalParent.removeChild(this.wrapper);
+                } else {
+                    this.originalParent.insertBefore(this.video, this.wrapper);
+                    this.originalParent.removeChild(this.wrapper);
+                }
             } else if (this.video && this.originalParent) {
                 if (this.originalNextSibling && this.originalNextSibling.parentNode === this.originalParent) {
                     this.originalParent.insertBefore(this.video, this.originalNextSibling);
@@ -4159,18 +4165,7 @@ if (!gl) {
                     this.originalParent.appendChild(this.video);
                 }
             }
-
-            if (this.canvas && this.canvas.parentNode) {
-                this.canvas.parentNode.removeChild(this.canvas);
-            }
-
-            if (this.overlayHostCreated && this.overlayHost && this.overlayHost.parentNode) {
-                this.overlayHost.parentNode.removeChild(this.overlayHost);
-            }
-
-            this.overlayHost = null;
-            this.overlayHostCreated = false;
-            this.firstFrameDrawn = false;
+            this.wrapper = null;
 
             // Clean up WebGL resources
             if (this.gl && this.program) {
@@ -4185,15 +4180,16 @@ if (!gl) {
 
     // GPU Mode Manager
     function activateWebGLMode() {
-        if (!webglPipeline) {
-            webglPipeline = new WebGL2Pipeline();
+        const videos = Array.from(document.querySelectorAll('video'));
+        const target = videos.find(v => isVideoRenderable(v)) || videos.find(v => (v.videoWidth || v.clientWidth || 0) > 0) || videos[0];
+        if (!target) return;
+        if (webglPipeline) {
+            try { webglPipeline.shutdown(); } catch (_) { }
+            webglPipeline = null;
         }
-        document.querySelectorAll('video').forEach(video => {
-            if (!video.__gvf_webgl_attached) {
-                video.__gvf_webgl_attached = true;
-                webglPipeline.attachToVideo(video);
-            }
-        });
+        webglPipeline = new WebGL2Pipeline();
+        target.__gvf_webgl_attached = true;
+        webglPipeline.attachToVideo(target);
     }
 
     function deactivateWebGLMode() {
