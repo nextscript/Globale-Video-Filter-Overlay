@@ -281,7 +281,7 @@
             bl: -1.2,
             wl: 0.2,
             dn: 0.0,
-            edge: 0.3,
+            edge: 0.1,
             hdr: 0.0,
             profile: 'user',
             renderMode: 'svg',
@@ -3286,6 +3286,11 @@ function downloadBlob(blob, filename) {
             this.originalParent = null;
             this.originalNextSibling = null;
             this.originalStyle = null;
+            this.overlayHost = null;
+            this.overlayHostCreated = false;
+            this.overlayHostOriginalStyle = '';
+            this.videoOriginalInlineStyle = '';
+            this.firstFrameDrawn = false;
 
             // Parameter cache
             this.params = {
@@ -3414,6 +3419,10 @@ if (!gl) {
                 }
 
                 this.gl = gl;
+
+                // Keep uploaded HTMLVideoElement orientation correct in WebGL.
+                // Without this, switching to GPU mode while the video is already playing can appear upside down.
+                try { gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true); } catch (_) { }
 
                 if (!this.setupShaders()) {
                     return false;
@@ -3742,11 +3751,16 @@ if (!gl) {
             this.video = video;
             this.bindHdrWarmupEvents(video);
             this.markHdrWarmup();
+            this.firstFrameDrawn = false;
 
-            // Save original position in DOM
+            // Save original DOM/style state
             this.originalParent = video.parentNode;
             this.originalNextSibling = video.nextSibling;
             this.originalStyle = video.style.cssText;
+            this.videoOriginalInlineStyle = video.getAttribute('style') || '';
+            this.overlayHost = null;
+            this.overlayHostCreated = false;
+            this.overlayHostOriginalStyle = '';
 
             // Create texture if needed
             if (!this.videoTexture) {
@@ -3759,25 +3773,59 @@ if (!gl) {
                 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
             }
 
-            // Replace video with canvas
             if (this.originalParent) {
-                // Hide original video
-                video.style.position = 'absolute';
-                video.style.opacity = '0';
-                video.style.pointerEvents = 'none';
-                video.style.width = '1px';
-                video.style.height = '1px';
+                const wrapper = document.createElement('div');
+                const cs = window.getComputedStyle(video);
+                const rect = video.getBoundingClientRect();
+                const inlineDisplay = (cs.display && cs.display !== 'inline') ? cs.display : 'inline-block';
+                const hasExplicitWidth = !!(video.style.width && video.style.width.trim());
+                const hasExplicitHeight = !!(video.style.height && video.style.height.trim());
 
-                // Insert canvas in its place
-                if (this.originalNextSibling) {
-                    this.originalParent.insertBefore(this.canvas, this.originalNextSibling);
-                } else {
-                    this.originalParent.appendChild(this.canvas);
+                wrapper.setAttribute('data-gvf-webgl-host', '1');
+                wrapper.style.position = 'relative';
+                wrapper.style.display = inlineDisplay;
+                wrapper.style.verticalAlign = cs.verticalAlign || 'top';
+                wrapper.style.overflow = 'hidden';
+                wrapper.style.background = 'transparent';
+                if (hasExplicitWidth) {
+                    wrapper.style.width = video.style.width;
+                } else if (rect.width > 0) {
+                    wrapper.style.width = Math.round(rect.width) + 'px';
+                    wrapper.style.maxWidth = '100%';
+                }
+                if (hasExplicitHeight) {
+                    wrapper.style.height = video.style.height;
+                } else if (rect.height > 0) {
+                    wrapper.style.height = Math.round(rect.height) + 'px';
                 }
 
-                // Copy dimensions
-                this.canvas.width = video.videoWidth || 640;
-                this.canvas.height = video.videoHeight || 360;
+                this.overlayHost = wrapper;
+                this.overlayHostCreated = true;
+
+                this.originalParent.insertBefore(wrapper, video);
+                wrapper.appendChild(video);
+                wrapper.appendChild(this.canvas);
+
+                video.style.display = 'block';
+                if (!hasExplicitWidth) video.style.width = '100%';
+                if (!hasExplicitHeight) video.style.height = '100%';
+                video.style.visibility = 'visible';
+                video.style.opacity = '1';
+                video.style.pointerEvents = '';
+
+                this.canvas.style.position = 'absolute';
+                this.canvas.style.inset = '0';
+                this.canvas.style.width = '100%';
+                this.canvas.style.height = '100%';
+                this.canvas.style.display = 'block';
+                this.canvas.style.pointerEvents = 'none';
+                this.canvas.style.background = 'transparent';
+                this.canvas.style.opacity = '0';
+                this.canvas.style.visibility = 'hidden';
+                this.canvas.style.zIndex = '2';
+
+                this.canvas.width = Math.max(1, video.videoWidth || Math.round(video.clientWidth) || 640);
+                this.canvas.height = Math.max(1, video.videoHeight || Math.round(video.clientHeight) || 360);
             }
 
             this.startRenderLoop();
@@ -4000,7 +4048,11 @@ if (!gl) {
 
                 gl.activeTexture(gl.TEXTURE0);
                 gl.bindTexture(gl.TEXTURE_2D, this.videoTexture);
+                try { gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true); } catch (_) { }
                 gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+
+                gl.clearColor(0.0, 0.0, 0.0, 1.0);
+                gl.clear(gl.COLOR_BUFFER_BIT);
 
                 gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
                 gl.enableVertexAttribArray(this.aPosition);
@@ -4012,7 +4064,27 @@ if (!gl) {
 
                 gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
+                if (!this.firstFrameDrawn) {
+                    this.firstFrameDrawn = true;
+                    if (this.canvas) {
+                        this.canvas.style.opacity = '1';
+                        this.canvas.style.visibility = 'visible';
+                    }
+                    if (this.video) {
+                        this.video.style.visibility = 'visible';
+                        this.video.style.opacity = '0';
+                    }
+                }
+
             } catch (e) {
+                if (this.canvas) {
+                    this.canvas.style.opacity = '0';
+                    this.canvas.style.visibility = 'hidden';
+                }
+                if (this.video) {
+                    this.video.style.visibility = 'visible';
+                    this.video.style.opacity = '1';
+                }
                 logW('WebGL render error:', e);
             }
         }
@@ -4066,26 +4138,39 @@ if (!gl) {
             this.stopRenderLoop();
             this.unbindHdrWarmupEvents(this.video);
 
-// Restore original video
-            if (this.video && this.originalParent) {
-                this.video.style.cssText = this.originalStyle || '';
-                this.video.style.position = '';
-                this.video.style.opacity = '';
-                this.video.style.pointerEvents = '';
-                this.video.style.width = '';
-                this.video.style.height = '';
+            if (this.canvas) {
+                this.canvas.style.opacity = '0';
+                this.canvas.style.visibility = 'hidden';
+            }
 
-                if (this.originalNextSibling) {
+            // Restore original video DOM/state
+            if (this.video) {
+                this.video.style.cssText = this.originalStyle || this.videoOriginalInlineStyle || '';
+                this.video.style.visibility = '';
+                this.video.style.opacity = '';
+            }
+
+            if (this.overlayHostCreated && this.overlayHost && this.overlayHost.parentNode && this.video) {
+                this.overlayHost.parentNode.insertBefore(this.video, this.overlayHost);
+            } else if (this.video && this.originalParent) {
+                if (this.originalNextSibling && this.originalNextSibling.parentNode === this.originalParent) {
                     this.originalParent.insertBefore(this.video, this.originalNextSibling);
                 } else {
                     this.originalParent.appendChild(this.video);
                 }
             }
 
-            // Remove canvas
             if (this.canvas && this.canvas.parentNode) {
                 this.canvas.parentNode.removeChild(this.canvas);
             }
+
+            if (this.overlayHostCreated && this.overlayHost && this.overlayHost.parentNode) {
+                this.overlayHost.parentNode.removeChild(this.overlayHost);
+            }
+
+            this.overlayHost = null;
+            this.overlayHostCreated = false;
+            this.firstFrameDrawn = false;
 
             // Clean up WebGL resources
             if (this.gl && this.program) {
@@ -7143,7 +7228,7 @@ const fileInput = document.createElement('input');
                 defaults = {
                     enabled: true, notify: true, darkMoody: true, tealOrange: false, vibrantSat: false, iconsShown: false,
                     sl: 1.0, sr: 0.5, bl: -1.2, wl: 0.2, dn: 0.0,
-                    edge: 0.3,
+                    edge: 0.1,
                     hdr: 0.0, profile: 'user',
                     gradingHudShown: false,
                     ioHudShown: false,
