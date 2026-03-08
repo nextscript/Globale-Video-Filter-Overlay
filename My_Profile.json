@@ -2,6 +2,7 @@
   "schema": "gvf-settings",
   "ver": "1.10",
   "enabled": false,
+  "notify": true,
   "darkMoody": true,
   "tealOrange": false,
   "vibrantSat": false,
