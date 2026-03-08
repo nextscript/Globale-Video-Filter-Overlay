@@ -248,6 +248,13 @@ It looks for places where brightness or colors change strongly.
 The edge value can be changed in the Ctrl + Alt + I menu inside the JSON settings.
 After pressing Save, the filter updates immediately and the change becomes visible in the video.
 <hr>
+<ul>
+<li>0.01 = almost invisible</li>
+<li>0.05–0.15 = light</li>
+<li>0.20–0.35 = normal</li>
+<li>0.50+ = strong</li>
+</ul>
+<hr>
 <h2>Recommended starting presets</h2>
 <hr>
 <b>Clean / natural</b>
