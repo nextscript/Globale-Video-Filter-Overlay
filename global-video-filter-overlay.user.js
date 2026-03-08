@@ -3,7 +3,7 @@
 // @name:de      Global Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.7.4
+// @version      1.7.5
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, HDR and LUTs. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, HDR and LUTs. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @match        *://*/*
@@ -175,6 +175,7 @@
         AUTO_ON: 'gvf_auto_on',
         AUTO_STRENGTH: 'gvf_auto_strength',
         AUTO_LOCK_WB: 'gvf_auto_lock_wb',
+        NOTIFY: 'gvf_notify',
 
         LOGS: 'gvf_logs',
         DEBUG: 'gvf_debug',
@@ -1669,27 +1670,225 @@ function downloadBlob(blob, filename) {
         return notif;
     }
 
-    function showProfileNotification(profileName) {
+    function clearNotificationTextNode(node) {
+        if (!node) return;
+        while (node.firstChild) node.removeChild(node.firstChild);
+    }
+
+    function prettySettingName(key) {
+        const map = {
+            gvf_enabled: 'Enabled',
+            gvf_moody: 'Dark Moody',
+            gvf_teal: 'Teal Orange',
+            gvf_vib: 'Vibrant Saturation',
+            gvf_icons: 'Icons',
+            gvf_sl: 'Sharpen Level',
+            gvf_sr: 'Sharpen Radius',
+            gvf_bl: 'Black Level',
+            gvf_wl: 'White Level',
+            gvf_dn: 'Denoise',
+            gvf_hdr: 'HDR',
+            gvf_profile: 'Profile',
+            gvf_g_hud: 'Grading HUD',
+            gvf_i_hud: 'IO HUD',
+            gvf_s_hud: 'Scopes HUD',
+            gvf_render_mode: 'Render Mode',
+            gvf_u_contrast: 'Contrast',
+            gvf_u_black: 'Black',
+            gvf_u_white: 'White',
+            gvf_u_highlights: 'Highlights',
+            gvf_u_shadows: 'Shadows',
+            gvf_u_saturation: 'Saturation',
+            gvf_u_vibrance: 'Vibrance',
+            gvf_u_sharpen: 'Sharpen',
+            gvf_u_gamma: 'Gamma',
+            gvf_u_grain: 'Grain',
+            gvf_u_hue: 'Hue',
+            gvf_u_r_gain: 'Red Gain',
+            gvf_u_g_gain: 'Green Gain',
+            gvf_u_b_gain: 'Blue Gain',
+            gvf_auto_on: 'Auto On',
+            gvf_auto_strength: 'Auto Strength',
+            gvf_auto_lock_wb: 'Auto Lock WB',
+            gvf_notify: 'Notify',
+            gvf_logs: 'Logs',
+            gvf_debug: 'Debug',
+            gvf_cb_filter: 'Color Blind Filter',
+            enabled: 'Enabled',
+            darkMoody: 'Dark Moody',
+            tealOrange: 'Teal Orange',
+            vibrantSat: 'Vibrant Saturation',
+            sl: 'Sharpen Level',
+            sr: 'Sharpen Radius',
+            bl: 'Black Level',
+            wl: 'White Level',
+            dn: 'Denoise',
+            hdr: 'HDR',
+            profile: 'Profile',
+            renderMode: 'Render Mode',
+            autoOn: 'Auto On',
+            autoStrength: 'Auto Strength',
+            autoLockWB: 'Auto Lock WB',
+            notify: 'Notify',
+            logs: 'Logs',
+            debug: 'Debug',
+            cbFilter: 'Color Blind Filter'
+        };
+        if (Object.prototype.hasOwnProperty.call(map, key)) return map[key];
+        return String(key || 'Setting')
+            .replace(/^gvf_/, '')
+            .replace(/_/g, ' ')
+            .replace(/\b\w/g, c => c.toUpperCase());
+    }
+
+    function resolveReasonValue(reason, currentSettings) {
+        const key = String(reason || '').trim();
+        if (!key) return undefined;
+
+        const gmToInternal = {
+            gvf_enabled: 'enabled',
+            gvf_moody: 'darkMoody',
+            gvf_teal: 'tealOrange',
+            gvf_vib: 'vibrantSat',
+            gvf_icons: 'iconsShown',
+            gvf_sl: 'sl',
+            gvf_sr: 'sr',
+            gvf_bl: 'bl',
+            gvf_wl: 'wl',
+            gvf_dn: 'dn',
+            gvf_hdr: 'hdr',
+            gvf_profile: 'profile',
+            gvf_g_hud: 'gradingHudShown',
+            gvf_i_hud: 'ioHudShown',
+            gvf_s_hud: 'scopesHudShown',
+            gvf_render_mode: 'renderMode',
+            gvf_u_contrast: 'u_contrast',
+            gvf_u_black: 'u_black',
+            gvf_u_white: 'u_white',
+            gvf_u_highlights: 'u_highlights',
+            gvf_u_shadows: 'u_shadows',
+            gvf_u_saturation: 'u_sat',
+            gvf_u_vibrance: 'u_vib',
+            gvf_u_sharpen: 'u_sharp',
+            gvf_u_gamma: 'u_gamma',
+            gvf_u_grain: 'u_grain',
+            gvf_u_hue: 'u_hue',
+            gvf_u_r_gain: 'u_r_gain',
+            gvf_u_g_gain: 'u_g_gain',
+            gvf_u_b_gain: 'u_b_gain',
+            gvf_auto_on: 'autoOn',
+            gvf_auto_strength: 'autoStrength',
+            gvf_auto_lock_wb: 'autoLockWB',
+            gvf_notify: 'notify',
+            gvf_logs: 'logs',
+            gvf_debug: 'debug',
+            gvf_cb_filter: 'cbFilter'
+        };
+
+        const directKey = gmToInternal[key] || key;
+        if (currentSettings && Object.prototype.hasOwnProperty.call(currentSettings, directKey)) {
+            return currentSettings[directKey];
+        }
+
+        switch (directKey) {
+            case 'enabled': return enabled;
+            case 'darkMoody': return darkMoody;
+            case 'tealOrange': return tealOrange;
+            case 'vibrantSat': return vibrantSat;
+            case 'autoOn': return autoOn;
+            case 'autoLockWB': return autoLockWB;
+            case 'notify': return notify;
+            case 'logs': return logs;
+            case 'debug': return debug;
+            default: return undefined;
+        }
+    }
+
+    function showScreenNotification(message, options = null) {
         const notif = createNotificationElement();
         const textEl = document.getElementById('gvf-notification-text');
 
         if (textEl) {
-            textEl.textContent = `Profile: ${profileName}`;
+            clearNotificationTextNode(textEl);
+
+            if (options && typeof options === 'object') {
+                const titleLine = document.createElement('div');
+                titleLine.textContent = String(options.title || message || '').trim() || 'Saved';
+                textEl.appendChild(titleLine);
+
+                const detail = String(options.detail || '').trim();
+                if (detail) {
+                    const detailLine = document.createElement('div');
+                    detailLine.textContent = detail;
+                    detailLine.style.marginTop = '4px';
+                    detailLine.style.fontSize = '14px';
+                    detailLine.style.fontWeight = '900';
+                    if (options.detailColor) detailLine.style.color = String(options.detailColor);
+                    textEl.appendChild(detailLine);
+                }
+            } else {
+                textEl.textContent = String(message || '').trim() || 'Saved';
+            }
         }
 
-        // Clear any existing timeout
         if (notificationTimeout) {
             clearTimeout(notificationTimeout);
         }
 
-        // Show notification
         notif.style.display = 'flex';
 
-        // Set timeout to hide after 3 seconds
         notificationTimeout = setTimeout(() => {
             notif.style.display = 'none';
             notificationTimeout = null;
         }, 3000);
+    }
+
+    function showProfileNotification(profileName) {
+        showScreenNotification(`Profile: ${profileName}`);
+    }
+
+    function showAutoSaveNotification(profileName, reason, currentSettings) {
+        const readableName = prettySettingName(reason);
+        const resolvedValue = resolveReasonValue(reason, currentSettings);
+        const reasonKey = String(reason || '').trim();
+        const isHdrReason = (reasonKey === 'hdr' || reasonKey === K.HDR);
+        const isRenderModeReason = (reasonKey === 'renderMode' || reasonKey === K.RENDER_MODE);
+        let detailText = readableName;
+        let detailColor = '#ffffff';
+
+        if (typeof resolvedValue === 'boolean') {
+            if (resolvedValue) {
+                detailText = `${readableName} enabled`;
+                detailColor = '#4cff6a';
+            } else {
+                detailText = `${readableName} disabled`;
+                detailColor = '#ff4c4c';
+            }
+        } else if (isHdrReason) {
+            const hdrValue = Number(resolvedValue);
+            if (Number.isFinite(hdrValue) && Math.abs(hdrValue) > 0.0001) {
+                detailText = `${readableName} enabled (${hdrValue.toFixed(2)})`;
+                detailColor = '#4cff6a';
+            } else {
+                detailText = `${readableName} disabled`;
+                detailColor = '#ff4c4c';
+            }
+        } else if (isRenderModeReason) {
+            const modeValue = String(resolvedValue || '').toLowerCase();
+            if (modeValue === 'gpu') {
+                detailText = `${readableName}: GPU / WebGL2 Canvas Pipeline`;
+                detailColor = '#4cff6a';
+            } else {
+                detailText = `${readableName}: SVG`;
+                detailColor = '#88ccff';
+            }
+        }
+
+        showScreenNotification('', {
+            title: `Profile "${profileName}" saved`,
+            detail: detailText,
+            detailColor: detailColor
+        });
     }
 
     let _autoSaveProfileTimer = null;
@@ -1717,10 +1916,15 @@ function downloadBlob(blob, filename) {
             _autoSaveProfileTimer = null;
             try {
                 updateCurrentProfileSettings();
+                const currentSettings = getCurrentSettings();
                 const activeInfo = document.getElementById('gvf-active-profile-info');
                 if (activeInfo && activeUserProfile) {
                     const suffix = _autoSaveProfileReason ? ` • auto-saved (${_autoSaveProfileReason})` : ' • auto-saved';
                     activeInfo.title = `Active profile: ${activeUserProfile.name}${suffix}`;
+                }
+                if (notify) {
+                    const profileName = activeUserProfile && activeUserProfile.name ? activeUserProfile.name : 'Unknown';
+                    showAutoSaveNotification(profileName, _autoSaveProfileReason, currentSettings);
                 }
                 log('User profile auto-saved:', activeUserProfile && activeUserProfile.name ? activeUserProfile.name : 'unknown', _autoSaveProfileReason || 'change');
             } catch (e) {
@@ -1830,6 +2034,7 @@ function downloadBlob(blob, filename) {
 
             gmSet(K.PROF, profile);
             gmSet(K.RENDER_MODE, renderMode);
+            gmSet(K.NOTIFY, notify);
 
             gmSet(K.AUTO_ON, autoOn);
             gmSet(K.AUTO_STRENGTH, autoStrength);
@@ -2713,6 +2918,7 @@ function downloadBlob(blob, filename) {
     let u_b_gain = Number(gmGet(K.U_B_GAIN, 128));
 
     let autoOn = !!gmGet(K.AUTO_ON, true);
+    let notify = !!gmGet(K.NOTIFY, true);
     let autoStrength = Number(gmGet(K.AUTO_STRENGTH, 0.65));
     autoStrength = clamp(autoStrength, 0, 1);
     let autoLockWB = !!gmGet(K.AUTO_LOCK_WB, true);
@@ -6814,7 +7020,7 @@ const fileInput = document.createElement('input');
             if (firefoxDetected) {
 
                 defaults = {
-                    enabled: true, darkMoody: true, tealOrange: false, vibrantSat: false, iconsShown: false,
+                    enabled: true, notify: true, darkMoody: true, tealOrange: false, vibrantSat: false, iconsShown: false,
                     sl: 1.3, sr: -1.1, bl: 0.3, wl: 0.2, dn: 0.6,
                     hdr: 0.0, profile: 'off',
                     gradingHudShown: false,
@@ -6835,7 +7041,7 @@ const fileInput = document.createElement('input');
             } else {
 
                 defaults = {
-                    enabled: true, darkMoody: true, tealOrange: false, vibrantSat: false, iconsShown: false,
+                    enabled: true, notify: true, darkMoody: true, tealOrange: false, vibrantSat: false, iconsShown: false,
                     sl: 1.0, sr: 0.5, bl: -1.2, wl: 0.2, dn: -0.6,
                     hdr: 0.0, profile: 'user',
                     gradingHudShown: false,
@@ -7298,6 +7504,7 @@ const fileInput = document.createElement('input');
             schema: 'gvf-settings',
             ver: '1.10',
             enabled: !!enabled,
+            notify: !!notify,
             darkMoody: !!darkMoody,
             tealOrange: !!tealOrange,
             vibrantSat: !!vibrantSat,
@@ -7361,6 +7568,10 @@ const fileInput = document.createElement('input');
             const u = (obj.user && typeof obj.user === 'object') ? obj.user : {};
 
             if ('enabled' in obj) enabled = !!obj.enabled;
+            if ('notify' in obj) {
+                notify = !!obj.notify;
+                gmSet(K.NOTIFY, notify);
+            }
             if ('darkMoody' in obj) darkMoody = !!obj.darkMoody;
             if ('tealOrange' in obj) tealOrange = !!obj.tealOrange;
             if ('vibrantSat' in obj) vibrantSat = !!obj.vibrantSat;
@@ -7484,6 +7695,7 @@ if ('lutProfile' in obj) {
 
             gmSet(K.PROF, profile);
             gmSet(K.RENDER_MODE, renderMode);
+            gmSet(K.NOTIFY, notify);
             gmSet(K.G_HUD, gradingHudShown);
             gmSet(K.I_HUD, ioHudShown);
             gmSet(K.S_HUD, scopesHudShown);
@@ -9061,6 +9273,7 @@ if ('lutProfile' in obj) {
                 u_b_gain = Number(gmGet(K.U_B_GAIN, u_b_gain));
 
                 autoOn = !!gmGet(K.AUTO_ON, autoOn);
+                notify = !!gmGet(K.NOTIFY, notify);
                 autoStrength = clamp(Number(gmGet(K.AUTO_STRENGTH, autoStrength)), 0, 1);
                 autoLockWB = !!gmGet(K.AUTO_LOCK_WB, autoLockWB);
 
