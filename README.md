@@ -1,7 +1,7 @@
 <img src="https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/preview.png">
-
+<hr>
 <h2>What this script does</h2>
-
+<hr>
 This userscript adds a global video filter pipeline to all HTML5 "video" elements on any website you visit.
 It applies visual enhancements like sharpen/blur, black & white level tuning, optional cinematic color looks, and an adjustable grain reduction / texture control.
 
@@ -40,7 +40,7 @@ All shortcuts use: CTRL + ALT + key
 <li>CTRL + ALT + V → Toggle Vibrant & Saturated</li>
 <li>CTRL + ALT + P → Toggle HDR</li>
 <li>CTRL + ALT + C → Profile Cycle (Color Grading)</li>
-<li>CTRL + ALT + G → Show/Hide Grading Settings (For User Profile) + Assistive-Recoloring Filters (Experimental) + LUT Profiles <b style="color:red;">(New)</b></li>
+<li>CTRL + ALT + G → Show/Hide Grading Settings (For User Profile) + Assistive-Recoloring Filters (Experimental) + LUT Profiles </li>
 <li>CTRL + ALT + A → Toggle Auto-Scene-Match </li>
 <li>CTRL + ALT + I → Show/Hide Export/Import JSON (Screenshot & Recording) + Debug ON/OFF </li>
 <li>CTRL + ALT + S → Show/Hide Scopes HUD</li>
@@ -88,12 +88,11 @@ All sliders support Snap-to-0 around the center, so you can easily return to neu
 <li>Negative = texture boost (micro-contrast sharpening)</li>
 </ul>
 
-<b>HDR — Pseudo-HDR on/off (-1.0 … +2.0, step 0.1) Default: +0.3</b>
+<b>HDR — HDR on/off (-1.0 … +2.0, step 0.1) Default: +0.3</b>
 <ul>
 <li>Positive = add punch, clarity, deeper highlights, and richer colors</li>
 <li>Negative = soften the image, reducing contrast for a smoother look</li>
 </ul>
-<b style="color:red;">New:</b><br>
 <ul>
 <li>HDR completely reworked: Proper ACES tonemapping in linear color space</li>
 <li>Significantly more natural highlights and richer colors</li>
@@ -102,26 +101,27 @@ All sliders support Snap-to-0 around the center, so you can easily return to neu
 <br>
 <hr>
 <h2>Profile Cycle</h2>
-
-<b>Off</b>
-No profile filtering active. Only manual settings (Base, Dark&Moody, Teal&Orange, Vibrant, HDR, RGB Gain) are applied.
-
-<b>Movie</b>
-Cinematic look with warm color grading and softer contrast. Optimized for movies and series with natural skin tone reproduction.
-
-<b>Anime</b>
-Vibrant, colorful look specifically for anime and animations. Enhances typical anime colors and provides clearer lines.
-
-<b>Gaming</b>
-High-contrast, intense look for games. Improves visibility in dark areas and enhances colors for a more immersive gaming experience.
-
-<b>EyeCare</b>
-Reduces blue light by 50% for more comfortable viewing during long sessions, especially in the evening. Warmer color temperature similar to night mode features.
-
-<b>User</b>
-Your own manual settings. All your personal adjustments from the Grading HUD (contrast, black level, white level, RGB gain, etc.) take effect here.
+<hr>
+<b>Off</b><br>
+No profile filtering active. Only manual settings (Base, Dark&Moody, Teal&Orange, Vibrant, HDR, RGB Gain) are applied.<br>
+<br>
+<b>Movie</b><br>
+Cinematic look with warm color grading and softer contrast. Optimized for movies and series with natural skin tone reproduction.<br>
+<br>
+<b>Anime</b><br>
+Vibrant, colorful look specifically for anime and animations. Enhances typical anime colors and provides clearer lines.<br>
+<br>
+<b>Gaming</b><br>
+High-contrast, intense look for games. Improves visibility in dark areas and enhances colors for a more immersive gaming experience.<br>
+<br>
+<b>EyeCare</b><br>
+Reduces blue light by 50% for more comfortable viewing during long sessions, especially in the evening. Warmer color temperature similar to night mode features.<br>
+<br>
+<b>User</b><br>
+Your own manual settings. All your personal adjustments from the Grading HUD (contrast, black level, white level, RGB gain, etc.) take effect here.<br>
 <hr>
 <h2>Auto-Scene-Match</h2>
+<hr>
 An intelligent automatic image optimization that adapts to your video content in real-time.
 
 <b>How it works:</b>
@@ -143,35 +143,37 @@ The function continuously analyzes the playing video image and calculates optima
 <li>Cannot analyze DRM-protected videos (uses last good values)</li>
 </ul>
 <br>
-<b>Visual feedback:</b>
-A small dot in the video shows the status(If debug=true Default: false):
-<br>
+<b>Visual feedback:</b><br>
+A small dot in the video shows the status(If debug=true Default: false):<br>
+
 🟢 Green = Active, no changes<br>
 🟢 Light Green = Active and currently adjusting<br>
-🔴 Red = No updates (e.g., with DRM)<br>
+🔴 Red = No updates (e.g., with DRM)
 <br>
-<b>Goal:</b>
+<b>Goal:</b><br>
 Always optimally looking videos without manual intervention – especially useful for changing scenes or different video sources.
 <hr>
 <h2>Scopes HUD</h2>
-A professional analysis tool directly in the video that helps you make precise color corrections.
+<hr>
+A professional analysis tool directly in the video that helps you make precise color corrections.<br>
 
-<b>Luma Histogram (Y)</b>
-Displays the brightness distribution in the image from black (left) to white (right). Ideal for checking contrast, exposure, and avoiding clipping in highlights or shadows.
+<b>Luma Histogram (Y)</b><br>
+Displays the brightness distribution in the image from black (left) to white (right). Ideal for checking contrast, exposure, and avoiding clipping in highlights or shadows.<br>
 
-<b>RGB Parade</b>
-Separate histograms for Red, Green, and Blue side by side. Enables precise analysis of color balance and assists with color correction and white balance.
+<b>RGB Parade</b><br>
+Separate histograms for Red, Green, and Blue side by side. Enables precise analysis of color balance and assists with color correction and white balance.<br>
 
-<b>Saturation Meter</b>
-Live display of the average color saturation in the image. Helps detect excessive or insufficient saturation.
+<b>Saturation Meter</b><br>
+Live display of the average color saturation in the image. Helps detect excessive or insufficient saturation.<br>
 
-<b>Average Values</b>
-Shows the mean values for brightness (Y), RGB average, and saturation as numerical readouts.
+<b>Average Values</b><br>
+Shows the mean values for brightness (Y), RGB average, and saturation as numerical readouts.<br>
 
-<b>Special Feature:</b>
+<b>Special Feature:</b><br>
 The Scopes HUD displays values after applying all your filters – so you see exactly what your settings are doing.
 <hr>
 <h2>GPU Pipeline Mode</h2>
+<hr>
 The GPU Pipeline Mode is an alternative rendering mode for maximum performance. Instead of using SVG filters, all image enhancements are processed directly on the GPU using WebGL/Canvas.
 <br>
 <b>Benefits:</b>
@@ -191,6 +193,7 @@ The GPU Pipeline Mode is an alternative rendering mode for maximum performance. 
 </ul>
 <hr>
 <h2>Assistive-Recoloring Filters (Experimental)</h2>
+<hr>
 <b>These filters help people with color blindness distinguish colors better:</b>
 <ul>
 <li>Protanopia (Red-Blind): Enhances red-cyan contrast and shifts red tones to more perceptible orange hues</li>
@@ -198,20 +201,25 @@ The GPU Pipeline Mode is an alternative rendering mode for maximum performance. 
 <li>Tritanopia (Blue-Blind): Enhances blue-yellow contrast and optimizes blue tones for better recognition</li>
 </ul>
 <hr>
-<h2>LUT Filter Feature <b style="color:red;">(New)</b></h2>
-<b>LUT Filter System:</b><br>
-The system converts a tiled 2D LUT PNG (e.g. 512×512) and 3D LUT .cube into a 4×5 row-major color matrix using least-squares approximation.<br>
-The resulting matrix is applied in real-time via feColorMatrix, enabling instant color transformation without page reload.<p>
-<br><p>
+<h2>LUT Filter Feature </h2>
+<hr>
+<b>LUT Filter System:</b>
+The system converts a tiled 2D LUT PNG (e.g. 512×512) and 3D LUT .cube into a 4×5 row-major color matrix using least-squares approximation.
+The resulting matrix is applied in real-time via feColorMatrix, enabling instant color transformation without page reload.
+
 <b>LUT Profile Manager:</b>
 <ul>
-<li>Unterstützt gekachelte 2D-LUT-PNGs (512×512) und 3D-LUT-.cube-Dateien</li>
+<li>Supports tiled 2D LUT PNGs (512×512) and 3D LUT .cube files</li>
 <li>Create, edit, delete</li>
 <li>Export all profiles as ZIP</li>
 <li>Import JSON or ZIP (same-name overwrite)</li>
 </ul>
 <hr>
+<b>LUTs Profiles:</b><br>
+<a href="https://github.com/nextscript/Globale-Video-Filter-Overlay/raw/refs/heads/main/LUTs1.7.3_v1.1.zip" target="_blank">LUTs Profiles Examples</a>
+<hr>
 <h2>⚙️ Config-Button</b></h2>
+<hr>
 A button in the IO-HUD (which you open with Ctrl+Alt+I) that opens the Profile Manager menu. There you can:
 <ul>
 <li>Create and manage multiple user profiles</li>
@@ -224,7 +232,24 @@ A button in the IO-HUD (which you open with Ctrl+Alt+I) that opens the Profile M
 <h2>On-Screen Notification:</h2>
 <b>A brief overlay in the top-left corner of the video that shows which profile is currently active for 3 seconds.(Shift + Q)</b>
 <hr>
+<h2>Edge Detection <b style="color:red;">(New)</b></h2>
+Edge detection finds the edges and lines in an image or video.
+It looks for places where brightness or colors change strongly.
+<br>
+<b>What it is useful for:</b><br>
+<ul>
+<li>Showing clear outlines</li>
+<li>Making details stand out</li>
+<li>Making videos look clearer and sharper</li>
+<li>Improving the look of compressed streams</li>
+</ul>
+<br>
+<b>Note:</b><br>
+The edge value can be changed in the Ctrl + Alt + I menu inside the JSON settings.
+After pressing Save, the filter updates immediately and the change becomes visible in the video.
+<hr>
 <h2>Recommended starting presets</h2>
+<hr>
 <b>Clean / natural</b>
 <ul>
 <li>SL: +1.0</li>
@@ -244,7 +269,20 @@ A button in the IO-HUD (which you open with Ctrl+Alt+I) that opens the Profile M
 </ul>
 <hr>
 <h2>My Profile:</h2>
+<hr>
 <b>SVG Mode (Recommended)</b><br>
 <a href="https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/My_Profile.json" target="_blank">My_Profile.json</a><br>
++ LUT : <a href="https://github.com/nextscript/Globale-Video-Filter-Overlay/raw/refs/heads/main/Cinematic%201.zip" target="_blank">Cinematic 1.zip</a><br>
 <b>GPU Mode</b><br>
-<a href="https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/GPU_Mode_Profile.json" target="_blank">GPU_Mode_Profile.json</a>
+<a href="https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/GPU_Mode_Profile.json" target="_blank">GPU_Mode_Profile.json</a><br>
+<hr>
+<h2>IIMPORTANT</h2>
+<hr>
+<b>Chrome/Edge 138+:</b>
+<ul>
+<li>1. Enable Developer Mode at chrome://extensions.</li>
+<li>2. Enable “Allow User Scripts” in Tampermonkey extension settings.</li>
+<li>3. Restart Browser.</li>
+</ul>
+<b>More Info:</b><br>
+<a href="https://www.tampermonkey.net/faq.php?locale=en#Q209" target="_blank">Permission to execute userscripts</a>
