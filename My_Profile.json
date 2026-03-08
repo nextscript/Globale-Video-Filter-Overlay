@@ -12,6 +12,7 @@
   "bl": -0.9,
   "wl": 0.5,
   "dn": 0,
+  "edge": 0,
   "hdr": 0,
   "profile": "user",
   "lutProfile": "Mavic Pro LUTs||Contrast",
