@@ -4340,7 +4340,9 @@ if (!gl) {
 
                 gl.activeTexture(gl.TEXTURE0);
                 gl.bindTexture(gl.TEXTURE_2D, this.videoTexture);
-                gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+                // HTML5 video frames need a single Y-flip on upload in the GPU path.
+                // Setting this to false here inverted the live image again.
+                gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
                 gl.clearColor(0.0, 0.0, 0.0, 0.0);
                 gl.clear(gl.COLOR_BUFFER_BIT);
                 gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
