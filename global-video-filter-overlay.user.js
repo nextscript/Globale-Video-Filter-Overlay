@@ -3,7 +3,7 @@
 // @name:de      Global Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.7.7
+// @version      1.7.8
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, HDR and LUTs. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, HDR and LUTs. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @match        *://*/*
@@ -394,9 +394,27 @@
         return JSON.parse(JSON.stringify(defaults || {}));
     }
 
-    function buildImportedUserProfileSettings(settingsObj) {
-        const defaults = getDefaultUserProfileSettingsSnapshot();
+    const PROFILE_UI_ONLY_KEYS = ['iconsShown', 'gradingHudShown', 'ioHudShown', 'scopesHudShown'];
+
+    function stripUiOnlySettings(settingsObj) {
         const src = (settingsObj && typeof settingsObj === 'object') ? JSON.parse(JSON.stringify(settingsObj)) : {};
+        for (const key of PROFILE_UI_ONLY_KEYS) {
+            if (Object.prototype.hasOwnProperty.call(src, key)) delete src[key];
+        }
+        return src;
+    }
+
+    function settingsEqualNormalized(a, b) {
+        try {
+            return JSON.stringify(stripUiOnlySettings(a)) === JSON.stringify(stripUiOnlySettings(b));
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function buildImportedUserProfileSettings(settingsObj) {
+        const defaults = stripUiOnlySettings(getDefaultUserProfileSettingsSnapshot());
+        const src = stripUiOnlySettings(settingsObj);
         return {
             ...defaults,
             ...src
@@ -418,7 +436,7 @@
                 name,
                 createdAt: Number(raw.createdAt || Date.now()),
                 updatedAt: Number(raw.updatedAt || raw.createdAt || Date.now()),
-                settings: { ...(raw.settings && typeof raw.settings === 'object' ? raw.settings : {}) }
+                settings: buildImportedUserProfileSettings(raw.settings && typeof raw.settings === 'object' ? raw.settings : {})
             });
         }
         return out;
@@ -2221,11 +2239,14 @@ function downloadBlob(blob, filename) {
     function writeCurrentSettingsIntoActiveProfile(saveToStorage = false) {
         if (!activeUserProfile) return null;
 
-        const currentSettings = getCurrentSettings();
+        const currentSettings = stripUiOnlySettings(getCurrentSettings());
+        const prevSettings = stripUiOnlySettings(activeUserProfile && activeUserProfile.settings ? activeUserProfile.settings : {});
+        const changed = !settingsEqualNormalized(prevSettings, currentSettings);
+
         const nextProfile = {
             ...activeUserProfile,
             settings: JSON.parse(JSON.stringify(currentSettings)),
-            updatedAt: Date.now()
+            updatedAt: changed ? Date.now() : Number(activeUserProfile && activeUserProfile.updatedAt ? activeUserProfile.updatedAt : Date.now())
         };
 
         const idx = Array.isArray(userProfiles)
@@ -2240,19 +2261,19 @@ function downloadBlob(blob, filename) {
             activeUserProfile = userProfiles.find(p => p.id === nextProfile.id) || nextProfile;
         }
 
-        if (saveToStorage) {
+        if (saveToStorage && changed) {
             saveUserProfiles();
         }
 
-        return activeUserProfile;
+        return changed ? activeUserProfile : null;
     }
 
     function updateCurrentProfileSettings(force = false) {
-        if (!force) return false;
+        void force;
         if (!activeUserProfile || _isSwitchingUserProfile) return false;
 
-        writeCurrentSettingsIntoActiveProfile(true);
-        return true;
+        const changed = !!writeCurrentSettingsIntoActiveProfile(true);
+        return changed;
     }
 
     function scheduleAutoSaveCurrentProfile(reason = '') {
@@ -2272,7 +2293,6 @@ function downloadBlob(blob, filename) {
             darkMoody: darkMoody,
             tealOrange: tealOrange,
             vibrantSat: vibrantSat,
-            iconsShown: iconsShown,
             sl: sl,
             sr: sr,
             bl: bl,
@@ -2283,9 +2303,6 @@ function downloadBlob(blob, filename) {
             profile: profile,
             renderMode: renderMode,
             lutProfile: activeLutProfileKey,
-            gradingHudShown: gradingHudShown,
-            ioHudShown: ioHudShown,
-            scopesHudShown: scopesHudShown,
             autoOn: autoOn,
             autoStrength: autoStrength,
             autoLockWB: autoLockWB,
@@ -2321,7 +2338,6 @@ function downloadBlob(blob, filename) {
             darkMoody = settings.darkMoody ?? darkMoody;
             tealOrange = settings.tealOrange ?? tealOrange;
             vibrantSat = settings.vibrantSat ?? vibrantSat;
-            iconsShown = settings.iconsShown ?? iconsShown;
 
             sl = settings.sl ?? sl;
             sr = settings.sr ?? sr;
@@ -2333,9 +2349,6 @@ function downloadBlob(blob, filename) {
             hdr = settings.hdr ?? hdr;
             profile = settings.profile ?? profile;
             renderMode = settings.renderMode ?? renderMode;
-            gradingHudShown = settings.gradingHudShown ?? gradingHudShown;
-            ioHudShown = settings.ioHudShown ?? ioHudShown;
-            scopesHudShown = settings.scopesHudShown ?? scopesHudShown;
 
             // Restore LUT profile for this user profile (if present)
             if (Object.prototype.hasOwnProperty.call(settings, 'lutProfile')) {
@@ -7283,10 +7296,54 @@ const fileInput = document.createElement('input');
         stopEventsOn(ta);
 
         const setDirty = (on) => { if (on) ta.dataset.dirty = '1'; else delete ta.dataset.dirty; };
+        let ioJsonAutoSaveTimer = null;
+        let lastIoJsonApplied = '';
 
         ta.addEventListener('input', () => {
             setDirty(true);
-            status.textContent = 'JSON changed. Click Save to apply.';
+            status.textContent = 'JSON changed. Waiting for valid JSON...';
+
+            if (ioJsonAutoSaveTimer) {
+                clearTimeout(ioJsonAutoSaveTimer);
+                ioJsonAutoSaveTimer = null;
+            }
+
+            ioJsonAutoSaveTimer = setTimeout(() => {
+                const raw = String(ta.value || '').trim();
+                if (!raw) return;
+
+                let obj = null;
+                try {
+                    obj = JSON.parse(raw);
+                } catch (_) {
+                    status.textContent = 'JSON invalid. Auto-save skipped.';
+                    return;
+                }
+
+                if (raw === lastIoJsonApplied) return;
+
+                const ok = importSettings(obj);
+                if (!ok) {
+                    status.textContent = 'Invalid JSON structure.';
+                    return;
+                }
+
+                const changed = updateCurrentProfileSettings();
+                try { updateProfileList(); } catch (_) { }
+
+                lastIoJsonApplied = JSON.stringify(exportSettings(), null, 2);
+                ta.value = lastIoJsonApplied;
+                setDirty(false);
+
+                status.textContent = changed ? 'Auto-saved + applied to active profile.' : 'No settings change detected.';
+                if (changed) {
+                    showScreenNotification('', {
+                        title: `Profile "${String(activeUserProfile?.name || 'Default')}" auto-saved`,
+                        detail: 'IO HUD JSON applied to active profile',
+                        detailColor: '#4cff6a'
+                    });
+                }
+            }, 450);
         });
 
         const row = document.createElement('div');
@@ -7415,6 +7472,7 @@ const fileInput = document.createElement('input');
 
                     setDirty(false);
                     ta.value = JSON.stringify(exportSettings(), null, 2);
+                    lastIoJsonApplied = ta.value;
                     status.textContent = 'Imported + applied.';
                 } catch (_) {
                     status.textContent = 'Import failed (invalid JSON).';
@@ -7432,6 +7490,7 @@ const fileInput = document.createElement('input');
         btnRefresh.addEventListener('click', () => {
             setDirty(false);
             ta.value = JSON.stringify(exportSettings(), null, 2);
+            lastIoJsonApplied = ta.value;
             status.textContent = 'Exported current settings.';
         });
 
@@ -7445,13 +7504,13 @@ const fileInput = document.createElement('input');
                 const ok = importSettings(obj);
                 if (!ok) { status.textContent = 'Invalid JSON structure.'; return; }
 
-                updateCurrentProfileSettings(true);
-                saveUserProfiles();
+                const changed = updateCurrentProfileSettings(true);
                 try { updateProfileList(); } catch (_) { }
 
                 setDirty(false);
                 ta.value = JSON.stringify(exportSettings(), null, 2);
-                status.textContent = 'Saved + applied.';
+                lastIoJsonApplied = ta.value;
+                status.textContent = changed ? 'Saved + applied.' : 'No settings change detected.';
                 showScreenNotification('', {
                     title: `Profile "${String(activeUserProfile?.name || 'Default')}" saved`,
                     detail: 'IO HUD JSON saved + applied',
@@ -7472,12 +7531,10 @@ const fileInput = document.createElement('input');
             if (firefoxDetected) {
 
                 defaults = {
-                    enabled: true, notify: true, darkMoody: true, tealOrange: false, vibrantSat: false, iconsShown: false,
+                    enabled: true, notify: true, darkMoody: true, tealOrange: false, vibrantSat: false,
                     sl: 1.3, sr: -1.1, bl: 0.3, wl: 0.2, dn: 0.0,
                     edge: 0.0,
                     hdr: 0.0, profile: 'off',
-                    gradingHudShown: false,
-                    ioHudShown: false,
                     renderMode: 'svg',
             lutProfile: 'none',
                     autoOn: true,
@@ -7494,12 +7551,10 @@ const fileInput = document.createElement('input');
             } else {
 
                 defaults = {
-                    enabled: true, notify: true, darkMoody: true, tealOrange: false, vibrantSat: false, iconsShown: false,
+                    enabled: true, notify: true, darkMoody: true, tealOrange: false, vibrantSat: false,
                     sl: 1.0, sr: 0.5, bl: -1.2, wl: 0.2, dn: 0.0,
                     edge: 0.1,
                     hdr: 0.0, profile: 'user',
-                    gradingHudShown: false,
-                    ioHudShown: false,
                     renderMode: 'svg',
             lutProfile: 'none',
                     autoOn: true,
@@ -7519,7 +7574,8 @@ const fileInput = document.createElement('input');
             try { updateProfileList(); } catch (_) { }
             setDirty(true);
             ta.value = JSON.stringify(exportSettings(), null, 2);
-            status.textContent = 'Reset applied. Use Save to store it in the active profile.';
+            lastIoJsonApplied = '';
+            status.textContent = 'Reset applied. Waiting for auto-save or Save.';
             showScreenNotification('', {
                 title: `Profile "${String(activeUserProfile?.name || 'Default')}" reset`,
                 detail: 'Defaults restored',
@@ -7968,7 +8024,6 @@ const fileInput = document.createElement('input');
             darkMoody: !!darkMoody,
             tealOrange: !!tealOrange,
             vibrantSat: !!vibrantSat,
-            iconsShown: !!iconsShown,
 
             sl: nFix(normSL(), 1),
             sr: nFix(normSR(), 1),
@@ -7981,10 +8036,6 @@ const fileInput = document.createElement('input');
             profile: String(profile),
             lutProfile: String((typeof activeLutProfileKey==='string' && activeLutProfileKey.trim()) ? activeLutProfileKey.trim() : 'none'),
             renderMode: String(renderMode),
-
-            gradingHudShown: !!gradingHudShown,
-            ioHudShown: !!ioHudShown,
-            scopesHudShown: !!scopesHudShown,
 
             autoOn: !!autoOn,
             autoStrength: nFix(autoStrength, 2),
@@ -8036,7 +8087,6 @@ const fileInput = document.createElement('input');
             if ('darkMoody' in obj) darkMoody = !!obj.darkMoody;
             if ('tealOrange' in obj) tealOrange = !!obj.tealOrange;
             if ('vibrantSat' in obj) vibrantSat = !!obj.vibrantSat;
-            if ('iconsShown' in obj) iconsShown = !!obj.iconsShown;
 
             if ('sl' in obj) sl = clamp(Number(obj.sl), -2, 2);
             if ('sr' in obj) sr = clamp(Number(obj.sr), -2, 2);
@@ -8056,10 +8106,6 @@ const fileInput = document.createElement('input');
                 const r = String(obj.renderMode).toLowerCase();
                 renderMode = (r === 'gpu' ? 'gpu' : 'svg');
             }
-
-            if ('gradingHudShown' in obj) gradingHudShown = !!obj.gradingHudShown;
-            if ('ioHudShown' in obj) ioHudShown = !!obj.ioHudShown;
-            if ('scopesHudShown' in obj) scopesHudShown = !!obj.scopesHudShown;
 
             if ('autoOn' in obj) autoOn = !!obj.autoOn;
             if ('autoStrength' in obj) autoStrength = clamp(Number(obj.autoStrength), 0, 1);
