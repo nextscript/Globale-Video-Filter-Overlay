@@ -11,7 +11,7 @@
   "bl": -1.2,
   "wl": 1,
   "dn": 0,
-  "edge": 0.1,
+  "edge": 0,
   "hdr": 0,
   "profile": "user",
   "lutProfile": "Self||Cinema / Netflix Style",
