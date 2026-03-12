@@ -56,6 +56,14 @@
     let lastRenderTime = 0;
     const RENDER_THROTTLE = 41; // ~24 FPS cap to reduce GPU load
 
+    function render() {
+        if (renderMode === 'gpu') {
+            applyGpuFilter();
+        } else {
+            regenerateSvgImmediately();
+        }
+    }
+
     function throttledRender(timestamp) {
         if (timestamp - lastRenderTime >= RENDER_THROTTLE) {
             lastRenderTime = timestamp;
@@ -1767,6 +1775,12 @@ function downloadBlob(blob, filename) {
             // ZIP
             const files = await unzipToFiles(new Uint8Array(buf), null);
             if (!files || !files.length) return { ok: false, msg: 'Import failed (no files in zip).' };
+
+            // Clear all existing LUT profiles and groups before importing
+            lutProfiles = [];
+            lutGroups = [];
+            activeLutProfileKey = 'none';
+            activeLutMatrix4x5 = null;
 
             let imported = 0;
             for (const f of files) {
@@ -8274,16 +8288,6 @@ if ('lutProfile' in obj) {
         if (svg) svg.remove();
     }
 
-    function deactivateWebGLMode() {
-        if (webglPipeline) {
-            webglPipeline.shutdown();
-            webglPipeline = null;
-        }
-        document.querySelectorAll('video').forEach(video => {
-            delete video.__gvf_webgl_attached;
-        });
-    }
-
     function ensureGpuSvgHost() {
         let svg = document.getElementById(GPU_SVG_ID);
         if (svg) return svg;
@@ -9984,6 +9988,7 @@ if ('lutProfile' in obj) {
     }
 
     function init() {
+        const isFirefoxBrowser = isFirefox();
         if (activeUserProfile && activeUserProfile.settings && typeof activeUserProfile.settings === 'object') {
             try {
                 applyUserProfileSettings(activeUserProfile.settings);
