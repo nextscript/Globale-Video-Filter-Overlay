@@ -7823,7 +7823,9 @@ const fileInput = document.createElement('input');
             btnLoadExample.textContent = '⏳ Loading…';
             status.textContent = 'Fetching example profile…';
             try {
-                const rawUrl = 'https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/main/My_Profile.json';
+                const rawUrl = isFirefox()
+                    ? 'https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/firefox_fix.json'
+                    : 'https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/main/My_Profile.json';
                 const text = await new Promise((resolve, reject) => {
                     GM_xmlhttpRequest({
                         method: 'GET',
