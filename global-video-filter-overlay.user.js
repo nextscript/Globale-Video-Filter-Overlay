@@ -3,7 +3,7 @@
 // @name:de      Global Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.8.0
+// @version      1.8.1
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, HDR and LUTs. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung, HDR und LUTs. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
@@ -6302,8 +6302,52 @@ importInput.addEventListener('change', async () => {
             }
         });
 
+        const loadExamplesBtn = mkCtlBtn('⬇ Load Examples LUT');
+        loadExamplesBtn.title = 'Download and import the bundled LUT example profiles';
+        loadExamplesBtn.addEventListener('click', async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            loadExamplesBtn.disabled = true;
+            loadExamplesBtn.textContent = '⏳ Loading…';
+            try {
+                // githubusercontent CDN URL – try direct first, then proxy fallbacks
+                const rawUrl = 'https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/main/LUTsProfiles_v2.0.zip';
+                const candidates = [
+                    rawUrl,
+                    'https://api.allorigins.win/raw?url=' + encodeURIComponent(rawUrl),
+                    'https://corsproxy.io/?' + encodeURIComponent(rawUrl),
+                    'https://proxy.cors.sh/' + rawUrl,
+                ];
+                let response = null;
+                for (const url of candidates) {
+                    try {
+                        const r = await fetch(url);
+                        if (r.ok) { response = r; break; }
+                    } catch (_) { }
+                }
+                if (!response) throw new Error('All fetch attempts failed (CORS/network)');
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const blob = await response.blob();
+                const file = new File([blob], 'LUTsProfiles_v2.0.zip', { type: 'application/zip' });
+                const res = await importLutProfilesFromZipOrJsonFile(file);
+                if (!res || !res.ok) {
+                    alert(res && res.msg ? res.msg : 'LUT import failed. Check console for details.');
+                } else {
+                    log(res.msg || 'Example LUTs imported.');
+                    try { showValueNotification('LUT Import', res.msg, '#4cff6a'); } catch (_) { }
+                }
+            } catch (err) {
+                logW('Load Examples LUT failed:', err);
+                alert('Load Examples LUT failed: ' + (err && err.message ? err.message : err));
+            } finally {
+                loadExamplesBtn.disabled = false;
+                loadExamplesBtn.textContent = '⬇ Load Examples LUT';
+            }
+        });
+
         ctlRow.appendChild(exportBtn);
         ctlRow.appendChild(importBtn);
+        ctlRow.appendChild(loadExamplesBtn);
         ctlRow.appendChild(importInput);
         menu.appendChild(ctlRow);
 
@@ -10133,6 +10177,47 @@ if ('lutProfile' in obj) {
             if (avgRGBEl) avgRGBEl.textContent = 'RGB: 0.00';
             const avgSatEl = document.querySelector('.gvf-scope-avg-sat');
             if (avgSatEl) avgSatEl.textContent = 'Sat: 0.00';
+        }
+    }
+
+    // -------------------------
+    // Auto-Import LUT Profiles from URL (runs once when no LUT profiles are stored)
+    // -------------------------
+    async function autoImportLutProfilesFromUrl(url) {
+        try {
+            if (Array.isArray(lutProfiles) && lutProfiles.length > 0) {
+                log('autoImportLutProfilesFromUrl: LUT profiles already present, skipping auto-import.');
+                return;
+            }
+            log('autoImportLutProfilesFromUrl: No LUT profiles found – fetching from', url);
+            const rawUrl = 'https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/main/LUTsProfiles_v2.0.zip';
+            const candidates = [
+                rawUrl,
+                'https://api.allorigins.win/raw?url=' + encodeURIComponent(rawUrl),
+                'https://corsproxy.io/?' + encodeURIComponent(rawUrl),
+                'https://proxy.cors.sh/' + rawUrl,
+            ];
+            let response = null;
+            for (const c of candidates) {
+                try { const r = await fetch(c); if (r.ok) { response = r; break; } } catch (_) { }
+            }
+            if (!response) { logW('autoImportLutProfilesFromUrl: All fetch attempts failed.'); return; }
+            if (!response.ok) {
+                logW('autoImportLutProfilesFromUrl: Fetch failed:', response.status, response.statusText);
+                return;
+            }
+            const blob = await response.blob();
+            const fileName = url.split('/').pop() || 'LUTsProfiles.zip';
+            const file = new File([blob], fileName, { type: 'application/zip' });
+            const result = await importLutProfilesFromZipOrJsonFile(file);
+            if (result && result.ok) {
+                log('autoImportLutProfilesFromUrl:', result.msg);
+                try { showValueNotification('LUT Import', result.msg, '#4cff6a'); } catch (_) { }
+            } else {
+                logW('autoImportLutProfilesFromUrl: Import failed –', result && result.msg);
+            }
+        } catch (e) {
+            logW('autoImportLutProfilesFromUrl error:', e);
         }
     }
 
