@@ -3,7 +3,7 @@
 // @name:de      Global Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.8.1
+// @version      1.8.2
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, HDR and LUTs. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung, HDR und LUTs. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
@@ -7802,17 +7802,69 @@ const fileInput = document.createElement('input');
             await toggleVideoRecord(status, btnRec);
         });
 
+        // Load Example button
+        const btnLoadExample = mkBtn('⬇ Load Example');
+        btnLoadExample.style.background = 'rgba(76, 255, 106, 0.12)';
+        btnLoadExample.style.border = '1px solid rgba(76, 255, 106, 0.4)';
+        btnLoadExample.style.color = '#fff';
+        btnLoadExample.addEventListener('mouseenter', () => {
+            btnLoadExample.style.background = 'rgba(76, 255, 106, 0.22)';
+            btnLoadExample.style.borderColor = '#4cff6a';
+        });
+        btnLoadExample.addEventListener('mouseleave', () => {
+            btnLoadExample.style.background = 'rgba(76, 255, 106, 0.12)';
+            btnLoadExample.style.borderColor = 'rgba(76, 255, 106, 0.4)';
+        });
+        btnLoadExample.addEventListener('click', async () => {
+            btnLoadExample.disabled = true;
+            btnLoadExample.textContent = '⏳ Loading…';
+            status.textContent = 'Fetching example profile…';
+            try {
+                const rawUrl = 'https://github.com/nextscript/Globale-Video-Filter-Overlay/raw/refs/heads/main/My_Profile.json';
+                const candidates = [
+                    rawUrl,
+                    'https://api.allorigins.win/raw?url=' + encodeURIComponent(rawUrl),
+                    'https://corsproxy.io/?' + encodeURIComponent(rawUrl),
+                    'https://proxy.cors.sh/' + rawUrl,
+                ];
+                let response = null;
+                for (const url of candidates) {
+                    try { const r = await fetch(url); if (r.ok) { response = r; break; } } catch (_) { }
+                }
+                if (!response) throw new Error('All fetch attempts failed (CORS/network)');
+                const text = await response.text();
+                const obj = JSON.parse(text.trim());
+                const ok = importSettings(obj);
+                if (!ok) { status.textContent = 'Load Example: invalid JSON structure.'; return; }
+                updateCurrentProfileSettings(true);
+                try { updateProfileList(); } catch (_) { }
+                setDirty(false);
+                ta.value = JSON.stringify(exportSettings(), null, 2);
+                lastIoJsonApplied = ta.value;
+                status.textContent = 'Example profile loaded + applied.';
+                try { showValueNotification('Profile Import', 'Example profile loaded.', '#4cff6a'); } catch (_) { }
+                log('Example profile loaded from GitHub.');
+            } catch (err) {
+                logW('Load Example failed:', err);
+                status.textContent = 'Load Example failed: ' + (err && err.message ? err.message : err);
+            } finally {
+                btnLoadExample.disabled = false;
+                btnLoadExample.textContent = '⬇ Load Example';
+            }
+        });
+
         // Add buttons in the correct order
         row.appendChild(btnRefresh);
         row.appendChild(btnSave);
         row.appendChild(btnSelect);
         row.appendChild(btnExportFile);
         row.appendChild(btnImportFile);
+        row.appendChild(btnReset);
+        row.appendChild(btnLoadExample);
         row.appendChild(btnShot);
         row.appendChild(btnRec);
         row.appendChild(btnConfig);  // Config Button
         row.appendChild(btnDebug);
-        row.appendChild(btnReset);
 
         box.appendChild(ta);
         box.appendChild(row);
