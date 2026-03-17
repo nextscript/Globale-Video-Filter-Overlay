@@ -13,6 +13,9 @@
 // @grant        GM_addValueChangeListener
 // @grant        GM_info
 // @grant        GM_download
+// @grant        GM_xmlhttpRequest
+// @connect      raw.githubusercontent.com
+// @connect      github.com
 // @iconURL      https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/logomes.png
 // @downloadURL https://update.greasyfork.org/scripts/561189/Global%20Video%20Filter%20Overlay.user.js
 // @updateURL https://update.greasyfork.org/scripts/561189/Global%20Video%20Filter%20Overlay.meta.js
@@ -7820,19 +7823,19 @@ const fileInput = document.createElement('input');
             btnLoadExample.textContent = '⏳ Loading…';
             status.textContent = 'Fetching example profile…';
             try {
-                const rawUrl = 'https://github.com/nextscript/Globale-Video-Filter-Overlay/raw/refs/heads/main/My_Profile.json';
-                const candidates = [
-                    rawUrl,
-                    'https://api.allorigins.win/raw?url=' + encodeURIComponent(rawUrl),
-                    'https://corsproxy.io/?' + encodeURIComponent(rawUrl),
-                    'https://proxy.cors.sh/' + rawUrl,
-                ];
-                let response = null;
-                for (const url of candidates) {
-                    try { const r = await fetch(url); if (r.ok) { response = r; break; } } catch (_) { }
-                }
-                if (!response) throw new Error('All fetch attempts failed (CORS/network)');
-                const text = await response.text();
+                const rawUrl = 'https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/main/My_Profile.json';
+                const text = await new Promise((resolve, reject) => {
+                    GM_xmlhttpRequest({
+                        method: 'GET',
+                        url: rawUrl,
+                        anonymous: true,
+                        redirect: 'follow',
+                        onload: (r) => r.status >= 200 && r.status < 300 ? resolve(r.responseText) : reject(new Error('HTTP ' + r.status)),
+                        onerror: () => reject(new Error('Network error')),
+                        ontimeout: () => reject(new Error('Timeout')),
+                        timeout: 15000
+                    });
+                });
                 const obj = JSON.parse(text.trim());
                 const ok = importSettings(obj);
                 if (!ok) { status.textContent = 'Load Example: invalid JSON structure.'; return; }
