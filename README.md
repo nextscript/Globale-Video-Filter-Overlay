@@ -282,7 +282,7 @@ After pressing Save, the filter updates immediately and the change becomes visib
 <hr>
 <b>SVG Mode (Recommended)</b><br>
 <a href="https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/My_Profile.json" target="_blank">My_Profile.json</a><br>
-+ LUT : <a href="https://github.com/nextscript/Globale-Video-Filter-Overlay/raw/refs/heads/main/Cinematic%201.zip" target="_blank">Cinematic 1.zip</a><br>
++ LUT : Fresh LUTs||Cinematic 1<br>
 <b>GPU Mode</b><br>
 <a href="https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/GPU_Mode_Profile.json" target="_blank">GPU_Mode_Profile.json</a><br>
 <hr>
