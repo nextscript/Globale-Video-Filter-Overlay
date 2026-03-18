@@ -5916,8 +5916,8 @@ if (!gl) {
 
         const renderQueue = [];
 
-        userProfiles.forEach(profile => {
-            const isActive = activeUserProfile && activeUserProfile.id === profile.id;
+        userProfiles.forEach(userProf => {
+            const isActive = activeUserProfile && activeUserProfile.id === userProf.id;
 
             const item = document.createElement('div');
             item.style.cssText = `display:flex;align-items:center;gap:12px;padding:10px 12px;
@@ -5940,7 +5940,7 @@ if (!gl) {
             bigCanvas.style.cssText = 'display:block;width:auto;height:auto;max-width:90vw;max-height:65vh;border-radius:10px;';
             let bigReady = false;
 
-            renderQueue.push({ settings: profile.settings || {}, bigCanvas, thumbCanvas, onDone: () => { bigReady = true; } });
+            renderQueue.push({ settings: userProf.settings || {}, bigCanvas, thumbCanvas, onDone: () => { bigReady = true; } });
 
             // Lightbox
             previewWrap.addEventListener('click', (e) => {
@@ -5951,7 +5951,7 @@ if (!gl) {
                     justify-content:center;gap:14px;cursor:zoom-out;`;
                 stopEventsOn(overlay);
                 const lbTitle = document.createElement('div');
-                lbTitle.textContent = '👤 ' + String(profile.name) + (isActive ? '  · active' : '');
+                lbTitle.textContent = '👤 ' + String(userProf.name) + (isActive ? '  · active' : '');
                 lbTitle.style.cssText = `color:#fff;font-size:18px;font-weight:900;text-shadow:0 0 12px rgba(42,111,219,0.8);pointer-events:none;`;
                 const lbClose = document.createElement('button');
                 lbClose.type = 'button'; lbClose.textContent = '✕';
@@ -5974,10 +5974,10 @@ if (!gl) {
             const nameSpan = document.createElement('span');
             nameSpan.style.cssText = `font-weight:${isActive ? '900' : '600'};color:${isActive ? '#fff' : '#ccc'};
                 font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;`;
-            nameSpan.textContent = profile.name + (isActive ? ' (active)' : '');
+            nameSpan.textContent = userProf.name + (isActive ? ' (active)' : '');
             const dateSpan = document.createElement('span');
             dateSpan.style.cssText = `font-size:11px;color:#888;`;
-            dateSpan.textContent = 'Created: ' + new Date(profile.createdAt).toLocaleDateString('en-US');
+            dateSpan.textContent = 'Created: ' + new Date(userProf.createdAt).toLocaleDateString('en-US');
             info.appendChild(nameSpan); info.appendChild(dateSpan);
 
             // Actions
@@ -5998,7 +5998,7 @@ if (!gl) {
                 activateBtn.addEventListener('mouseleave', () => { activateBtn.style.background='rgba(42,111,219,0.3)'; });
                 activateBtn.addEventListener('click', (e) => {
                     e.preventDefault(); e.stopPropagation();
-                    switchToUserProfile(profile.id); updateProfileList();
+                    switchToUserProfile(userProf.id); updateProfileList();
                     const ai = document.getElementById('gvf-active-profile-info');
                     if (ai) setActiveProfileInfo(ai, activeUserProfile?.name);
                 });
@@ -6009,12 +6009,12 @@ if (!gl) {
             const editBtn = mkActionBtn('Edit','rgba(255,255,255,0.08)','rgba(255,255,255,0.3)','#fff');
             editBtn.addEventListener('click', (e) => {
                 e.preventDefault(); e.stopPropagation();
-                const existingEd = document.getElementById('gvf-profile-edit-window');
+                const existingEd = document.getElementById('gvf-userProf-edit-window');
                 if (existingEd) existingEd.remove();
 
                 const EW = 680;
                 const win = document.createElement('div');
-                win.id = 'gvf-profile-edit-window';
+                win.id = 'gvf-userProf-edit-window';
                 win.style.cssText = `position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
                     width:${EW}px;max-width:96vw;max-height:90vh;
                     background:rgba(18,18,18,0.98);backdrop-filter:blur(12px);
@@ -6028,7 +6028,7 @@ if (!gl) {
                 edHeader.style.cssText = `display:flex;justify-content:space-between;align-items:center;
                     padding-bottom:10px;border-bottom:2px solid #2a6fdb;flex-shrink:0;cursor:move;`;
                 const edTitle = document.createElement('div');
-                edTitle.textContent = '✏️ Edit — ' + String(profile.name);
+                edTitle.textContent = '✏️ Edit — ' + String(userProf.name);
                 edTitle.style.cssText = `font-size:17px;font-weight:900;color:#fff;text-shadow:0 0 10px rgba(42,111,219,0.6);`;
                 const edClose = document.createElement('button');
                 edClose.type = 'button'; edClose.textContent = '✕';
@@ -6074,7 +6074,7 @@ if (!gl) {
                 };
 
                 // Render once on open
-                setTimeout(() => edRenderPreview(profile.settings || {}), 0);
+                setTimeout(() => edRenderPreview(userProf.settings || {}), 0);
 
                 const textarea = document.createElement('textarea');
                 textarea.style.cssText = `width:100%;min-height:240px;resize:vertical;flex-shrink:0;
@@ -6083,7 +6083,7 @@ if (!gl) {
                     font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
                     line-height:1.4;outline:none;`;
                 stopEventsOn(textarea);
-                try { textarea.value = JSON.stringify(profile, null, 2); } catch(_) { textarea.value = '{}'; }
+                try { textarea.value = JSON.stringify(userProf, null, 2); } catch(_) { textarea.value = '{}'; }
                 win.appendChild(textarea);
 
                 const btnRow = document.createElement('div');
@@ -6095,11 +6095,26 @@ if (!gl) {
                 errMsg.style.cssText = 'font-size:11px;color:#ff6b6b;flex:1;';
 
                 const parseAndValidate = () => {
-                    const parsed = JSON.parse(textarea.value);
-                    parsed.id = profile.id;
-                    if (!parsed.name || typeof parsed.name !== 'string') throw new Error('Missing name');
-                    if (!parsed.settings || typeof parsed.settings !== 'object') throw new Error('Missing settings');
-                    parsed.settings = buildImportedUserProfileSettings(parsed.settings);
+                    let parsed;
+                    try {
+                        parsed = JSON.parse(textarea.value);
+                    } catch(e) {
+                        throw new Error('JSON syntax error: ' + e.message);
+                    }
+                    if (!parsed || typeof parsed !== 'object') throw new Error('JSON must be an object');
+                    parsed.id = userProf.id;
+                    if (!parsed.name || typeof parsed.name !== 'string' || !parsed.name.trim()) {
+                        parsed.name = userProf.name || 'Profile';
+                    }
+                    // If settings missing, fall back to original profile settings
+                    if (!parsed.settings || typeof parsed.settings !== 'object') {
+                        parsed.settings = userProf.settings || {};
+                    }
+                    try {
+                        parsed.settings = buildImportedUserProfileSettings(parsed.settings);
+                    } catch(e) {
+                        throw new Error('Settings merge failed: ' + e.message);
+                    }
                     return parsed;
                 };
 
@@ -6110,16 +6125,32 @@ if (!gl) {
                 });
                 saveJsonBtn.addEventListener('click', (ev) => {
                     ev.preventDefault(); ev.stopPropagation();
+                    errMsg.textContent = '';
+                    let parsed;
+                    try { parsed = parseAndValidate(); } catch(err) { errMsg.textContent = 'Parse error: ' + err.message; return; }
                     try {
-                        errMsg.textContent = '';
-                        const parsed = parseAndValidate();
                         parsed.updatedAt = Date.now();
-                        const idx = userProfiles.findIndex(p => p.id === profile.id);
-                        if (idx >= 0) userProfiles[idx] = parsed;
-                        saveUserProfiles(); win.remove(); updateProfileList();
+                        parsed.createdAt = userProf.createdAt || Date.now();
+                        if (!parsed.name || !String(parsed.name).trim()) parsed.name = userProf.name || 'Profile';
+                        // Search by id (string compare) — robust against array replacement
+                        const profileId = String(userProf.id || '');
+                        let idx = userProfiles.findIndex(p => p && String(p.id) === profileId);
+                        if (idx < 0) {
+                            // Fallback: search by name
+                            idx = userProfiles.findIndex(p => p && String(p.name) === String(userProf.name));
+                        }
+                        if (idx >= 0) {
+                            userProfiles[idx] = parsed;
+                        } else {
+                            // Profile not found — add it
+                            userProfiles.push(parsed);
+                        }
+                        saveUserProfiles();
+                        win.remove();
+                        updateProfileList();
                         const ai = document.getElementById('gvf-active-profile-info');
                         if (ai) setActiveProfileInfo(ai, activeUserProfile?.name);
-                    } catch(err) { errMsg.textContent = 'Invalid JSON: ' + err.message; }
+                    } catch(err) { errMsg.textContent = 'Save error: ' + err.message; }
                 });
                 cancelBtn.addEventListener('click', (ev) => { ev.preventDefault(); ev.stopPropagation(); win.remove(); });
                 btnRow.appendChild(applyPreviewBtn); btnRow.appendChild(saveJsonBtn);
@@ -6129,14 +6160,14 @@ if (!gl) {
             });
             actions.appendChild(editBtn);
 
-            if (profile.id !== 'default') {
+            if (userProf.id !== 'default') {
                 const deleteBtn = mkActionBtn('✕ Delete','rgba(255,68,68,0.2)','#ff4444','#ff8888');
                 deleteBtn.addEventListener('mouseenter', () => { deleteBtn.style.background='rgba(255,68,68,0.4)'; deleteBtn.style.color='#fff'; });
                 deleteBtn.addEventListener('mouseleave', () => { deleteBtn.style.background='rgba(255,68,68,0.2)'; deleteBtn.style.color='#ff8888'; });
                 deleteBtn.addEventListener('click', (e) => {
                     e.preventDefault(); e.stopPropagation();
-                    if (confirm(`Really delete profile "${profile.name}"?`)) {
-                        deleteUserProfile(profile.id); updateProfileList();
+                    if (confirm(`Really delete userProf "${userProf.name}"?`)) {
+                        deleteUserProfile(userProf.id); updateProfileList();
                         const ai = document.getElementById('gvf-active-profile-info');
                         if (ai) setActiveProfileInfo(ai, activeUserProfile?.name);
                     }
