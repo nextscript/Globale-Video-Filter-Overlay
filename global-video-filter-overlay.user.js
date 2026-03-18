@@ -3,7 +3,7 @@
 // @name:de      Global Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.8.3
+// @version      1.8.4
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, HDR and LUTs. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung, HDR und LUTs. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
@@ -224,7 +224,10 @@
         LUT_GROUPS: 'gvf_lut_groups',
 
         USER_PROFILE_MANAGER_POS: 'gvf_user_profile_manager_pos',
-        LUT_PROFILE_MANAGER_POS: 'gvf_lut_profile_manager_pos'
+        LUT_PROFILE_MANAGER_POS: 'gvf_lut_profile_manager_pos',
+
+        // Custom SVG filter codes
+        CUSTOM_SVG_CODES: 'gvf_custom_svg_codes'
     };
 
     // -------------------------
@@ -238,6 +241,218 @@
     const gmSet = (key, val) => { try { GM_setValue(key, val); } catch (_) { } };
     const nowMs = () => (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
     const isFirefox = () => { try { return /firefox/i.test(navigator.userAgent || ''); } catch (_) { return false; } };
+
+    // -------------------------
+    // Custom SVG Codes  { id, label, code, enabled }
+    // -------------------------
+    let customSvgCodes = [];
+
+    function loadCustomSvgCodes() {
+        try {
+            const raw = gmGet(K.CUSTOM_SVG_CODES, null);
+            if (raw) {
+                const p = JSON.parse(raw);
+                if (Array.isArray(p)) { customSvgCodes = p.filter(e => e && e.id); return; }
+            }
+        } catch (_) {}
+        customSvgCodes = [];
+    }
+
+    function saveCustomSvgCodes() {
+        try { gmSet(K.CUSTOM_SVG_CODES, JSON.stringify(customSvgCodes)); } catch (_) {}
+        // Update count badge in HUD if visible
+        const badge = document.getElementById('gvf-svg-codes-count');
+        if (badge) {
+            const ac = customSvgCodes.filter(e => e.enabled).length;
+            badge.textContent = customSvgCodes.length ? `${ac}/${customSvgCodes.length} active` : '';
+        }
+    }
+
+    function parseCustomSvgCode(codeStr) {
+        // Manual parser: extract tag name + attributes, build SVGElements via createElementNS.
+        // Avoids DOMParser entirely — no CSP/namespace/whitespace issues.
+        try {
+            const results = [];
+            // Match self-closing or open tags: <tagName attr="val" .../>  or <tagName ...>
+            const tagRe = /<([a-zA-Z][a-zA-Z0-9]*)((?:\s+[^>]*?)?)\s*\/?>/g;
+            let m;
+            while ((m = tagRe.exec(codeStr)) !== null) {
+                const tagName = m[1];
+                const attrStr = m[2] || '';
+                const el = document.createElementNS('http://www.w3.org/2000/svg', tagName);
+
+                // Parse attributes: name="value" or name='value'
+                const attrRe = /([a-zA-Z][a-zA-Z0-9_:-]*)\s*=\s*(?:"([\s\S]*?)"|'([\s\S]*?)')/g;
+                let am;
+                while ((am = attrRe.exec(attrStr)) !== null) {
+                    const attrName = am[1];
+                    // Normalize whitespace in the value (newlines → space)
+                    const attrVal = (am[2] !== undefined ? am[2] : am[3]).replace(/[\r\n\t]+/g, ' ').replace(/ {2,}/g, ' ').trim();
+                    el.setAttribute(attrName, attrVal);
+                }
+                results.push(el);
+            }
+            return results.length ? results : null;
+        } catch (_) { return null; }
+    }
+
+    function openCustomSvgModal() {
+        const MODAL_ID = 'gvf-custom-svg-modal';
+        const existing = document.getElementById(MODAL_ID);
+        if (existing) { existing.remove(); return; }
+
+        const modal = document.createElement('div');
+        modal.id = MODAL_ID;
+        modal.style.cssText = `position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:560px;max-width:96vw;max-height:85vh;background:rgba(18,18,22,0.98);border:2px solid #4a9eff;border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,0.85);color:#eaeaea;font-family:system-ui,sans-serif;z-index:2147483647;display:flex;flex-direction:column;padding:18px;user-select:none;pointer-events:auto;`;
+        stopEventsOn(modal);
+
+        // Header
+        const hdr = document.createElement('div');
+        hdr.style.cssText = `display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;padding-bottom:10px;border-bottom:2px solid #4a9eff;flex-shrink:0;`;
+        const htitle = document.createElement('div');
+        htitle.textContent = '⬡ Custom SVG Filter Codes';
+        htitle.style.cssText = `font-size:16px;font-weight:900;color:#fff;text-shadow:0 0 8px #4a9eff;`;
+        const hclose = document.createElement('button');
+        hclose.textContent = '✕';
+        hclose.style.cssText = `background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.2);color:#fff;font-size:18px;cursor:pointer;width:32px;height:32px;border-radius:7px;flex-shrink:0;`;
+        hclose.addEventListener('click', () => modal.remove());
+        hdr.appendChild(htitle); hdr.appendChild(hclose);
+        modal.appendChild(hdr);
+
+        // List area
+        const listWrap = document.createElement('div');
+        listWrap.style.cssText = `overflow-y:auto;max-height:220px;background:rgba(0,0,0,0.3);border-radius:8px;padding:6px;margin-bottom:12px;display:flex;flex-direction:column;gap:6px;flex-shrink:0;`;
+        modal.appendChild(listWrap);
+
+        function renderList() {
+            while (listWrap.firstChild) listWrap.removeChild(listWrap.firstChild);
+            if (!customSvgCodes.length) {
+                const empty = document.createElement('div');
+                empty.textContent = 'No entries yet. Add one below.';
+                empty.style.cssText = `color:#888;font-size:12px;padding:10px;text-align:center;`;
+                listWrap.appendChild(empty);
+                return;
+            }
+            customSvgCodes.forEach((entry, i) => {
+                const row = document.createElement('div');
+                row.style.cssText = `display:flex;align-items:center;gap:8px;padding:7px 10px;background:rgba(255,255,255,0.05);border-radius:8px;border:1px solid rgba(255,255,255,0.1);`;
+
+                const chk = document.createElement('input');
+                chk.type = 'checkbox';
+                chk.checked = !!entry.enabled;
+                chk.style.cssText = `width:16px;height:16px;accent-color:#4a9eff;cursor:pointer;flex-shrink:0;`;
+                stopEventsOn(chk);
+                chk.addEventListener('change', () => {
+                    customSvgCodes[i].enabled = chk.checked;
+                    saveCustomSvgCodes();
+                    regenerateSvgImmediately();
+                });
+
+                const lbl = document.createElement('div');
+                lbl.textContent = entry.label || 'Untitled';
+                lbl.style.cssText = `flex:1;font-size:12px;font-weight:700;color:#d0e8ff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;`;
+
+                const editBtn = document.createElement('button');
+                editBtn.textContent = '✏';
+                editBtn.title = 'Edit';
+                editBtn.style.cssText = `padding:3px 8px;background:rgba(100,180,255,0.18);color:#a0d4ff;border:1px solid rgba(100,180,255,0.4);border-radius:5px;font-size:12px;cursor:pointer;`;
+                stopEventsOn(editBtn);
+                editBtn.addEventListener('click', () => renderEditArea(i));
+
+                const delBtn = document.createElement('button');
+                delBtn.textContent = '🗑';
+                delBtn.title = 'Delete';
+                delBtn.style.cssText = `padding:3px 8px;background:rgba(255,80,80,0.15);color:#ff8080;border:1px solid rgba(255,80,80,0.4);border-radius:5px;font-size:12px;cursor:pointer;`;
+                stopEventsOn(delBtn);
+                delBtn.addEventListener('click', () => {
+                    customSvgCodes.splice(i, 1);
+                    saveCustomSvgCodes();
+                    regenerateSvgImmediately();
+                    renderList();
+                    renderEditArea();
+                });
+
+                row.appendChild(chk); row.appendChild(lbl); row.appendChild(editBtn); row.appendChild(delBtn);
+                listWrap.appendChild(row);
+            });
+        }
+
+        // Edit / Add form
+        const editArea = document.createElement('div');
+        editArea.style.cssText = `display:flex;flex-direction:column;gap:8px;flex-shrink:0;`;
+        modal.appendChild(editArea);
+
+        function renderEditArea(idx) {
+            const editing = (idx !== undefined && idx >= 0);
+            while (editArea.firstChild) editArea.removeChild(editArea.firstChild);
+
+            const formTitle = document.createElement('div');
+            formTitle.textContent = editing ? `✏ Edit: ${customSvgCodes[idx].label}` : '➕ Add new SVG Code';
+            formTitle.style.cssText = `font-size:12px;font-weight:900;color:#4a9eff;`;
+            editArea.appendChild(formTitle);
+
+            const labelInput = document.createElement('input');
+            labelInput.type = 'text';
+            labelInput.placeholder = 'Label (z.B. "Sharpen 3x3")';
+            labelInput.value = editing ? (customSvgCodes[idx].label || '') : '';
+            labelInput.style.cssText = `width:100%;background:rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.2);border-radius:7px;padding:7px 10px;color:#fff;font-size:12px;outline:none;box-sizing:border-box;`;
+            stopEventsOn(labelInput);
+            editArea.appendChild(labelInput);
+
+            const codeInput = document.createElement('textarea');
+            codeInput.placeholder = 'SVG Filter-Primitive Code, z.B.:\n<feConvolveMatrix kernelMatrix="0 -1 0 -1 5 -1 0 -1 0"/>';
+            codeInput.value = editing ? (customSvgCodes[idx].code || '') : '';
+            codeInput.style.cssText = `width:100%;height:100px;background:rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.2);border-radius:7px;padding:8px 10px;color:#d0ffb0;font-size:11px;font-family:monospace;outline:none;resize:vertical;box-sizing:border-box;`;
+            stopEventsOn(codeInput);
+            editArea.appendChild(codeInput);
+
+            const errMsg = document.createElement('div');
+            errMsg.style.cssText = `font-size:11px;color:#ff7070;min-height:14px;`;
+            editArea.appendChild(errMsg);
+
+            const btnRow = document.createElement('div');
+            btnRow.style.cssText = `display:flex;gap:8px;justify-content:flex-end;`;
+
+            if (editing) {
+                const cancelBtn = document.createElement('button');
+                cancelBtn.textContent = 'Cancel';
+                cancelBtn.style.cssText = `padding:7px 14px;background:rgba(255,255,255,0.1);color:#ccc;border:1px solid rgba(255,255,255,0.2);border-radius:7px;font-size:12px;cursor:pointer;`;
+                stopEventsOn(cancelBtn);
+                cancelBtn.addEventListener('click', () => renderEditArea());
+                btnRow.appendChild(cancelBtn);
+            }
+
+            const saveBtn = document.createElement('button');
+            saveBtn.textContent = editing ? '💾 Save' : '➕ Add';
+            saveBtn.style.cssText = `padding:7px 16px;background:#2a6fdb;color:#fff;border:none;border-radius:7px;font-size:12px;font-weight:900;cursor:pointer;`;
+            stopEventsOn(saveBtn);
+            saveBtn.addEventListener('click', () => {
+                const label = labelInput.value.trim() || 'Untitled';
+                const code = codeInput.value.trim();
+                if (!code) { errMsg.textContent = 'Code must not be empty.'; return; }
+                const parsed = parseCustomSvgCode(code);
+                if (!parsed) { errMsg.textContent = '❌ Invalid SVG code — parse error.'; return; }
+                errMsg.textContent = '';
+                if (editing) {
+                    customSvgCodes[idx].label = label;
+                    customSvgCodes[idx].code = code;
+                } else {
+                    customSvgCodes.push({ id: 'csvg_' + Date.now(), label, code, enabled: true });
+                }
+                saveCustomSvgCodes();
+                regenerateSvgImmediately();
+                renderList();
+                renderEditArea();
+            });
+            btnRow.appendChild(saveBtn);
+            editArea.appendChild(btnRow);
+        }
+
+        renderList();
+        renderEditArea();
+        makeFloatingManagerDraggable(modal, hdr, 'gvf_custom_svg_modal_pos');
+        (document.body || document.documentElement).appendChild(modal);
+    }
 
     // -------------------------
     // Bulk-update guard
@@ -7925,6 +8140,37 @@ const fileInput = document.createElement('input');
             lutSection.appendChild(lutPlus);
             overlay.appendChild(lutSection);
 
+        // ---- Custom SVG Codes ----
+        const svgCodesSep = document.createElement('div');
+        svgCodesSep.style.cssText = `height:1px;background:rgba(255,255,255,0.14);margin:8px 0;`;
+        overlay.appendChild(svgCodesSep);
+
+        const svgCodesRow = document.createElement('div');
+        svgCodesRow.style.cssText = `display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:10px;background:rgba(0,0,0,0.92);box-shadow:0 0 0 1px rgba(255,255,255,0.14) inset;margin-top:4px;`;
+
+        const svgCodesLabel = document.createElement('div');
+        svgCodesLabel.textContent = 'SVG Codes';
+        svgCodesLabel.style.cssText = `min-width:100px;text-align:left;font-size:11px;font-weight:900;color:#cfcfcf;padding-left:2px;`;
+
+        const svgCodesBtn = document.createElement('button');
+        svgCodesBtn.textContent = '⬡ Manage';
+        svgCodesBtn.style.cssText = `padding:4px 12px;background:rgba(100,180,255,0.18);color:#a0d4ff;border:1px solid rgba(100,180,255,0.45);border-radius:6px;font-size:11px;font-weight:900;cursor:pointer;transition:background 0.15s;`;
+        svgCodesBtn.addEventListener('mouseenter', () => { svgCodesBtn.style.background = 'rgba(100,180,255,0.32)'; });
+        svgCodesBtn.addEventListener('mouseleave', () => { svgCodesBtn.style.background = 'rgba(100,180,255,0.18)'; });
+        stopEventsOn(svgCodesBtn);
+        svgCodesBtn.addEventListener('click', () => openCustomSvgModal());
+
+        const svgCodesCount = document.createElement('div');
+        svgCodesCount.id = 'gvf-svg-codes-count';
+        svgCodesCount.style.cssText = `font-size:10px;font-weight:900;color:#6ca8ff;opacity:0.85;`;
+        const activeCount = customSvgCodes.filter(e => e.enabled).length;
+        svgCodesCount.textContent = customSvgCodes.length ? `${activeCount}/${customSvgCodes.length} active` : '';
+
+        svgCodesRow.appendChild(svgCodesLabel);
+        svgCodesRow.appendChild(svgCodesBtn);
+        svgCodesRow.appendChild(svgCodesCount);
+        overlay.appendChild(svgCodesRow);
+
 
 
         (document.body || document.documentElement).appendChild(overlay);
@@ -10310,6 +10556,22 @@ if ('lutProfile' in obj) {
         filter.appendChild(autoCM);
         last = 'r_auto';
 
+        // Inject enabled custom SVG codes into filter pipeline
+        if (Array.isArray(customSvgCodes)) {
+            customSvgCodes.filter(e => e && e.enabled).forEach((entry, idx) => {
+                const nodes = parseCustomSvgCode(entry.code);
+                if (!nodes || !nodes.length) return;
+                nodes.forEach((node, ni) => {
+                    const imported = document.importNode(node, true);
+                    const resultId = 'r_cust_' + idx + '_' + ni;
+                    if (!imported.getAttribute('in')) imported.setAttribute('in', last);
+                    imported.setAttribute('result', resultId);
+                    filter.appendChild(imported);
+                    last = resultId;
+                });
+            });
+        }
+
         const merge = document.createElementNS(svgNS, 'feMerge');
         const n1 = document.createElementNS(svgNS, 'feMergeNode');
         n1.setAttribute('in', last);
@@ -10340,7 +10602,8 @@ if ('lutProfile' in obj) {
             normRGB(u_r_gain), normRGB(u_g_gain), normRGB(u_b_gain)
         ].map(x => Number(x).toFixed(1)).join(',');
 
-        const want = `${SL}|${SR}|${R}|${A}|${BS}|${BL}|${WL}|${DN}|${EDGE}|${HDR}|${P}|U:${uSig}|CB:${CB}|LUT:${LUTN}`;
+        const customSig = customSvgCodes.filter(e => e && e.enabled).map(e => e.id + ':' + e.code).join('||');
+        const want = `${SL}|${SR}|${R}|${A}|${BS}|${BL}|${WL}|${DN}|${EDGE}|${HDR}|${P}|U:${uSig}|CB:${CB}|LUT:${LUTN}|CSVG:${customSig}`;
 
         const existing = document.getElementById(SVG_ID);
         if (existing) {
@@ -10817,6 +11080,8 @@ if ('lutProfile' in obj) {
         _autoLastMatrixStr = autoMatrixStr;
         AUTO.lastGoodMatrixStr = autoMatrixStr;
         AUTO.lastAppliedMs = 0;
+
+        loadCustomSvgCodes();
 
         if (renderMode === 'gpu') {
             applyGpuFilter();
