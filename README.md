@@ -259,6 +259,7 @@ custom sharpening kernels (feConvolveMatrix), color matrix effects (feColorMatri
 <br><p>
 <b>Example:</b><br>
 <pre><code>&lt;feConvolveMatrix order="3" kernelMatrix="0 -0.5 0 -0.5 3 -0.5 0 -0.5 0"/&gt;</code></pre>
+<pre><code>&lt;ffeGaussianBlur stdDeviation="0.4"/&gt;</code></pre>
 <hr>
 <ul>
 <li>0.01 = almost invisible</li>
