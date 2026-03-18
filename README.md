@@ -258,8 +258,8 @@ The new <b>Custom SVG Filter Codes</b> feature lets you inject your own SVG filt
 custom sharpening kernels (feConvolveMatrix), color matrix effects (feColorMatrix), experimental image processing — anything expressible as an SVG filter primitive, without touching the source code.
 <br><p>
 <b>Example:</b><br>
-<pre><code>&lt;feConvolveMatrix order="3" kernelMatrix="0 -0.5 0 -0.5 3 -0.5 0 -0.5 0"/&gt;</code></pre>
-<pre><code>&lt;ffeGaussianBlur stdDeviation="0.4"/&gt;</code></pre>
+<a href="https://svg.ts3x.cc/" target="_blank">GVF SVG Filter Library</a><br>
+
 <hr>
 <ul>
 <li>0.01 = almost invisible</li>
