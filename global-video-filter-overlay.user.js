@@ -5372,9 +5372,9 @@ if (!gl) {
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            width: 500px;
-            max-width: 90vw;
-            max-height: 80vh;
+            width: 820px;
+            max-width: 98vw;
+            max-height: 88vh;
             background: rgba(20, 20, 20, 0.98);
             backdrop-filter: blur(10px);
             border: 2px solid #2a6fdb;
@@ -5760,157 +5760,319 @@ if (!gl) {
 
     function updateProfileList() {
         const list = document.getElementById('gvf-profile-list');
-        if (!list) {
-            logW('Profile list not found');
-            return;
-        }
+        if (!list) { logW('Profile list not found'); return; }
 
         while (list.firstChild) list.removeChild(list.firstChild);
+
+        const LW = 1280, LH = 720, PW = 160, PH = 90;
+
+        // Capture raw video frame ONCE — shared base for all profile previews
+        let rawCanvas = null;
+        (() => {
+            try {
+                const c = document.createElement('canvas');
+                c.width = LW; c.height = LH;
+                const ctx = c.getContext('2d', { alpha: false, willReadFrequently: true });
+                if (!ctx) return;
+                let drew = false;
+                let video = getHudPrimaryVideo();
+                if (!video) { const all = Array.from(document.querySelectorAll('video')); video = all.find(v => v.readyState >= 2 && v.videoWidth > 0) || null; }
+                if (video && video.readyState >= 2 && video.videoWidth > 0) {
+                    try { ctx.drawImage(video, 0, 0, LW, LH); ctx.getImageData(0, 0, 1, 1); drew = true; } catch(_) {}
+                }
+                if (!drew) {
+                    const grad = ctx.createLinearGradient(0, 0, LW, LH);
+                    grad.addColorStop(0,'#1a3a5c'); grad.addColorStop(0.25,'#c85032');
+                    grad.addColorStop(0.5,'#f0c040'); grad.addColorStop(0.75,'#3ab56a'); grad.addColorStop(1,'#8040c0');
+                    ctx.fillStyle = grad; ctx.fillRect(0, 0, LW, LH);
+                }
+                rawCanvas = c;
+            } catch(_) {}
+        })();
+
+        // Snapshot/restore helpers
+        const snapshotGlobals = () => ({
+            enabled, darkMoody, tealOrange, vibrantSat, notify,
+            sl, sr, bl, wl, dn, edge, hdr, profile, renderMode,
+            autoOn, autoStrength, autoLockWB,
+            u_contrast, u_black, u_white, u_highlights, u_shadows,
+            u_sat, u_vib, u_sharp, u_gamma, u_grain, u_hue,
+            u_r_gain, u_g_gain, u_b_gain, cbFilter,
+            activeLutProfileKey: String(activeLutProfileKey)
+        });
+
+        // Apply profile settings temporarily, render onto destCanvas, restore
+        const renderProfilePreview = (profileSettings, destCanvas) => {
+            if (!rawCanvas) return;
+            const snap = snapshotGlobals();
+            try {
+                applyUserProfileSettings(profileSettings);
+                const filterStr = getCurrentFilterString();
+                const ctx = destCanvas.getContext('2d', { alpha: false });
+                if (ctx) { ctx.save(); ctx.filter = filterStr || 'none'; ctx.drawImage(rawCanvas, 0, 0, LW, LH); ctx.restore(); }
+            } catch(_) {} finally { try { applyUserProfileSettings(snap); } catch(_) {} }
+        };
+
+        const renderQueue = [];
 
         userProfiles.forEach(profile => {
             const isActive = activeUserProfile && activeUserProfile.id === profile.id;
 
             const item = document.createElement('div');
-            item.style.cssText = `
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                padding: 12px 15px;
-                background: ${isActive ? 'rgba(42, 111, 219, 0.3)' : 'rgba(255, 255, 255, 0.05)'};
-                border: 2px solid ${isActive ? '#2a6fdb' : 'rgba(255, 255, 255, 0.1)'};
-                border-radius: 8px;
-                cursor: pointer;
-                transition: all 0.2s;
-                margin: 2px 0;
-            `;
+            item.style.cssText = `display:flex;align-items:center;gap:12px;padding:10px 12px;
+                background:${isActive ? 'rgba(42,111,219,0.3)' : 'rgba(255,255,255,0.05)'};
+                border:2px solid ${isActive ? '#2a6fdb' : 'rgba(255,255,255,0.1)'};
+                border-radius:8px;margin:2px 0;`;
 
-            item.addEventListener('mouseenter', () => {
-                if (!isActive) {
-                    item.style.background = 'rgba(255, 255, 255, 0.1)';
-                    item.style.borderColor = 'rgba(255,255,255,0.3)';
-                }
-            });
-            item.addEventListener('mouseleave', () => {
-                if (!isActive) {
-                    item.style.background = 'rgba(255, 255, 255, 0.05)';
-                    item.style.borderColor = 'rgba(255,255,255,0.1)';
-                }
-            });
+            // Thumbnail
+            const previewWrap = document.createElement('div');
+            previewWrap.style.cssText = `flex-shrink:0;border-radius:6px;overflow:hidden;
+                border:1px solid rgba(42,111,219,0.45);width:${PW}px;height:${PH}px;background:#111;cursor:zoom-in;`;
+            const thumbCanvas = document.createElement('canvas');
+            thumbCanvas.width = PW; thumbCanvas.height = PH;
+            thumbCanvas.style.cssText = `display:block;width:${PW}px;height:${PH}px;`;
+            previewWrap.appendChild(thumbCanvas);
 
-            // Profile info
+            // Big canvas for lightbox
+            const bigCanvas = document.createElement('canvas');
+            bigCanvas.width = LW; bigCanvas.height = LH;
+            bigCanvas.style.cssText = 'display:block;width:auto;height:auto;max-width:90vw;max-height:65vh;border-radius:10px;';
+            let bigReady = false;
+
+            renderQueue.push({ settings: profile.settings || {}, bigCanvas, thumbCanvas, onDone: () => { bigReady = true; } });
+
+            // Lightbox
+            previewWrap.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const overlay = document.createElement('div');
+                overlay.style.cssText = `position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,0.82);
+                    backdrop-filter:blur(6px);display:flex;flex-direction:column;align-items:center;
+                    justify-content:center;gap:14px;cursor:zoom-out;`;
+                stopEventsOn(overlay);
+                const lbTitle = document.createElement('div');
+                lbTitle.textContent = '👤 ' + String(profile.name) + (isActive ? '  · active' : '');
+                lbTitle.style.cssText = `color:#fff;font-size:18px;font-weight:900;text-shadow:0 0 12px rgba(42,111,219,0.8);pointer-events:none;`;
+                const lbClose = document.createElement('button');
+                lbClose.type = 'button'; lbClose.textContent = '✕';
+                lbClose.style.cssText = `position:absolute;top:16px;right:16px;background:rgba(255,255,255,0.12);
+                    border:1px solid rgba(255,255,255,0.25);color:#fff;font-size:18px;font-weight:900;
+                    width:36px;height:36px;border-radius:8px;cursor:pointer;display:flex;align-items:center;justify-content:center;`;
+                lbClose.addEventListener('click', (ev) => { ev.stopPropagation(); overlay.remove(); });
+                stopEventsOn(lbClose);
+                const content = bigReady ? bigCanvas : (() => { const m = document.createElement('div'); m.textContent = 'Preview loading…'; m.style.cssText = 'color:#fff;opacity:0.7;font-size:14px;'; return m; })();
+                overlay.addEventListener('click', () => overlay.remove());
+                bigCanvas.addEventListener('click', (ev) => ev.stopPropagation());
+                overlay.appendChild(lbTitle); overlay.appendChild(content); overlay.appendChild(lbClose);
+                (document.body || document.documentElement).appendChild(overlay);
+            });
+            stopEventsOn(previewWrap);
+
+            // Info
             const info = document.createElement('div');
-            info.style.cssText = `
-                display: flex;
-                flex-direction: column;
-                gap: 4px;
-                flex: 1;
-            `;
-
+            info.style.cssText = `display:flex;flex-direction:column;gap:4px;flex:1;min-width:0;overflow:hidden;`;
             const nameSpan = document.createElement('span');
-            nameSpan.style.cssText = `
-                font-weight: ${isActive ? '900' : '600'};
-                color: ${isActive ? '#fff' : '#ccc'};
-                font-size: 14px;
-            `;
+            nameSpan.style.cssText = `font-weight:${isActive ? '900' : '600'};color:${isActive ? '#fff' : '#ccc'};
+                font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;`;
             nameSpan.textContent = profile.name + (isActive ? ' (active)' : '');
-
             const dateSpan = document.createElement('span');
-            dateSpan.style.cssText = `
-                font-size: 11px;
-                color: #888;
-            `;
+            dateSpan.style.cssText = `font-size:11px;color:#888;`;
             dateSpan.textContent = 'Created: ' + new Date(profile.createdAt).toLocaleDateString('en-US');
-
-            info.appendChild(nameSpan);
-            info.appendChild(dateSpan);
+            info.appendChild(nameSpan); info.appendChild(dateSpan);
 
             // Actions
             const actions = document.createElement('div');
-            actions.style.cssText = `
-                display: flex;
-                gap: 8px;
-            `;
+            actions.style.cssText = `display:flex;gap:8px;flex-shrink:0;`;
 
-            // Activate button (only if inactive)
+            const mkActionBtn = (text, bg, border, color) => {
+                const b = document.createElement('button');
+                b.type = 'button'; b.textContent = text;
+                b.style.cssText = `background:${bg};border:1px solid ${border};color:${color};
+                    padding:6px 12px;border-radius:6px;font-size:12px;font-weight:900;cursor:pointer;`;
+                stopEventsOn(b); return b;
+            };
+
             if (!isActive) {
-                const activateBtn = document.createElement('button');
-                activateBtn.textContent = 'Activate';
-                activateBtn.style.cssText = `
-                    background: rgba(42, 111, 219, 0.3);
-                    border: 1px solid #2a6fdb;
-                    color: #fff;
-                    padding: 6px 12px;
-                    border-radius: 6px;
-                    font-size: 12px;
-                    font-weight: 900;
-                    cursor: pointer;
-                    transition: all 0.2s;
-                `;
-                activateBtn.addEventListener('mouseenter', () => {
-                    activateBtn.style.background = 'rgba(42, 111, 219, 0.5)';
-                });
-                activateBtn.addEventListener('mouseleave', () => {
-                    activateBtn.style.background = 'rgba(42, 111, 219, 0.3)';
-                });
+                const activateBtn = mkActionBtn('Activate','rgba(42,111,219,0.3)','#2a6fdb','#fff');
+                activateBtn.addEventListener('mouseenter', () => { activateBtn.style.background='rgba(42,111,219,0.5)'; });
+                activateBtn.addEventListener('mouseleave', () => { activateBtn.style.background='rgba(42,111,219,0.3)'; });
                 activateBtn.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    switchToUserProfile(profile.id);
-                    updateProfileList();
-
-                    // Update active info
-                    const activeInfo = document.getElementById('gvf-active-profile-info');
-                    if (activeInfo) {
-                        setActiveProfileInfo(activeInfo, activeUserProfile?.name);
-                    }
+                    e.preventDefault(); e.stopPropagation();
+                    switchToUserProfile(profile.id); updateProfileList();
+                    const ai = document.getElementById('gvf-active-profile-info');
+                    if (ai) setActiveProfileInfo(ai, activeUserProfile?.name);
                 });
                 actions.appendChild(activateBtn);
             }
 
-            // Delete button (not for default)
-            if (profile.id !== 'default') {
-                const deleteBtn = document.createElement('button');
-                deleteBtn.textContent = '✕ Delete';
-                deleteBtn.style.cssText = `
-                    background: rgba(255, 68, 68, 0.2);
-                    border: 1px solid #ff4444;
-                    color: #ff8888;
-                    padding: 6px 12px;
-                    border-radius: 6px;
-                    font-size: 12px;
-                    font-weight: 900;
-                    cursor: pointer;
-                    transition: all 0.2s;
-                `;
-                deleteBtn.addEventListener('mouseenter', () => {
-                    deleteBtn.style.background = 'rgba(255, 68, 68, 0.4)';
-                    deleteBtn.style.color = '#fff';
-                });
-                deleteBtn.addEventListener('mouseleave', () => {
-                    deleteBtn.style.background = 'rgba(255, 68, 68, 0.2)';
-                    deleteBtn.style.color = '#ff8888';
-                });
-                deleteBtn.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    if (confirm(`Really delete profile "${profile.name}"?`)) {
-                        deleteUserProfile(profile.id);
-                        updateProfileList();
+            // Edit button — floating window, uses same rawCanvas
+            const editBtn = mkActionBtn('Edit','rgba(255,255,255,0.08)','rgba(255,255,255,0.3)','#fff');
+            editBtn.addEventListener('click', (e) => {
+                e.preventDefault(); e.stopPropagation();
+                const existingEd = document.getElementById('gvf-profile-edit-window');
+                if (existingEd) existingEd.remove();
 
-                        // Update active info
-                        const activeInfo = document.getElementById('gvf-active-profile-info');
-                        if (activeInfo) {
-                            setActiveProfileInfo(activeInfo, activeUserProfile?.name);
+                const EW = 680;
+                const win = document.createElement('div');
+                win.id = 'gvf-profile-edit-window';
+                win.style.cssText = `position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+                    width:${EW}px;max-width:96vw;max-height:90vh;
+                    background:rgba(18,18,18,0.98);backdrop-filter:blur(12px);
+                    border:2px solid #2a6fdb;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,0.85);
+                    color:#eaeaea;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+                    z-index:2147483647;display:flex;flex-direction:column;padding:20px;gap:12px;
+                    user-select:none;pointer-events:auto;overflow-y:auto;`;
+                stopEventsOn(win);
+
+                const edHeader = document.createElement('div');
+                edHeader.style.cssText = `display:flex;justify-content:space-between;align-items:center;
+                    padding-bottom:10px;border-bottom:2px solid #2a6fdb;flex-shrink:0;cursor:move;`;
+                const edTitle = document.createElement('div');
+                edTitle.textContent = '✏️ Edit — ' + String(profile.name);
+                edTitle.style.cssText = `font-size:17px;font-weight:900;color:#fff;text-shadow:0 0 10px rgba(42,111,219,0.6);`;
+                const edClose = document.createElement('button');
+                edClose.type = 'button'; edClose.textContent = '✕';
+                edClose.style.cssText = `background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.2);
+                    color:#fff;font-size:18px;font-weight:900;width:34px;height:34px;
+                    border-radius:8px;cursor:pointer;display:flex;align-items:center;justify-content:center;`;
+                edClose.addEventListener('click', () => win.remove());
+                stopEventsOn(edClose);
+                edHeader.appendChild(edTitle); edHeader.appendChild(edClose);
+                win.appendChild(edHeader);
+                makeFloatingManagerDraggable(win, edHeader, null);
+
+                // Preview canvas — rendered once on open, updated only on Apply Preview
+                const epW = EW - 44, epH = Math.round(epW * 9/16);
+                const previewC = document.createElement('canvas');
+                previewC.width = LW; previewC.height = LH;
+                previewC.style.cssText = `display:block;width:${epW}px;height:${epH}px;
+                    border-radius:8px;border:1px solid rgba(42,111,219,0.4);flex-shrink:0;`;
+                const previewLabel = document.createElement('div');
+                previewLabel.style.cssText = `font-size:11px;color:#888;text-align:center;margin-top:-4px;`;
+                previewLabel.textContent = 'Preview — click Apply Preview to update';
+                win.appendChild(previewC); win.appendChild(previewLabel);
+
+                // Render using rawCanvas (already captured, no new video grab)
+                const edRenderPreview = (settingsObj) => {
+                    const snap2 = snapshotGlobals();
+                    try {
+                        applyUserProfileSettings(settingsObj);
+                        const filterStr = getCurrentFilterString();
+                        const ctx = previewC.getContext('2d', { alpha: false });
+                        if (ctx) {
+                            if (rawCanvas) {
+                                ctx.save(); ctx.filter = filterStr || 'none';
+                                ctx.drawImage(rawCanvas, 0, 0, LW, LH); ctx.restore();
+                            } else {
+                                // gradient fallback
+                                ctx.save(); ctx.filter = filterStr || 'none';
+                                const offC = document.createElement('canvas'); offC.width=LW; offC.height=LH;
+                                const oCtx = offC.getContext('2d',{alpha:false});
+                                const grad = oCtx.createLinearGradient(0,0,LW,LH);
+                                grad.addColorStop(0,'#1a3a5c'); grad.addColorStop(0.5,'#f0c040'); grad.addColorStop(1,'#8040c0');
+                                oCtx.fillStyle=grad; oCtx.fillRect(0,0,LW,LH);
+                                ctx.drawImage(offC,0,0); ctx.restore();
+                            }
                         }
+                        previewLabel.textContent = 'Preview — filter applied ✓';
+                    } catch(err) {
+                        previewLabel.textContent = 'Preview error: ' + err.message;
+                    } finally { try { applyUserProfileSettings(snap2); } catch(_) {} }
+                };
+
+                // Render once on open
+                setTimeout(() => edRenderPreview(profile.settings || {}), 0);
+
+                const textarea = document.createElement('textarea');
+                textarea.style.cssText = `width:100%;min-height:240px;resize:vertical;flex-shrink:0;
+                    background:rgba(0,0,0,0.55);border:1px solid rgba(255,255,255,0.18);
+                    border-radius:8px;padding:10px 12px;color:#e8e8e8;
+                    font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
+                    line-height:1.4;outline:none;`;
+                stopEventsOn(textarea);
+                try { textarea.value = JSON.stringify(profile, null, 2); } catch(_) { textarea.value = '{}'; }
+                win.appendChild(textarea);
+
+                const btnRow = document.createElement('div');
+                btnRow.style.cssText = 'display:flex;gap:8px;align-items:center;flex-shrink:0;';
+                const applyPreviewBtn = mkActionBtn('👁 Apply Preview','rgba(255,138,0,0.2)','#ff8a00','#ffd7a6');
+                const saveJsonBtn    = mkActionBtn('💾 Save','rgba(42,111,219,0.35)','#2a6fdb','#fff');
+                const cancelBtn      = mkActionBtn('Cancel','rgba(255,255,255,0.08)','rgba(255,255,255,0.2)','#ccc');
+                const errMsg = document.createElement('div');
+                errMsg.style.cssText = 'font-size:11px;color:#ff6b6b;flex:1;';
+
+                const parseAndValidate = () => {
+                    const parsed = JSON.parse(textarea.value);
+                    parsed.id = profile.id;
+                    if (!parsed.name || typeof parsed.name !== 'string') throw new Error('Missing name');
+                    if (!parsed.settings || typeof parsed.settings !== 'object') throw new Error('Missing settings');
+                    parsed.settings = buildImportedUserProfileSettings(parsed.settings);
+                    return parsed;
+                };
+
+                applyPreviewBtn.addEventListener('click', (ev) => {
+                    ev.preventDefault(); ev.stopPropagation();
+                    try { errMsg.textContent = ''; edRenderPreview(parseAndValidate().settings); }
+                    catch(err) { errMsg.textContent = 'JSON error: ' + err.message; }
+                });
+                saveJsonBtn.addEventListener('click', (ev) => {
+                    ev.preventDefault(); ev.stopPropagation();
+                    try {
+                        errMsg.textContent = '';
+                        const parsed = parseAndValidate();
+                        parsed.updatedAt = Date.now();
+                        const idx = userProfiles.findIndex(p => p.id === profile.id);
+                        if (idx >= 0) userProfiles[idx] = parsed;
+                        saveUserProfiles(); win.remove(); updateProfileList();
+                        const ai = document.getElementById('gvf-active-profile-info');
+                        if (ai) setActiveProfileInfo(ai, activeUserProfile?.name);
+                    } catch(err) { errMsg.textContent = 'Invalid JSON: ' + err.message; }
+                });
+                cancelBtn.addEventListener('click', (ev) => { ev.preventDefault(); ev.stopPropagation(); win.remove(); });
+                btnRow.appendChild(applyPreviewBtn); btnRow.appendChild(saveJsonBtn);
+                btnRow.appendChild(cancelBtn); btnRow.appendChild(errMsg);
+                win.appendChild(btnRow);
+                (document.body || document.documentElement).appendChild(win);
+            });
+            actions.appendChild(editBtn);
+
+            if (profile.id !== 'default') {
+                const deleteBtn = mkActionBtn('✕ Delete','rgba(255,68,68,0.2)','#ff4444','#ff8888');
+                deleteBtn.addEventListener('mouseenter', () => { deleteBtn.style.background='rgba(255,68,68,0.4)'; deleteBtn.style.color='#fff'; });
+                deleteBtn.addEventListener('mouseleave', () => { deleteBtn.style.background='rgba(255,68,68,0.2)'; deleteBtn.style.color='#ff8888'; });
+                deleteBtn.addEventListener('click', (e) => {
+                    e.preventDefault(); e.stopPropagation();
+                    if (confirm(`Really delete profile "${profile.name}"?`)) {
+                        deleteUserProfile(profile.id); updateProfileList();
+                        const ai = document.getElementById('gvf-active-profile-info');
+                        if (ai) setActiveProfileInfo(ai, activeUserProfile?.name);
                     }
                 });
                 actions.appendChild(deleteBtn);
             }
 
-            item.appendChild(info);
-            item.appendChild(actions);
+            item.appendChild(previewWrap); item.appendChild(info); item.appendChild(actions);
             list.appendChild(item);
         });
+
+        // Render previews sequentially — one per setTimeout tick, no re-render after
+        const processQueue = (i) => {
+            if (i >= renderQueue.length) return;
+            const { settings, bigCanvas, thumbCanvas, onDone } = renderQueue[i];
+            setTimeout(() => {
+                try {
+                    renderProfilePreview(settings, bigCanvas);
+                    onDone();
+                    const tCtx = thumbCanvas.getContext('2d', { alpha: false });
+                    if (tCtx) {
+                        tCtx.imageSmoothingEnabled = true;
+                        try { tCtx.imageSmoothingQuality = 'high'; } catch(_) {}
+                        tCtx.drawImage(bigCanvas, 0, 0, PW, PH);
+                    }
+                } catch(_) {}
+                processQueue(i + 1);
+            }, 0);
+        };
+        processQueue(0);
     }
 
     function toggleConfigMenu() {
