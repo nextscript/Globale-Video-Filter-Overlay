@@ -2502,6 +2502,113 @@ function downloadBlob(blob, filename) {
         }
     }
 
+    /**
+     * Renders a video frame onto destCanvas with the given profile settings applied,
+     * WITHOUT touching live global variables or the live SVG filter in the DOM.
+     * Uses a temporary hidden SVG filter that is inserted and immediately removed.
+     * @param {HTMLCanvasElement} destCanvas  - target canvas (should be 1280x720)
+     * @param {HTMLCanvasElement} srcCanvas   - pre-captured raw frame canvas
+     * @param {object} settings               - profile.settings object
+     */
+    function renderFrameWithSettings(destCanvas, srcCanvas, settings) {
+        if (!destCanvas || !srcCanvas) return;
+        const s = settings || {};
+        const LW = destCanvas.width, LH = destCanvas.height;
+
+        // --- Build temporary SVG filter from settings without changing globals ---
+        const tmpSvgId  = 'gvf-preview-tmp-svg-' + Math.random().toString(36).slice(2);
+        const tmpFiltId = 'gvf-preview-tmp-filt';
+
+        // Compute all the values locally from settings (mirrors ensureSvgFilter logic)
+        const _clamp  = (n,a,b) => Math.min(b, Math.max(a, n));
+        const _round  = (n,s) => Math.round(n/s)*s;
+        const _snap0  = (n,e) => Math.abs(n) <= e ? 0 : n;
+        const _normSL = () => _snap0(_round(_clamp(Number(s.sl)||0,-2,2),0.01),0.005);
+        const _normSR = () => _snap0(_round(_clamp(Number(s.sr)||0,-2,2),0.01),0.005);
+        const _normBL = () => _snap0(_round(_clamp(Number(s.bl)||0,-2,2),0.01),0.005);
+        const _normWL = () => _snap0(_round(_clamp(Number(s.wl)||0,-2,2),0.01),0.005);
+        const _normDN = () => _snap0(_round(_clamp(Number(s.dn)||0,-1.5,1.5),0.01),0.005);
+        const _normHDR= () => _snap0(_round(_clamp(Number(s.hdr)||0,-1,2),0.01),0.005);
+        const _normED = () => _snap0(_round(_clamp(Number(s.edge)||0,0,1),0.01),0.005);
+        const _normU  = (v) => _round(_clamp(Number(v)||0,-10,10),0.1);
+        const _normRGB= (v) => _clamp(Math.round(Number(v)||128),0,255);
+
+        const SL  = Number(_normSL().toFixed(1));
+        const SR  = Number(_normSR().toFixed(1));
+        const R   = Number(Math.max(0.1, Math.abs(_normSR())).toFixed(1));
+        const A   = Number(Math.max(0, _normSL()).toFixed(3));
+        const BS  = Number(Math.max(0, -_normSL()).toFixed(3));
+        const BL  = Number(_normBL().toFixed(1));
+        const WL  = Number(_normWL().toFixed(1));
+        const DN  = Number(_normDN().toFixed(1));
+        const HDR = Number(_normHDR().toFixed(2));
+        const EDGE= Number(_normED().toFixed(2));
+        const P   = String(s.profile || 'off');
+        const CB  = String(s.cbFilter || 'none');
+        const _bOff = _clamp(BL,-2,2)*0.04;
+        const _wAdj = _clamp(WL,-2,2)*0.06;
+
+        const moody = !!s.darkMoody, teal = !!s.tealOrange, vib = !!s.vibrantSat;
+
+        // Pick combo filter id
+        const comboSuffix = (moody?'m':'')+(teal?'t':'')+(vib?'v':'');
+        const tmpComboId = tmpFiltId + (comboSuffix ? '_' + comboSuffix : '');
+
+        // Build temp SVG with the needed combo filter
+        const tmpSvg = document.createElementNS(svgNS, 'svg');
+        tmpSvg.id = tmpSvgId;
+        tmpSvg.setAttribute('width','0'); tmpSvg.setAttribute('height','0');
+        tmpSvg.style.cssText = 'position:absolute;left:-99999px;top:-99999px;pointer-events:none;';
+
+        try {
+            buildFilter(tmpSvg, tmpComboId, { moody, teal, vib }, R, A, BS, _bOff, _wAdj, DN, EDGE, HDR, P);
+        } catch(_) {}
+
+        (document.body || document.documentElement).appendChild(tmpSvg);
+
+        // Build CSS filter string
+        const baseTone = (s.enabled !== false) ? ' brightness(1.02) contrast(1.05) saturate(1.21)' : '';
+        let profTone = '';
+        if (P==='film')    profTone = ' brightness(1.01) contrast(1.08) saturate(1.08)';
+        if (P==='anime')   profTone = ' brightness(1.03) contrast(1.10) saturate(1.16)';
+        if (P==='gaming')  profTone = ' brightness(1.01) contrast(1.12) saturate(1.06)';
+        if (P==='eyecare') profTone = ' brightness(1.05) contrast(0.96) saturate(0.88) hue-rotate(-12deg)';
+        let userTone = '';
+        if (P==='user') {
+            const uc=_normU(s.u_contrast),us=_normU(s.u_sat),uv=_normU(s.u_vib),uh=_normU(s.u_hue);
+            const ub=_normU(s.u_black),uw=_normU(s.u_white),ush=_normU(s.u_shadows),uhi=_normU(s.u_highlights),ug=_normU(s.u_gamma);
+            const c   = _clamp(1.0+uc*0.04,0.6,1.6);
+            const sat = _clamp(1.0+us*0.05,0.4,1.8);
+            const vb  = _clamp(1.0+uv*0.02,0.7,1.35);
+            const hue = _clamp(uh*3.0,-30,30);
+            const blk = _clamp(ub*0.012,-0.12,0.12);
+            const wht = _clamp(uw*0.012,-0.12,0.12);
+            const sh  = _clamp(ush*0.010,-0.10,0.10);
+            const hi  = _clamp(uhi*0.010,-0.10,0.10);
+            const br  = _clamp(1.0+(-blk+wht+sh+hi)*0.6,0.7,1.35);
+            const g   = _clamp(1.0+ug*0.025,0.6,1.6);
+            const gBr = _clamp(1.0+(1.0-g)*0.18,0.85,1.2);
+            const gCt = _clamp(1.0+(g-1.0)*0.10,0.9,1.15);
+            userTone = ` brightness(${(br*gBr).toFixed(3)}) contrast(${(c*gCt).toFixed(3)}) saturate(${(sat*vb).toFixed(3)}) hue-rotate(${hue.toFixed(1)}deg)`;
+        }
+
+        const filterStr = `url("#${tmpComboId}")${baseTone}${profTone}${userTone}`;
+
+        // Render srcCanvas → destCanvas with filter
+        try {
+            const ctx = destCanvas.getContext('2d', { alpha: false });
+            if (ctx) {
+                ctx.save();
+                ctx.filter = filterStr;
+                ctx.drawImage(srcCanvas, 0, 0, LW, LH);
+                ctx.restore();
+            }
+        } catch(_) {} finally {
+            // Always remove temp SVG immediately
+            try { tmpSvg.remove(); } catch(_) {}
+        }
+    }
+
 
     /**
      * Determines the currently active filter string for screenshots/recordings
@@ -5804,13 +5911,7 @@ if (!gl) {
         // Apply profile settings temporarily, render onto destCanvas, restore
         const renderProfilePreview = (profileSettings, destCanvas) => {
             if (!rawCanvas) return;
-            const snap = snapshotGlobals();
-            try {
-                applyUserProfileSettings(profileSettings);
-                const filterStr = getCurrentFilterString();
-                const ctx = destCanvas.getContext('2d', { alpha: false });
-                if (ctx) { ctx.save(); ctx.filter = filterStr || 'none'; ctx.drawImage(rawCanvas, 0, 0, LW, LH); ctx.restore(); }
-            } catch(_) {} finally { try { applyUserProfileSettings(snap); } catch(_) {} }
+            try { renderFrameWithSettings(destCanvas, rawCanvas, profileSettings); } catch(_) {}
         };
 
         const renderQueue = [];
@@ -5951,32 +6052,25 @@ if (!gl) {
                 previewLabel.textContent = 'Preview — click Apply Preview to update';
                 win.appendChild(previewC); win.appendChild(previewLabel);
 
-                // Render using rawCanvas (already captured, no new video grab)
+                // Render using rawCanvas (already captured, no new video grab, no global changes)
                 const edRenderPreview = (settingsObj) => {
-                    const snap2 = snapshotGlobals();
                     try {
-                        applyUserProfileSettings(settingsObj);
-                        const filterStr = getCurrentFilterString();
-                        const ctx = previewC.getContext('2d', { alpha: false });
-                        if (ctx) {
-                            if (rawCanvas) {
-                                ctx.save(); ctx.filter = filterStr || 'none';
-                                ctx.drawImage(rawCanvas, 0, 0, LW, LH); ctx.restore();
-                            } else {
-                                // gradient fallback
-                                ctx.save(); ctx.filter = filterStr || 'none';
-                                const offC = document.createElement('canvas'); offC.width=LW; offC.height=LH;
-                                const oCtx = offC.getContext('2d',{alpha:false});
+                        if (rawCanvas) {
+                            renderFrameWithSettings(previewC, rawCanvas, settingsObj);
+                            previewLabel.textContent = 'Preview — filter applied ✓';
+                        } else {
+                            // gradient fallback
+                            const offC = document.createElement('canvas'); offC.width=LW; offC.height=LH;
+                            const oCtx = offC.getContext('2d',{alpha:false});
+                            if (oCtx) {
                                 const grad = oCtx.createLinearGradient(0,0,LW,LH);
                                 grad.addColorStop(0,'#1a3a5c'); grad.addColorStop(0.5,'#f0c040'); grad.addColorStop(1,'#8040c0');
                                 oCtx.fillStyle=grad; oCtx.fillRect(0,0,LW,LH);
-                                ctx.drawImage(offC,0,0); ctx.restore();
                             }
+                            renderFrameWithSettings(previewC, offC, settingsObj);
+                            previewLabel.textContent = 'Preview — no video, gradient used';
                         }
-                        previewLabel.textContent = 'Preview — filter applied ✓';
-                    } catch(err) {
-                        previewLabel.textContent = 'Preview error: ' + err.message;
-                    } finally { try { applyUserProfileSettings(snap2); } catch(_) {} }
+                    } catch(err) { previewLabel.textContent = 'Preview error: ' + err.message; }
                 };
 
                 // Render once on open
