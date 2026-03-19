@@ -6186,6 +6186,165 @@ if (!gl) {
         return menu;
     }
 
+    // -------------------------
+    // Shared Slideshow Lightbox
+    // entries: Array<{ bigCanvas, bigReady, label }>
+    // startIndex: which entry to show first
+    // accentColor: CSS color string for title glow
+    // -------------------------
+    function openSlideshow(entries, startIndex, accentColor) {
+        if (!entries || !entries.length) return;
+        accentColor = accentColor || '#4a9eff';
+        let idx = Math.max(0, Math.min(startIndex || 0, entries.length - 1));
+
+        const overlay = document.createElement('div');
+        overlay.style.cssText = `
+            position:fixed;inset:0;z-index:2147483647;
+            background:rgba(0,0,0,0.88);backdrop-filter:blur(8px);
+            display:flex;flex-direction:column;align-items:center;justify-content:center;
+            gap:12px;user-select:none;
+        `;
+
+        // Title
+        const lbTitle = document.createElement('div');
+        lbTitle.style.cssText = `color:#fff;font-size:17px;font-weight:900;
+            text-shadow:0 0 14px ${accentColor};pointer-events:none;text-align:center;
+            max-width:80vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;`;
+
+        // Counter  e.g. "3 / 7"
+        const lbCounter = document.createElement('div');
+        lbCounter.style.cssText = `color:#aaa;font-size:12px;font-weight:700;
+            pointer-events:none;letter-spacing:0.05em;`;
+
+        // Image area
+        const imgWrap = document.createElement('div');
+        imgWrap.style.cssText = `position:relative;display:flex;align-items:center;
+            justify-content:center;max-width:90vw;max-height:65vh;`;
+
+        // Canvas slot — we swap canvas references into this wrapper
+        const canvasSlot = document.createElement('div');
+        canvasSlot.style.cssText = `display:flex;align-items:center;justify-content:center;`;
+        imgWrap.appendChild(canvasSlot);
+
+        // Prev / Next nav buttons
+        const mkNavBtn = (label) => {
+            const b = document.createElement('button');
+            b.type = 'button'; b.textContent = label;
+            b.style.cssText = `
+                position:absolute;top:50%;transform:translateY(-50%);
+                background:rgba(0,0,0,0.55);border:1px solid rgba(255,255,255,0.25);
+                color:#fff;font-size:22px;font-weight:900;
+                width:44px;height:44px;border-radius:50%;
+                cursor:pointer;display:flex;align-items:center;justify-content:center;
+                transition:background 0.15s;z-index:2;
+            `;
+            b.addEventListener('mouseenter', () => { b.style.background = `rgba(0,0,0,0.82)`; });
+            b.addEventListener('mouseleave', () => { b.style.background = `rgba(0,0,0,0.55)`; });
+            b.addEventListener('click', (e) => { e.stopPropagation(); });
+            return b;
+        };
+        const prevBtn = mkNavBtn('‹');
+        prevBtn.style.left = '-54px';
+        const nextBtn = mkNavBtn('›');
+        nextBtn.style.right = '-54px';
+        imgWrap.appendChild(prevBtn);
+        imgWrap.appendChild(nextBtn);
+
+        // Close button
+        const lbClose = document.createElement('button');
+        lbClose.type = 'button'; lbClose.textContent = '✕';
+        lbClose.style.cssText = `
+            position:absolute;top:16px;right:16px;
+            background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.25);
+            color:#fff;font-size:18px;font-weight:900;width:36px;height:36px;
+            border-radius:8px;cursor:pointer;display:flex;align-items:center;justify-content:center;
+        `;
+        lbClose.addEventListener('click', (ev) => { ev.stopPropagation(); overlay.remove(); });
+        stopEventsOn(lbClose);
+
+        // Dot indicators
+        const dotsWrap = document.createElement('div');
+        dotsWrap.style.cssText = `display:flex;gap:6px;align-items:center;`;
+        const dots = entries.map((_, i) => {
+            const d = document.createElement('div');
+            d.style.cssText = `width:8px;height:8px;border-radius:50%;cursor:pointer;
+                background:rgba(255,255,255,0.25);transition:background 0.2s,transform 0.2s;`;
+            d.addEventListener('click', (e) => { e.stopPropagation(); goTo(i); });
+            dotsWrap.appendChild(d);
+            return d;
+        });
+
+        function renderEntry() {
+            const entry = entries[idx];
+            lbTitle.textContent = entry.label || '';
+            lbCounter.textContent = `${idx + 1} / ${entries.length}`;
+            prevBtn.style.visibility = entries.length > 1 ? 'visible' : 'hidden';
+            nextBtn.style.visibility = entries.length > 1 ? 'visible' : 'hidden';
+
+            // Update dots
+            dots.forEach((d, i) => {
+                d.style.background = i === idx ? accentColor : 'rgba(255,255,255,0.25)';
+                d.style.transform = i === idx ? 'scale(1.3)' : 'scale(1)';
+            });
+
+            // Swap canvas content
+            while (canvasSlot.firstChild) canvasSlot.removeChild(canvasSlot.firstChild);
+            if (entry.bigReady && entry.bigCanvas) {
+                entry.bigCanvas.style.cssText = 'display:block;width:auto;height:auto;max-width:90vw;max-height:65vh;border-radius:10px;';
+                entry.bigCanvas.addEventListener('click', (e) => e.stopPropagation());
+                canvasSlot.appendChild(entry.bigCanvas);
+            } else {
+                const msg = document.createElement('div');
+                msg.textContent = 'Preview loading…';
+                msg.style.cssText = 'color:#fff;opacity:0.7;font-size:14px;';
+                canvasSlot.appendChild(msg);
+                // Poll until ready
+                const poll = setInterval(() => {
+                    if (entries[idx] === entry && entry.bigReady && entry.bigCanvas) {
+                        clearInterval(poll);
+                        renderEntry();
+                    }
+                }, 150);
+            }
+        }
+
+        function goTo(i) {
+            idx = ((i % entries.length) + entries.length) % entries.length;
+            renderEntry();
+        }
+
+        prevBtn.addEventListener('click', () => goTo(idx - 1));
+        nextBtn.addEventListener('click', () => goTo(idx + 1));
+
+        // Swipe support
+        let touchStartX = 0;
+        overlay.addEventListener('touchstart', (e) => { touchStartX = e.touches[0].clientX; }, { passive: true });
+        overlay.addEventListener('touchend', (e) => {
+            const dx = e.changedTouches[0].clientX - touchStartX;
+            if (Math.abs(dx) > 40) goTo(dx < 0 ? idx + 1 : idx - 1);
+        }, { passive: true });
+
+        // Arrow key support
+        const onKey = (e) => {
+            if (e.key === 'ArrowLeft') { e.stopPropagation(); goTo(idx - 1); }
+            if (e.key === 'ArrowRight') { e.stopPropagation(); goTo(idx + 1); }
+            if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', onKey, true); }
+        };
+        document.addEventListener('keydown', onKey, true);
+        overlay.addEventListener('click', () => { overlay.remove(); document.removeEventListener('keydown', onKey, true); });
+
+        overlay.appendChild(lbTitle);
+        overlay.appendChild(lbCounter);
+        overlay.appendChild(imgWrap);
+        if (entries.length > 1) overlay.appendChild(dotsWrap);
+        overlay.appendChild(lbClose);
+        stopEventsOn(overlay);
+        // Re-allow click-to-close on the overlay background
+        overlay.addEventListener('click', () => { overlay.remove(); document.removeEventListener('keydown', onKey, true); });
+        (document.body || document.documentElement).appendChild(overlay);
+        renderEntry();
+    }
+
     function updateProfileList() {
         const list = document.getElementById('gvf-profile-list');
         if (!list) { logW('Profile list not found'); return; }
@@ -6236,6 +6395,7 @@ if (!gl) {
         };
 
         const renderQueue = [];
+        const slideshowEntries = []; // filled per-profile for slideshow
 
         userProfiles.forEach(userProf => {
             const isActive = activeUserProfile && activeUserProfile.id === userProf.id;
@@ -6261,31 +6421,14 @@ if (!gl) {
             bigCanvas.style.cssText = 'display:block;width:auto;height:auto;max-width:90vw;max-height:65vh;border-radius:10px;';
             let bigReady = false;
 
+            const entry = { bigCanvas, get bigReady() { return bigReady; }, label: '👤 ' + String(userProf.name) + (isActive ? '  · active' : '') };
+            slideshowEntries.push(entry);
             renderQueue.push({ settings: userProf.settings || {}, bigCanvas, thumbCanvas, onDone: () => { bigReady = true; } });
 
-            // Lightbox
+            // Slideshow lightbox
             previewWrap.addEventListener('click', (e) => {
                 e.stopPropagation();
-                const overlay = document.createElement('div');
-                overlay.style.cssText = `position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,0.82);
-                    backdrop-filter:blur(6px);display:flex;flex-direction:column;align-items:center;
-                    justify-content:center;gap:14px;cursor:zoom-out;`;
-                stopEventsOn(overlay);
-                const lbTitle = document.createElement('div');
-                lbTitle.textContent = '👤 ' + String(userProf.name) + (isActive ? '  · active' : '');
-                lbTitle.style.cssText = `color:#fff;font-size:18px;font-weight:900;text-shadow:0 0 12px rgba(42,111,219,0.8);pointer-events:none;`;
-                const lbClose = document.createElement('button');
-                lbClose.type = 'button'; lbClose.textContent = '✕';
-                lbClose.style.cssText = `position:absolute;top:16px;right:16px;background:rgba(255,255,255,0.12);
-                    border:1px solid rgba(255,255,255,0.25);color:#fff;font-size:18px;font-weight:900;
-                    width:36px;height:36px;border-radius:8px;cursor:pointer;display:flex;align-items:center;justify-content:center;`;
-                lbClose.addEventListener('click', (ev) => { ev.stopPropagation(); overlay.remove(); });
-                stopEventsOn(lbClose);
-                const content = bigReady ? bigCanvas : (() => { const m = document.createElement('div'); m.textContent = 'Preview loading…'; m.style.cssText = 'color:#fff;opacity:0.7;font-size:14px;'; return m; })();
-                overlay.addEventListener('click', () => overlay.remove());
-                bigCanvas.addEventListener('click', (ev) => ev.stopPropagation());
-                overlay.appendChild(lbTitle); overlay.appendChild(content); overlay.appendChild(lbClose);
-                (document.body || document.documentElement).appendChild(overlay);
+                openSlideshow(slideshowEntries, slideshowEntries.indexOf(entry), '#2a6fdb');
             });
             stopEventsOn(previewWrap);
 
@@ -7399,6 +7542,7 @@ const fileInput = document.createElement('input');
                 return b;
             };
 
+            const lutSlideshowEntries = []; // for slideshow across all rendered LUT profiles
             for (const p of filtered) {
                 const row = document.createElement('div');
                 row.style.cssText = `
@@ -7452,6 +7596,9 @@ const fileInput = document.createElement('input');
                 bigCanvas.style.cssText = 'display:block;width:auto;height:auto;max-width:90vw;max-height:65vh;border-radius:10px;';
                 let bigReady = false;
 
+                const lutEntry = { bigCanvas, get bigReady() { return bigReady; }, label: '🎨 ' + String(p.name) + (grp ? '  ·  ' + grp : '') };
+                lutSlideshowEntries.push(lutEntry);
+
                 // Build both canvases in background — LUT applied async in chunks, no main-thread block
                 setTimeout(() => {
                     try {
@@ -7490,52 +7637,11 @@ const fileInput = document.createElement('input');
                     } catch(_) {}
                 }, 0);
 
-                // Lightbox click — show pre-rendered bigCanvas, no re-render
-                const openLightbox = (e) => {
+                // Slideshow lightbox
+                previewWrap.addEventListener('click', (e) => {
                     e.stopPropagation();
-                    const overlay = document.createElement('div');
-                    overlay.style.cssText = `
-                        position:fixed;inset:0;z-index:2147483647;
-                        background:rgba(0,0,0,0.82);backdrop-filter:blur(6px);
-                        display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;
-                        cursor:zoom-out;
-                    `;
-                    stopEventsOn(overlay);
-
-                    const lbTitle = document.createElement('div');
-                    lbTitle.textContent = '🎨 ' + String(p.name) + (grp ? '  ·  ' + grp : '');
-                    lbTitle.style.cssText = `color:#fff;font-size:18px;font-weight:900;
-                        text-shadow:0 0 12px rgba(255,138,0,0.7);pointer-events:none;`;
-
-                    const lbClose = document.createElement('button');
-                    lbClose.type = 'button';
-                    lbClose.textContent = '✕';
-                    lbClose.style.cssText = `
-                        position:absolute;top:16px;right:16px;
-                        background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.25);
-                        color:#fff;font-size:18px;font-weight:900;width:36px;height:36px;
-                        border-radius:8px;cursor:pointer;display:flex;align-items:center;justify-content:center;
-                    `;
-                    lbClose.addEventListener('click', (ev) => { ev.stopPropagation(); overlay.remove(); });
-                    stopEventsOn(lbClose);
-
-                    const content = bigReady ? bigCanvas : (() => {
-                        const msg = document.createElement('div');
-                        msg.textContent = 'Vorschau wird geladen…';
-                        msg.style.cssText = 'color:#fff;opacity:0.7;font-size:14px;';
-                        return msg;
-                    })();
-
-                    overlay.addEventListener('click', () => overlay.remove());
-                    bigCanvas.addEventListener('click', (ev) => ev.stopPropagation());
-
-                    overlay.appendChild(lbTitle);
-                    overlay.appendChild(content);
-                    overlay.appendChild(lbClose);
-                    (document.body || document.documentElement).appendChild(overlay);
-                };
-
-                previewWrap.addEventListener('click', openLightbox);
+                    openSlideshow(lutSlideshowEntries, lutSlideshowEntries.indexOf(lutEntry), '#ff8a00');
+                });
                 stopEventsOn(previewWrap);
                 // --- end LUT Preview Canvas ---
 
