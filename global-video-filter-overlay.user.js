@@ -387,14 +387,27 @@
         const libBtn = document.createElement('button');
         libBtn.textContent = '📚 Library';
         libBtn.title = 'Open SVG Filter Library';
-        libBtn.style.cssText = `padding:4px 10px;background:rgba(100,180,255,0.18);color:#a0d4ff;border:1px solid rgba(100,180,255,0.45);border-radius:6px;font-size:11px;font-weight:900;cursor:pointer;`;
+        libBtn.style.cssText = `padding:4px 10px;background:rgba(100,180,255,0.18);color:#a0d4ff;border:1px solid rgba(100,180,255,0.45);border-radius:6px;font-size:16px;font-weight:900;cursor:pointer;`;
         libBtn.addEventListener('mouseenter', () => { libBtn.style.background = 'rgba(100,180,255,0.32)'; });
         libBtn.addEventListener('mouseleave', () => { libBtn.style.background = 'rgba(100,180,255,0.18)'; });
         libBtn.addEventListener('click', () => { window.open('https://svg.ts3x.cc/', '_blank'); });
 
         const hclose = document.createElement('button');
         hclose.textContent = '✕';
-        hclose.style.cssText = `background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.2);color:#fff;font-size:18px;cursor:pointer;width:32px;height:32px;border-radius:7px;flex-shrink:0;`;
+        hclose.style.cssText = `
+        background: rgba(255, 255, 255, 0.1);
+            border: none;
+            color: #fff;
+            font-size: 20px;
+            cursor: pointer;
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+            border: 1px solid rgba(255,255,255,0.2);`;
         hclose.addEventListener('click', () => modal.remove());
 
         hbtns.appendChild(libBtn);
