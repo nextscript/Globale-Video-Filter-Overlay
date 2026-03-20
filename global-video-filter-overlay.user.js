@@ -56,12 +56,20 @@
                             } catch (_) {}
 
                             const exists = codes.find(e => e.label === entry.label);
+                            // Auto-detect type if not provided: GLSL code → webgl, otherwise svg
+                            const detectedType = entry.type || (
+                                /^\s*#version\s+300\s+es/m.test(entry.code) ||
+                                /\bvoid\s+main\s*\(/m.test(entry.code) ||
+                                /\buniform\s+sampler2D\b/m.test(entry.code)
+                                ? 'webgl' : 'svg'
+                            );
                             if (exists) {
                                 if (!confirm(`"${entry.label}" already exists. Overwrite?`)) return;
                                 exists.code = entry.code;
+                                exists.type = detectedType;
                                 exists.enabled = true;
                             } else {
-                                codes.push({ id: 'csvg_' + Date.now(), label: entry.label, code: entry.code, enabled: true });
+                                codes.push({ id: 'csvg_' + Date.now(), label: entry.label, code: entry.code, type: detectedType, enabled: true });
                             }
 
                             GM_setValue('gvf_custom_svg_codes', JSON.stringify(codes));
@@ -213,6 +221,26 @@
                 bestArea = area;
                 best = video;
             }
+        }
+        return best;
+    }
+
+    // Like getGpuPrimaryVideo but also matches paused/ended videos — needed for GLSL overlays
+    function getWebglPrimaryVideo() {
+        const videos = Array.from(document.querySelectorAll('video'));
+        let best = null;
+        let bestArea = 0;
+        for (const video of videos) {
+            if (!video) continue;
+            if (video.readyState < 1 || video.videoWidth === 0 || video.videoHeight === 0) continue;
+            const cs = window.getComputedStyle(video);
+            if (!cs || cs.display === 'none' || cs.visibility === 'hidden') continue;
+            const r = video.getBoundingClientRect();
+            if (!r || r.width < 40 || r.height < 40) continue;
+            if (r.bottom <= 0 || r.right <= 0) continue;
+            if (r.top >= (window.innerHeight || 0) || r.left >= (window.innerWidth || 0)) continue;
+            const area = r.width * r.height;
+            if (area > bestArea) { bestArea = area; best = video; }
         }
         return best;
     }
@@ -507,16 +535,32 @@ ${body.includes('void main') ? body : ('void main(){\n' + body + '\n}')}`;
             let alive = true;
             let lastPaused = false;
 
+            function _reparentCanvas() {
+                const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+                const target = fsEl || document.body || document.documentElement;
+                if (canvas.parentNode !== target) target.appendChild(canvas);
+                return fsEl;
+            }
+
             function doRender() {
                 if (!video || !video.isConnected || video.readyState < 2) {
                     canvas.style.display = 'none';
                     return;
                 }
+                const fsEl = _reparentCanvas();
                 const r = video.getBoundingClientRect();
                 if (!r || r.width < 1 || r.height < 1) { canvas.style.display = 'none'; return; }
                 canvas.style.display = 'block';
-                canvas.style.left = r.left + 'px';
-                canvas.style.top  = r.top  + 'px';
+                if (fsEl) {
+                    const fr = fsEl.getBoundingClientRect();
+                    canvas.style.position = 'absolute';
+                    canvas.style.left = (r.left - fr.left) + 'px';
+                    canvas.style.top  = (r.top  - fr.top)  + 'px';
+                } else {
+                    canvas.style.position = 'fixed';
+                    canvas.style.left = r.left + 'px';
+                    canvas.style.top  = r.top  + 'px';
+                }
                 canvas.style.width  = r.width  + 'px';
                 canvas.style.height = r.height + 'px';
 
@@ -542,8 +586,9 @@ ${body.includes('void main') ? body : ('void main(){\n' + body + '\n}')}`;
                 requestAnimationFrame(drawLoop);
                 const paused = !video || video.paused || video.ended;
                 if (paused) {
-                    // Only render once when transitioning to paused
-                    if (!lastPaused) { doRender(); lastPaused = true; }
+                    // Always re-render while paused so fullscreen/position changes apply instantly
+                    doRender();
+                    lastPaused = true;
                     return;
                 }
                 lastPaused = false;
@@ -625,7 +670,15 @@ ${body.includes('void main') ? body : ('void main(){\n' + body + '\n}')}`;
             _instances.clear();
         }
 
-        return { update, destroyAll };
+        function reparentAll() {
+            const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+            const target = fsEl || document.body || document.documentElement;
+            document.querySelectorAll('[data-gvf-custom-webgl]').forEach(c => {
+                if (c.parentNode !== target) target.appendChild(c);
+            });
+        }
+
+        return { update, destroyAll, reparentAll };
     })();
 
     // Try-compile a GLSL fragment shader and return null on success, error string on failure
@@ -655,7 +708,7 @@ ${src.replace(/^\s*#version\s+\S+\s*/m, '').replace(/\btexture2D\b/g, 'texture')
     }
 
     function updateCustomWebglOverlays() {
-        const video = getGpuPrimaryVideo() || getHudPrimaryVideo();
+        const video = getWebglPrimaryVideo() || getGpuPrimaryVideo() || getHudPrimaryVideo();
         CustomWebglOverlayManager.update(video);
     }
 
@@ -10433,6 +10486,7 @@ if ('lutProfile' in obj) {
 
     function updateAllOverlays() {
         ensureOverlays();
+        updateCustomWebglOverlays();
 
         const primary = choosePrimaryVideo();
         const hudPrimary = getHudPrimaryVideo();
@@ -10505,6 +10559,7 @@ if ('lutProfile' in obj) {
                 if (fsWraps2.has(v)) restoreFromFsWrapper(v);
             });
         }
+        CustomWebglOverlayManager.reparentAll();
         scheduleOverlayUpdate();
     }
 
@@ -11489,6 +11544,7 @@ if ('lutProfile' in obj) {
                 if (changedKey === K.CUSTOM_SVG_CODES) {
                     loadCustomSvgCodes();
                     regenerateSvgImmediately();
+                    updateCustomWebglOverlays();
                     const modal = document.getElementById('gvf-custom-svg-modal');
                     if (modal && modal._gvfRenderList) modal._gvfRenderList();
                     const badge = document.getElementById('gvf-svg-codes-count');
@@ -11711,6 +11767,11 @@ if ('lutProfile' in obj) {
         listenGlobalSync();
         watchIframes();
         primeAutoOnVideoActivity();
+
+        // Ensure GLSL overlays are created as soon as any video becomes ready
+        ['canplay', 'loadedmetadata', 'play', 'playing'].forEach(evt => {
+            document.addEventListener(evt, scheduleOverlayUpdate, { passive: true, capture: true });
+        });
 
         ensureAutoLoop();
         setAutoOn(autoOn);
