@@ -3,7 +3,7 @@
 // @name:de      Global Video Filter Overlay
 // @namespace    gvf
 // @author       Freak288
-// @version      1.8.7
+// @version      1.8.8
 // @description  Global Video Filter Overlay enhances any HTML5 video in your browser with real-time color grading, sharpening, HDR and LUTs. It provides instant profile switching and on-video controls to improve visual quality without re-encoding or downloads.
 // @description:de  Globale Video Filter Overlay verbessert jedes HTML5-Video in Ihrem Browser mit Echtzeit-Farbkorrektur, Schärfung, HDR und LUTs. Es bietet sofortiges Profilwechseln und Steuerelemente direkt im Video, um die Bildqualität ohne Neucodierung oder Downloads zu verbessern.
 // @match        *://*/*
@@ -370,6 +370,291 @@
         } catch (_) { return null; }
     }
 
+    // -------------------------
+    // Custom WebGL Overlay Manager
+    // Handles type:'webgl' entries: each active entry gets its own fullscreen canvas
+    // overlaid on the primary video. Fragment shader receives:
+    //   uniform sampler2D u_video;  (video frame texture)
+    //   uniform vec2      u_res;    (canvas width, height)
+    //   in vec2           v_uv;     (0..1 UV, WebGL2 / GLSL300)
+    // -------------------------
+    const CustomWebglOverlayManager = (() => {
+        // Map: entry.id -> { canvas, gl, program, texture, rafId, sig }
+        const _instances = new Map();
+
+        const _vsSource = `#version 300 es
+in vec2 a_pos;
+in vec2 a_uv;
+out vec2 v_uv;
+void main(){
+    gl_Position = vec4(a_pos, 0.0, 1.0);
+    v_uv = a_uv;
+}`;
+
+        function _compileShader(gl, type, src) {
+            const sh = gl.createShader(type);
+            gl.shaderSource(sh, src);
+            gl.compileShader(sh);
+            if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+                const err = gl.getShaderInfoLog(sh);
+                gl.deleteShader(sh);
+                throw new Error(err);
+            }
+            return sh;
+        }
+
+        // Normalize user GLSL300 fragment code to use internal uniform names
+        // Maps: u_video->u_video, u_res->u_res, v_uv->v_uv (already correct)
+        // We also accept texture2D -> texture if user wrote GLSL100 style
+        function _normalizeUserFrag(src) {
+            // Strip #version if present — we prepend our own
+            let s = src.replace(/^\s*#version\s+\S+\s*/m, '');
+            // Upgrade texture2D -> texture
+            s = s.replace(/\btexture2D\b/g, 'texture');
+            // Replace common alternate uniform names users might use
+            // (fragColor as out name is fine, we just need to ensure out vec4 fragColor is declared)
+            return s;
+        }
+
+        function _buildFragSrc(userSrc) {
+            const body = _normalizeUserFrag(userSrc);
+            // If user provided their own uniforms block, strip duplicates — just wrap safely
+            // We inject standard header and let user body follow. User declares their own uniforms.
+            return `#version 300 es
+precision highp float;
+uniform sampler2D u_video;
+uniform vec2 u_res;
+in vec2 v_uv;
+out vec4 fragColor;
+${body.includes('void main') ? body : ('void main(){\n' + body + '\n}')}`;
+        }
+
+        function _createInstance(entry, video) {
+            const canvas = document.createElement('canvas');
+            canvas.setAttribute('data-gvf-custom-webgl', entry.id);
+            // fixed to body — tracks video BCR in drawLoop, never inside player DOM so controls stay untouched
+            canvas.style.cssText = `position:fixed;pointer-events:none;z-index:2147483645;display:block;top:0;left:0;`;
+
+            let gl;
+            try {
+                gl = canvas.getContext('webgl2', { alpha: true, antialias: false, premultipliedAlpha: false });
+                if (!gl) throw new Error('webgl2 unavailable');
+            } catch (e) {
+                logW('[GVF WebGL Overlay] WebGL2 not available:', e);
+                return null;
+            }
+
+            let program;
+            try {
+                const fragSrc = _buildFragSrc(entry.code);
+                const vs = _compileShader(gl, gl.VERTEX_SHADER, _vsSource);
+                const fs = _compileShader(gl, gl.FRAGMENT_SHADER, fragSrc);
+                program = gl.createProgram();
+                gl.attachShader(program, vs);
+                gl.attachShader(program, fs);
+                gl.linkProgram(program);
+                if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+                    throw new Error(gl.getProgramInfoLog(program));
+                }
+                gl.detachShader(program, vs); gl.deleteShader(vs);
+                gl.detachShader(program, fs); gl.deleteShader(fs);
+            } catch (e) {
+                logW('[GVF WebGL Overlay] Shader compile error for "' + entry.label + '":', e.message);
+                return null;
+            }
+
+            gl.useProgram(program);
+
+            // VAO — keeps attribute state per-instance, no cross-frame pollution
+            const vao = gl.createVertexArray();
+            gl.bindVertexArray(vao);
+
+            const verts = new Float32Array([-1,-1, 1,-1, -1,1, 1,1]);
+            const uvs   = new Float32Array([ 0, 0, 1, 0,  0,1, 1,1]);
+
+            const vb = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, vb);
+            gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
+            const aPos = gl.getAttribLocation(program, 'a_pos');
+            gl.enableVertexAttribArray(aPos);
+            gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+            const ub = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, ub);
+            gl.bufferData(gl.ARRAY_BUFFER, uvs, gl.STATIC_DRAW);
+            const aUv = gl.getAttribLocation(program, 'a_uv');
+            gl.enableVertexAttribArray(aUv);
+            gl.vertexAttribPointer(aUv, 2, gl.FLOAT, false, 0, 0);
+
+            gl.bindVertexArray(null);
+
+            const uVideo = gl.getUniformLocation(program, 'u_video');
+            const uRes   = gl.getUniformLocation(program, 'u_res');
+
+            const texture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+            gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+            gl.bindTexture(gl.TEXTURE_2D, null);
+
+            gl.uniform1i(uVideo, 0);
+
+            let alive = true;
+            let lastPaused = false;
+
+            function doRender() {
+                if (!video || !video.isConnected || video.readyState < 2) {
+                    canvas.style.display = 'none';
+                    return;
+                }
+                const r = video.getBoundingClientRect();
+                if (!r || r.width < 1 || r.height < 1) { canvas.style.display = 'none'; return; }
+                canvas.style.display = 'block';
+                canvas.style.left = r.left + 'px';
+                canvas.style.top  = r.top  + 'px';
+                canvas.style.width  = r.width  + 'px';
+                canvas.style.height = r.height + 'px';
+
+                const w = video.videoWidth, h = video.videoHeight;
+                if (!w || !h) return;
+                if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+
+                gl.viewport(0, 0, w, h);
+                gl.useProgram(program);
+                gl.bindVertexArray(vao);
+                gl.activeTexture(gl.TEXTURE0);
+                gl.bindTexture(gl.TEXTURE_2D, texture);
+                try { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video); } catch (_) { return; }
+                gl.uniform1i(uVideo, 0);
+                gl.uniform2f(uRes, w, h);
+                gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+                gl.bindVertexArray(null);
+            }
+
+            function drawLoop() {
+                if (!alive) return;
+                requestAnimationFrame(drawLoop);
+                const paused = !video || video.paused || video.ended;
+                if (paused) {
+                    // Only render once when transitioning to paused
+                    if (!lastPaused) { doRender(); lastPaused = true; }
+                    return;
+                }
+                lastPaused = false;
+                doRender();
+            }
+
+            // Also render immediately on pause/seek so the frame stays visible
+            const _onPause  = () => { if (alive) doRender(); };
+            const _onSeek   = () => { if (alive) doRender(); };
+            video.addEventListener('pause',    _onPause,  { passive: true });
+            video.addEventListener('seeked',   _onSeek,   { passive: true });
+            video.addEventListener('loadeddata', _onSeek, { passive: true });
+
+            const inst = { canvas, gl, program, texture, vao, vb, ub, sig: entry.id + '||' + entry.code, _stop: () => {
+                alive = false;
+                try { video.removeEventListener('pause',     _onPause); } catch(_){}
+                try { video.removeEventListener('seeked',    _onSeek);  } catch(_){}
+                try { video.removeEventListener('loadeddata',_onSeek);  } catch(_){}
+            }};
+            requestAnimationFrame(drawLoop);
+
+            // Attach to body — completely outside player DOM
+            (document.body || document.documentElement).appendChild(canvas);
+
+            return inst;
+        }
+
+        function _destroyInstance(inst) {
+            try {
+                if (inst._stop) inst._stop();
+                if (inst.canvas && inst.canvas.isConnected) inst.canvas.remove();
+                const gl = inst.gl;
+                if (gl) {
+                    if (inst.texture) gl.deleteTexture(inst.texture);
+                    if (inst.program) gl.deleteProgram(inst.program);
+                    if (inst.vao) gl.deleteVertexArray(inst.vao);
+                    if (inst.vb) gl.deleteBuffer(inst.vb);
+                    if (inst.ub) gl.deleteBuffer(inst.ub);
+                }
+            } catch (_) {}
+        }
+
+        function update(video) {
+            const activeEntries = customSvgCodes.filter(e => e && e.enabled && e.type === 'webgl');
+
+            // Remove instances for entries that are gone/disabled
+            for (const [id, inst] of _instances.entries()) {
+                const still = activeEntries.find(e => e.id === id);
+                if (!still) { _destroyInstance(inst); _instances.delete(id); }
+            }
+
+            if (!video) return;
+
+            // Add/update instances for active entries
+            for (const entry of activeEntries) {
+                const sig = entry.id + '||' + entry.code;
+                const existing = _instances.get(entry.id);
+                if (existing) {
+                    // Recompile if code changed
+                    if (existing.sig !== sig) {
+                        _destroyInstance(existing);
+                        _instances.delete(entry.id);
+                    } else {
+                        // Ensure canvas is still in DOM
+                        if (!existing.canvas.isConnected) {
+                            const parent = video.parentNode;
+                            if (parent) parent.appendChild(existing.canvas);
+                        }
+                        continue;
+                    }
+                }
+                const inst = _createInstance(entry, video);
+                if (inst) _instances.set(entry.id, inst);
+            }
+        }
+
+        function destroyAll() {
+            for (const inst of _instances.values()) _destroyInstance(inst);
+            _instances.clear();
+        }
+
+        return { update, destroyAll };
+    })();
+
+    // Try-compile a GLSL fragment shader and return null on success, error string on failure
+    function validateGlslCode(src) {
+        try {
+            const canvas = document.createElement('canvas');
+            const gl = canvas.getContext('webgl2');
+            if (!gl) return null; // can't validate without WebGL2, allow it
+            const fragSrc = `#version 300 es
+precision highp float;
+uniform sampler2D u_video;
+uniform vec2 u_res;
+in vec2 v_uv;
+out vec4 fragColor;
+${src.replace(/^\s*#version\s+\S+\s*/m, '').replace(/\btexture2D\b/g, 'texture')}`;
+            const sh = gl.createShader(gl.FRAGMENT_SHADER);
+            gl.shaderSource(sh, fragSrc);
+            gl.compileShader(sh);
+            const ok = gl.getShaderParameter(sh, gl.COMPILE_STATUS);
+            const info = ok ? null : (gl.getShaderInfoLog(sh) || 'Unknown error');
+            gl.deleteShader(sh);
+            return info; // null = OK, string = error
+        } catch (e) {
+            return null; // silently pass if canvas unavailable
+        }
+    }
+
+    function updateCustomWebglOverlays() {
+        const video = getGpuPrimaryVideo() || getHudPrimaryVideo();
+        CustomWebglOverlayManager.update(video);
+    }
+
     function openCustomSvgModal() {
         const MODAL_ID = 'gvf-custom-svg-modal';
         const existing = document.getElementById(MODAL_ID);
@@ -384,7 +669,7 @@
         const hdr = document.createElement('div');
         hdr.style.cssText = `display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;padding-bottom:10px;border-bottom:2px solid #4a9eff;flex-shrink:0;`;
         const htitle = document.createElement('div');
-        htitle.textContent = '⬡ Custom SVG Filter Codes';
+        htitle.textContent = '⬡ Custom Filter Codes (SVG / WebGL)';
         htitle.style.cssText = `font-size:16px;font-weight:900;color:#fff;text-shadow:0 0 8px #4a9eff;`;
 
         const hbtns = document.createElement('div');
@@ -495,8 +780,15 @@
                 });
 
                 const lbl = document.createElement('div');
-                lbl.textContent = entry.label || 'Untitled';
-                lbl.style.cssText = `flex:1;font-size:12px;font-weight:700;color:#d0e8ff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;`;
+                lbl.style.cssText = `flex:1;font-size:12px;font-weight:700;color:#d0e8ff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:flex;align-items:center;gap:5px;`;
+                const lblText = document.createElement('span');
+                lblText.textContent = entry.label || 'Untitled';
+                lblText.style.cssText = `overflow:hidden;text-overflow:ellipsis;white-space:nowrap;`;
+                const typeBadge = document.createElement('span');
+                typeBadge.textContent = (entry.type === 'webgl') ? 'GLSL' : 'SVG';
+                typeBadge.style.cssText = `flex-shrink:0;font-size:9px;font-weight:900;padding:1px 5px;border-radius:4px;${entry.type === 'webgl' ? 'background:rgba(120,80,255,0.3);color:#c0a0ff;border:1px solid rgba(120,80,255,0.5);' : 'background:rgba(74,158,255,0.15);color:#7ab8ff;border:1px solid rgba(74,158,255,0.35);'}`;
+                lbl.appendChild(lblText);
+                lbl.appendChild(typeBadge);
 
                 const editBtn = document.createElement('button');
                 editBtn.textContent = '✏';
@@ -547,25 +839,51 @@
             const editing = (idx !== undefined && idx >= 0);
             while (editArea.firstChild) editArea.removeChild(editArea.firstChild);
 
+            const currentType = editing ? (customSvgCodes[idx].type || 'svg') : 'svg';
+
             const formTitle = document.createElement('div');
-            formTitle.textContent = editing ? `✏ Edit: ${customSvgCodes[idx].label}` : '➕ Add new SVG Code';
+            formTitle.textContent = editing ? `✏ Edit: ${customSvgCodes[idx].label}` : '➕ Add new Custom Filter';
             formTitle.style.cssText = `font-size:12px;font-weight:900;color:#4a9eff;`;
             editArea.appendChild(formTitle);
 
+            // Row: Label + Type Dropdown
+            const topRow = document.createElement('div');
+            topRow.style.cssText = `display:flex;gap:8px;align-items:center;`;
+
             const labelInput = document.createElement('input');
             labelInput.type = 'text';
-            labelInput.placeholder = 'Label (z.B. "Sharpen 3x3")';
+            labelInput.placeholder = 'Label (z.B. "Sobel Sketch")';
             labelInput.value = editing ? (customSvgCodes[idx].label || '') : '';
-            labelInput.style.cssText = `width:100%;background:rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.2);border-radius:7px;padding:7px 10px;color:#fff;font-size:12px;outline:none;box-sizing:border-box;`;
+            labelInput.style.cssText = `flex:1;background:rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.2);border-radius:7px;padding:7px 10px;color:#fff;font-size:12px;outline:none;box-sizing:border-box;`;
             stopEventsOn(labelInput);
-            editArea.appendChild(labelInput);
+
+            const typeSelect = document.createElement('select');
+            typeSelect.style.cssText = `background:rgba(0,0,0,0.7);border:1px solid rgba(100,180,255,0.5);border-radius:7px;padding:6px 10px;color:#a0d4ff;font-size:12px;font-weight:700;outline:none;cursor:pointer;flex-shrink:0;`;
+            stopEventsOn(typeSelect);
+            [['svg', '⬡ SVG'], ['webgl', '⬡ WebGL/GLSL']].forEach(([val, lbl]) => {
+                const opt = document.createElement('option');
+                opt.value = val; opt.textContent = lbl;
+                if (val === currentType) opt.selected = true;
+                typeSelect.appendChild(opt);
+            });
+
+            topRow.appendChild(labelInput);
+            topRow.appendChild(typeSelect);
+            editArea.appendChild(topRow);
+
+            const svgPlaceholder = 'SVG Filter-Primitive Code, z.B.:\n<feConvolveMatrix kernelMatrix="0 -1 0 -1 5 -1 0 -1 0"/>';
+            const glslPlaceholder = `GLSL Fragment Shader (WebGL2 / GLSL300).\nVerfügbare Uniforms:\n  uniform sampler2D u_video;  // Videoframe\n  uniform vec2 u_res;          // Canvas-Auflösung (px)\n  in vec2 v_uv;                // UV-Koordinaten 0..1\n  out vec4 fragColor;\n\n// Beispiel:\nvoid main(){\n    fragColor = texture(u_video, v_uv);\n}`;
 
             const codeInput = document.createElement('textarea');
-            codeInput.placeholder = 'SVG Filter-Primitive Code, z.B.:\n<feConvolveMatrix kernelMatrix="0 -1 0 -1 5 -1 0 -1 0"/>';
+            codeInput.placeholder = currentType === 'webgl' ? glslPlaceholder : svgPlaceholder;
             codeInput.value = editing ? (customSvgCodes[idx].code || '') : '';
-            codeInput.style.cssText = `width:100%;height:100px;background:rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.2);border-radius:7px;padding:8px 10px;color:#d0ffb0;font-size:11px;font-family:monospace;outline:none;resize:vertical;box-sizing:border-box;`;
+            codeInput.style.cssText = `width:100%;height:120px;background:rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.2);border-radius:7px;padding:8px 10px;color:#d0ffb0;font-size:11px;font-family:monospace;outline:none;resize:vertical;box-sizing:border-box;`;
             stopEventsOn(codeInput);
             editArea.appendChild(codeInput);
+
+            typeSelect.addEventListener('change', () => {
+                codeInput.placeholder = typeSelect.value === 'webgl' ? glslPlaceholder : svgPlaceholder;
+            });
 
             const errMsg = document.createElement('div');
             errMsg.style.cssText = `font-size:11px;color:#ff7070;min-height:14px;`;
@@ -590,18 +908,30 @@
             saveBtn.addEventListener('click', () => {
                 const label = labelInput.value.trim() || 'Untitled';
                 const code = codeInput.value.trim();
+                const type = typeSelect.value;
                 if (!code) { errMsg.textContent = 'Code must not be empty.'; return; }
-                const parsed = parseCustomSvgCode(code);
-                if (!parsed) { errMsg.textContent = '❌ Invalid SVG code — parse error.'; return; }
+
+                if (type === 'svg') {
+                    const parsed = parseCustomSvgCode(code);
+                    if (!parsed) { errMsg.textContent = '❌ Invalid SVG code — parse error.'; return; }
+                } else {
+                    // WebGL: try-compile for immediate feedback
+                    errMsg.textContent = '⏳ Validating shader…';
+                    const glslErr = validateGlslCode(code);
+                    if (glslErr) { errMsg.textContent = '❌ GLSL error: ' + glslErr.split('\n').slice(0,3).join(' | '); return; }
+                }
+
                 errMsg.textContent = '';
                 if (editing) {
                     customSvgCodes[idx].label = label;
                     customSvgCodes[idx].code = code;
+                    customSvgCodes[idx].type = type;
                 } else {
-                    customSvgCodes.push({ id: 'csvg_' + Date.now(), label, code, enabled: true });
+                    customSvgCodes.push({ id: 'csvg_' + Date.now(), label, code, type, enabled: true });
                 }
                 saveCustomSvgCodes();
                 regenerateSvgImmediately();
+                updateCustomWebglOverlays();
                 renderList();
                 renderEditArea();
             });
@@ -2878,6 +3208,7 @@ function downloadBlob(blob, filename) {
         } finally {
             _svgNeedsRegeneration = false;
         }
+        updateCustomWebglOverlays();
     }
 
     /**
@@ -8418,7 +8749,7 @@ const fileInput = document.createElement('input');
         svgCodesRow.style.cssText = `display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:10px;background:rgba(0,0,0,0.92);box-shadow:0 0 0 1px rgba(255,255,255,0.14) inset;margin-top:4px;`;
 
         const svgCodesLabel = document.createElement('div');
-        svgCodesLabel.textContent = 'SVG Codes';
+        svgCodesLabel.textContent = 'SVG/WebGL Codes';
         svgCodesLabel.style.cssText = `min-width:100px;text-align:left;font-size:11px;font-weight:900;color:#cfcfcf;padding-left:2px;`;
 
         const svgCodesBtn = document.createElement('button');
@@ -10825,9 +11156,9 @@ if ('lutProfile' in obj) {
         filter.appendChild(autoCM);
         last = 'r_auto';
 
-        // Inject enabled custom SVG codes into filter pipeline
+        // Inject enabled SVG-type custom filter codes into filter pipeline (WebGL entries handled separately)
         if (Array.isArray(customSvgCodes)) {
-            customSvgCodes.filter(e => e && e.enabled).forEach((entry, idx) => {
+            customSvgCodes.filter(e => e && e.enabled && e.type !== 'webgl').forEach((entry, idx) => {
                 const nodes = parseCustomSvgCode(entry.code);
                 if (!nodes || !nodes.length) return;
                 nodes.forEach((node, ni) => {
@@ -10871,7 +11202,7 @@ if ('lutProfile' in obj) {
             normRGB(u_r_gain), normRGB(u_g_gain), normRGB(u_b_gain)
         ].map(x => Number(x).toFixed(1)).join(',');
 
-        const customSig = customSvgCodes.filter(e => e && e.enabled).map(e => e.id + ':' + e.code).join('||');
+        const customSig = customSvgCodes.filter(e => e && e.enabled && e.type !== 'webgl').map(e => e.id + ':' + e.code).join('||');
         const want = `${SL}|${SR}|${R}|${A}|${BS}|${BL}|${WL}|${DN}|${EDGE}|${HDR}|${P}|U:${uSig}|CB:${CB}|LUT:${LUTN}|CSVG:${customSig}`;
 
         const existing = document.getElementById(SVG_ID);
