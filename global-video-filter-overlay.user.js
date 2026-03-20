@@ -424,6 +424,7 @@ void main(){
 precision highp float;
 uniform sampler2D u_video;
 uniform vec2 u_res;
+uniform float u_time;
 in vec2 v_uv;
 out vec4 fragColor;
 ${body.includes('void main') ? body : ('void main(){\n' + body + '\n}')}`;
@@ -490,6 +491,7 @@ ${body.includes('void main') ? body : ('void main(){\n' + body + '\n}')}`;
 
             const uVideo = gl.getUniformLocation(program, 'u_video');
             const uRes   = gl.getUniformLocation(program, 'u_res');
+            const uTime  = gl.getUniformLocation(program, 'u_time');
 
             const texture = gl.createTexture();
             gl.bindTexture(gl.TEXTURE_2D, texture);
@@ -530,6 +532,7 @@ ${body.includes('void main') ? body : ('void main(){\n' + body + '\n}')}`;
                 try { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video); } catch (_) { return; }
                 gl.uniform1i(uVideo, 0);
                 gl.uniform2f(uRes, w, h);
+                if(uTime !== null) gl.uniform1f(uTime, performance.now() * 0.001);
                 gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
                 gl.bindVertexArray(null);
             }
@@ -635,6 +638,7 @@ ${body.includes('void main') ? body : ('void main(){\n' + body + '\n}')}`;
 precision highp float;
 uniform sampler2D u_video;
 uniform vec2 u_res;
+uniform float u_time;
 in vec2 v_uv;
 out vec4 fragColor;
 ${src.replace(/^\s*#version\s+\S+\s*/m, '').replace(/\btexture2D\b/g, 'texture')}`;
