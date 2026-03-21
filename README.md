@@ -1,4 +1,4 @@
-<img src="https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/demo.gif">
+<img src="https://raw.githubusercontent.com/nextscript/Ultimate-Video-Enhancer/refs/heads/main/demo.gif">
 
 <hr>
 <h2>Make Every Video Look Better — Instantly</h2>
