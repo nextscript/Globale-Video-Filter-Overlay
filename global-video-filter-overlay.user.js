@@ -3,7 +3,7 @@
 // @name:de      Ultimate Video Enhancer (Schärfe, HDR, Farben)
 // @namespace    gvf
 // @author       Freak288
-// @version      1.9.0
+// @version      1.9.1
 // @description  Instantly improve every video on any website. Adds real-time sharpening, HDR boost, better colors and contrast to all HTML5 videos.
 // @description:de  Verbessert sofort jedes Video auf jeder Website. Fügt Schärfe, HDR, bessere Farben und Kontrast in Echtzeit hinzu – für alle HTML5-Videos.
 // @match        *://*/*
@@ -16,9 +16,9 @@
 // @grant        GM_xmlhttpRequest
 // @connect      raw.githubusercontent.com
 // @connect      github.com
-// @iconURL      https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/logomes.png
-// @downloadURL https://update.greasyfork.org/scripts/561189/Global%20Video%20Filter%20Overlay.user.js
-// @updateURL https://update.greasyfork.org/scripts/561189/Global%20Video%20Filter%20Overlay.meta.js
+// @iconURL      https://raw.githubusercontent.com/nextscript/Ultimate-Video-Enhancer/refs/heads/main/logomes.png
+// @downloadURL https://update.greasyfork.org/scripts/561189/Ultimate%20Video%20Enhancer%20%28Sharpen%2C%20HDR%2C%20Color%20Boost%29.user.js
+// @updateURL https://update.greasyfork.org/scripts/561189/Ultimate%20Video%20Enhancer%20%28Sharpen%2C%20HDR%2C%20Color%20Boost%29.meta.js
 // ==/UserScript==
 
 (function () {
@@ -7701,7 +7701,7 @@ importInput.addEventListener('change', async () => {
             loadExamplesBtn.textContent = '⏳ Loading…';
             try {
                 // githubusercontent CDN URL – try direct first, then proxy fallbacks
-                const rawUrl = 'https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/main/LUTsProfiles_v2.0.zip';
+                const rawUrl = 'https://raw.githubusercontent.com/nextscript/Ultimate-Video-Enhancer/main/LUTsProfiles_v2.0.zip';
                 const candidates = [
                     rawUrl,
                     'https://api.allorigins.win/raw?url=' + encodeURIComponent(rawUrl),
@@ -9317,8 +9317,8 @@ const fileInput = document.createElement('input');
             status.textContent = 'Fetching example profile…';
             try {
                 const rawUrl = isFirefox()
-                    ? 'https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/refs/heads/main/firefox_fix.json'
-                    : 'https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/main/My_Profile.json';
+                    ? 'https://raw.githubusercontent.com/nextscript/Ultimate-Video-Enhancer/refs/heads/main/firefox_fix.json'
+                    : 'https://raw.githubusercontent.com/nextscript/Ultimate-Video-Enhancer/main/My_Profile.json';
                 const text = await new Promise((resolve, reject) => {
                     GM_xmlhttpRequest({
                         method: 'GET',
@@ -11775,7 +11775,7 @@ if ('lutProfile' in obj) {
                 return;
             }
             log('autoImportLutProfilesFromUrl: No LUT profiles found – fetching from', url);
-            const rawUrl = 'https://raw.githubusercontent.com/nextscript/Globale-Video-Filter-Overlay/main/LUTsProfiles_v2.0.zip';
+            const rawUrl = 'https://raw.githubusercontent.com/nextscript/Ultimate-Video-Enhancer/main/LUTsProfiles_v2.0.zip';
             const candidates = [
                 rawUrl,
                 'https://api.allorigins.win/raw?url=' + encodeURIComponent(rawUrl),
