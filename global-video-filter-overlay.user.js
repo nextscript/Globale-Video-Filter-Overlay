@@ -3934,17 +3934,17 @@ function downloadBlob(blob, filename) {
         const hud = document.getElementById(RECORDING_HUD_ID);
         if (!hud || !video) return;
 
-
-        if (hud.parentNode !== video.parentNode) {
-            if (video.parentNode) {
-                video.parentNode.appendChild(hud);
-            }
+        // Keep HUD in document.body so it shares the same stacking context as
+        // the fixed GLSL overlay canvases (z-index:2147483645). That guarantees
+        // our z-index:2147483647 actually wins and the timer stays visible.
+        if (hud.parentNode !== document.body) {
+            document.body.appendChild(hud);
         }
 
-
-        hud.style.position = 'absolute';
-        hud.style.top = '10px';
-        hud.style.left = '10px';
+        const r = video.getBoundingClientRect();
+        hud.style.position = 'fixed';
+        hud.style.top = (r.top + 10) + 'px';
+        hud.style.left = (r.left + 10) + 'px';
         hud.style.right = 'auto';
         hud.style.bottom = 'auto';
         hud.style.transform = 'none';
@@ -3977,11 +3977,8 @@ function downloadBlob(blob, filename) {
 
         const hud = createRecordingHUD();
 
-
-        if (video.parentNode) {
-            video.parentNode.appendChild(hud);
-            positionRecordingHUD(video);
-        }
+        document.body.appendChild(hud);
+        positionRecordingHUD(video);
 
         hud.style.display = 'flex';
 
