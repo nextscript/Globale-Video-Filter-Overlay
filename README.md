@@ -60,6 +60,51 @@ Sharpen blurry streams, boost colors, enhance contrast, and get a cleaner HDR-li
 </ul>
 
 <hr>
+<h2>⚙️ Settings & Example Presets</h2>
+<hr>
+
+<p>
+Open the settings menu with <b>CTRL + ALT + I</b>.
+</p>
+
+<ul>
+<li>Edit your own values</li>
+<li>Export / import settings</li>
+<li>Modify profiles directly</li>
+</ul>
+
+<h3>📥 Load Example Settings</h3>
+
+<p>
+You can load ready-to-use example presets directly in the JSON menu.
+Perfect for testing strong looks instantly.
+</p>
+
+<ul>
+<li>Select an example → click <b>Load</b></li>
+<li>Press <b>Save</b> → effect applies instantly</li>
+</ul>
+
+<p>
+⚠️ <b>Important:</b><br>
+Some example presets require LUTs (color grading files).
+</p>
+
+<ul>
+<li>1. Press <b>CTRL + ALT + G</b> (LUT Profile Manager)</li>
+<li>2. Import the example LUTs</li>
+<li>3. Then load the example preset in JSON</li>
+</ul>
+
+<p>
+👉 Without LUTs, some presets will not look as intended.
+</p>
+
+<p>
+💡 Tip: Start with an example preset, then tweak it to your own style.
+</p>
+
+<hr>
 <h2>Keyboard Shortcuts</h2>
 <hr>
 
@@ -103,7 +148,7 @@ Add your own filters without editing the script.
 <li>Install the script</li>
 <li>Open any video</li>
 <li>Press CTRL + ALT + H</li>
-<li>Press CTRL + ALT + G</li>
+<li>Press CTRL + ALT + G (optional)</li>
 <li>Done ✅</li>
 </ul>
 
