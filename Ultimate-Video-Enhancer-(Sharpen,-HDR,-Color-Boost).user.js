@@ -3,7 +3,7 @@
 // @name:de      Ultimate Video Enhancer (Schärfe, HDR, Farben)
 // @namespace    gvf
 // @author       Freak288
-// @version      1.9.1
+// @version      1.9.2
 // @description  Instantly improve every video on any website. Adds real-time sharpening, HDR boost, better colors and contrast to all HTML5 videos.
 // @description:de  Verbessert sofort jedes Video auf jeder Website. Fügt Schärfe, HDR, bessere Farben und Kontrast in Echtzeit hinzu – für alle HTML5-Videos.
 // @match        *://*/*
@@ -1092,7 +1092,8 @@ ${mainBlock}`;
         makeFloatingManagerDraggable(modal, hdr, 'gvf_custom_svg_modal_pos');
         // Expose renderList so the sync handler can refresh the modal live
         modal._gvfRenderList = renderList;
-        (document.body || document.documentElement).appendChild(modal);
+        const _fsEl = getFsEl();
+        (_fsEl || document.body || document.documentElement).appendChild(modal);
     }
 
     // -------------------------
@@ -6733,9 +6734,10 @@ if (!gl) {
         menu.appendChild(profileFileInput);
         menu.appendChild(buttonContainer);
 
-        // Add to body
+        // Add to body (or fullscreen element if active)
         if (document.body) {
-            document.body.appendChild(menu);
+            const _fsEl = getFsEl();
+            (_fsEl || document.body).appendChild(menu);
             applyManagerPosition(menu, K.USER_PROFILE_MANAGER_POS);
             log('Config menu created and added to the body');
         }
@@ -8248,7 +8250,8 @@ const fileInput = document.createElement('input');
 
         try { updateLutProfileListInner(); } catch(_) {}
 
-        (document.body || document.documentElement).appendChild(menu);
+        const _fsElLut = getFsEl();
+        (_fsElLut || document.body || document.documentElement).appendChild(menu);
         applyManagerPosition(menu, K.LUT_PROFILE_MANAGER_POS);
         return menu;
     }
@@ -10664,6 +10667,20 @@ if ('lutProfile' in obj) {
         });
     }
 
+    // Moves GVF modals/panels into the fullscreen element so they remain visible.
+    // Called on fullscreenchange; also called when a panel is opened while in FS.
+    function reparentGvfModals() {
+        const fsEl = getFsEl();
+        const target = fsEl || document.body || document.documentElement;
+        const IDS = [CONFIG_MENU_ID, LUT_CONFIG_MENU_ID, 'gvf-custom-svg-modal'];
+        IDS.forEach(id => {
+            const el = document.getElementById(id);
+            if (el && el.parentNode !== target) {
+                target.appendChild(el);
+            }
+        });
+    }
+
     function onFsChange() {
         const fsEl = getFsEl();
         if (!fsEl) {
@@ -10672,6 +10689,7 @@ if ('lutProfile' in obj) {
             });
         }
         CustomWebglOverlayManager.reparentAll();
+        reparentGvfModals();
         scheduleOverlayUpdate();
     }
 
