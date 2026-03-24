@@ -3,7 +3,7 @@
 // @name:de      Ultimate Video Enhancer (Schärfe, HDR, Farben)
 // @namespace    gvf
 // @author       Freak288
-// @version      1.9.3
+// @version      1.9.4
 // @description  Instantly improve every video on any website. Adds real-time sharpening, HDR boost, better colors and contrast to all HTML5 videos.
 // @description:de  Verbessert sofort jedes Video auf jeder Website. Fügt Schärfe, HDR, bessere Farben und Kontrast in Echtzeit hinzu – für alle HTML5-Videos.
 // @match        *://*/*
@@ -406,6 +406,44 @@
     //   uniform vec2      u_res;    (canvas width, height)
     //   in vec2           v_uv;     (0..1 UV, WebGL2 / GLSL300)
     // -------------------------
+    // ── GLSL overlay shared state ─────────────────────────────────────────────
+    let _mouseX = 0.5, _mouseY = 0.5;
+    document.addEventListener('mousemove', e => {
+        // Compute position relative to the primary video element so u_mouse
+        // maps exactly to v_uv space (0..1 over the video rect).
+        const vid = document.querySelector('video');
+        if (vid) {
+            const r = vid.getBoundingClientRect();
+            _mouseX =       (e.clientX - r.left) / (r.width  || 1);
+            _mouseY = 1.0 - (e.clientY - r.top)  / (r.height || 1); // flip Y to match v_uv
+        } else {
+            _mouseX = e.clientX / (window.innerWidth  || 1);
+            _mouseY = e.clientY / (window.innerHeight || 1);
+        }
+    }, { passive: true });
+
+    function _getStrength() {
+        // Returns a 0..1 value representing how many/how intense filters are active
+        let s = 0, n = 0;
+        if (enabled)     { s += 1; n++; }
+        if (darkMoody)   { s += 1; n++; }
+        if (tealOrange)  { s += 1; n++; }
+        if (vibrantSat)  { s += 1; n++; }
+        if (normHDR() !== 0) { s += Math.abs(normHDR()); n++; }
+        return n > 0 ? Math.min(1, s / n) : 0;
+    }
+
+    function _getLayers() {
+        let n = 0;
+        if (enabled)         n++;
+        if (darkMoody)       n++;
+        if (tealOrange)      n++;
+        if (vibrantSat)      n++;
+        if (normHDR() !== 0) n++;
+        if (autoOn)          n++;
+        return n;
+    }
+
     const CustomWebglOverlayManager = (() => {
         // Map: entry.id -> { canvas, gl, program, texture, rafId, sig }
         const _instances = new Map();
@@ -439,8 +477,14 @@ void main(){
             s = s.replace(/^\s*precision\s+\w+\s+\w+\s*;\s*/mg, '');
             // Strip duplicate declarations of our injected uniforms/ins/outs
             s = s.replace(/^\s*uniform\s+sampler2D\s+u_video\s*;\s*/mg, '');
+            s = s.replace(/^\s*uniform\s+sampler2D\s+u_video_raw\s*;\s*/mg, '');
             s = s.replace(/^\s*uniform\s+vec2\s+u_res\s*;\s*/mg, '');
             s = s.replace(/^\s*uniform\s+float\s+u_time\s*;\s*/mg, '');
+            s = s.replace(/^\s*uniform\s+vec2\s+u_mouse\s*;\s*/mg, '');
+            s = s.replace(/^\s*uniform\s+float\s+u_strength\s*;\s*/mg, '');
+            s = s.replace(/^\s*uniform\s+float\s+u_layers\s*;\s*/mg, '');
+            // Shadertoy: iChannel1 -> u_video_raw
+            s = s.replace(/iChannel1/g, 'u_video_raw');
             s = s.replace(/^\s*in\s+vec2\s+v_uv\s*;\s*/mg, '');
             s = s.replace(/^\s*out\s+vec4\s+fragColor\s*;\s*/mg, '');
             // Upgrade texture2D -> texture (GLSL100 style)
@@ -511,9 +555,13 @@ void main(){
 
             return `#version 300 es
 precision highp float;
-uniform sampler2D u_video;
+uniform sampler2D u_video;        // filtered frame  (TEXTURE0)
+uniform sampler2D u_video_raw;    // raw video frame (TEXTURE1)
 uniform vec2 u_res;
 uniform float u_time;
+uniform vec2 u_mouse;             // normalized mouse position [0..1]
+uniform float u_strength;         // current GVF filter strength
+uniform float u_layers;           // number of active GVF layers
 in vec2 v_uv;
 out vec4 fragColor;
 ${mainBlock}`;
@@ -580,28 +628,7 @@ ${mainBlock}`;
 
             gl.bindVertexArray(null);
 
-            const uVideo    = gl.getUniformLocation(program, 'u_video');
-            const uRes      = gl.getUniformLocation(program, 'u_res');
-            const uTime     = gl.getUniformLocation(program, 'u_time');
-            const uMouse    = gl.getUniformLocation(program, 'u_mouse');
-            const uStrength = gl.getUniformLocation(program, 'u_strength');
-            const uLayers   = gl.getUniformLocation(program, 'u_layers');
-
-            // Mouse / Gyro state — normalized 0..1
-            let mouseX = 0.5, mouseY = 0.5;
-            const _onMouseMove = (e) => {
-                const r = canvas.getBoundingClientRect();
-                if (!r || r.width < 1 || r.height < 1) return;
-                mouseX = clamp((e.clientX - r.left) / r.width,  0, 1);
-                mouseY = clamp(1.0 - (e.clientY - r.top) / r.height, 0, 1); // flip Y for GL
-            };
-            const _onDeviceOrientation = (e) => {
-                mouseX = clamp((e.gamma || 0) / 90  + 0.5, 0, 1);
-                mouseY = clamp((e.beta  || 0) / 180 + 0.5, 0, 1);
-            };
-            window.addEventListener('mousemove',        _onMouseMove,          { passive: true });
-            window.addEventListener('deviceorientation', _onDeviceOrientation, { passive: true });
-
+            // Texture 0 — filtered frame (drawn via offscreen 2D canvas with CSS filter)
             const texture = gl.createTexture();
             gl.bindTexture(gl.TEXTURE_2D, texture);
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -611,7 +638,30 @@ ${mainBlock}`;
             gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
             gl.bindTexture(gl.TEXTURE_2D, null);
 
+            // Texture 1 — raw video frame
+            const textureRaw = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, textureRaw);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+            gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+            gl.bindTexture(gl.TEXTURE_2D, null);
+
+            // Offscreen 2D canvas used to bake CSS filter onto video frame → texture 0
+            const _filteredCanvas = document.createElement('canvas');
+            const _filteredCtx = _filteredCanvas.getContext('2d', { alpha: false, willReadFrequently: false });
+
+            const uVideo    = gl.getUniformLocation(program, 'u_video');
+            const uVideoRaw = gl.getUniformLocation(program, 'u_video_raw');
+            const uRes      = gl.getUniformLocation(program, 'u_res');
+            const uTime     = gl.getUniformLocation(program, 'u_time');
+            const uMouse    = gl.getUniformLocation(program, 'u_mouse');
+            const uStrength = gl.getUniformLocation(program, 'u_strength');
+            const uLayers   = gl.getUniformLocation(program, 'u_layers');
+
             gl.uniform1i(uVideo, 0);
+            gl.uniform1i(uVideoRaw, 1);
 
             let alive = true;
             let lastPaused = false;
@@ -652,41 +702,84 @@ ${mainBlock}`;
                 gl.viewport(0, 0, w, h);
                 gl.useProgram(program);
                 gl.bindVertexArray(vao);
-                gl.activeTexture(gl.TEXTURE0);
-                gl.bindTexture(gl.TEXTURE_2D, texture);
-                try { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video); } catch (_) { return; }
+
+                // ── Texture 0: filtered frame ────────────────────────────────
+                // Bake current CSS filter string onto an offscreen 2D canvas,
+                // then upload that as u_video so shaders see the filtered image.
+                try {
+                    if (_filteredCanvas.width !== w || _filteredCanvas.height !== h) {
+                        _filteredCanvas.width = w;
+                        _filteredCanvas.height = h;
+                    }
+                    const cssFilter = (() => {
+                        try {
+                            const s = document.getElementById('global-video-filter-style');
+                            if (!s) return 'none';
+                            const m = s.textContent.match(/filter\s*:\s*([^!;]+)/);
+                            return (m && m[1].trim()) ? m[1].trim() : 'none';
+                        } catch(_) { return 'none'; }
+                    })();
+                    _filteredCtx.filter = cssFilter;
+                    _filteredCtx.drawImage(video, 0, 0, w, h);
+                    gl.activeTexture(gl.TEXTURE0);
+                    gl.bindTexture(gl.TEXTURE_2D, texture);
+                    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, _filteredCanvas);
+                } catch (_) { return; }
+
+                // ── Texture 1: raw frame ─────────────────────────────────────
+                try {
+                    gl.activeTexture(gl.TEXTURE1);
+                    gl.bindTexture(gl.TEXTURE_2D, textureRaw);
+                    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+                } catch (_) { /* raw frame unavailable — leave last */ }
+
                 gl.uniform1i(uVideo, 0);
+                gl.uniform1i(uVideoRaw, 1);
                 gl.uniform2f(uRes, w, h);
-                if (uTime     !== null) gl.uniform1f(uTime,     performance.now() * 0.001);
-                if (uMouse    !== null) gl.uniform2f(uMouse,    mouseX, mouseY);
-                if (uStrength !== null) gl.uniform1f(uStrength, 0.03);
-                if (uLayers   !== null) gl.uniform1i(uLayers,   8);
+                if (uTime     !== null) gl.uniform1f(uTime, performance.now() * 0.001);
+                if (uMouse    !== null) gl.uniform2f(uMouse, _mouseX, _mouseY);
+                if (uStrength !== null) gl.uniform1f(uStrength, _getStrength());
+                if (uLayers   !== null) gl.uniform1f(uLayers,   _getLayers());
                 gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
                 gl.bindVertexArray(null);
             }
 
             let _hasRenderedFrame = false;
+            let _lastMouseX = _mouseX, _lastMouseY = _mouseY;
+
+            // Paused render: re-draw uniforms (mouse etc.) without re-uploading textures.
+            // preserveDrawingBuffer:true keeps the last frame in the framebuffer;
+            // we only need to re-run the draw call with updated uniforms.
+            function _doRenderPausedUniforms() {
+                if (!_hasRenderedFrame) { doRender(); return; }
+                _reparentCanvas();
+                const pr = (canvas.parentElement || document.body).getBoundingClientRect();
+                const r = video.getBoundingClientRect();
+                if (!r || r.width < 1) { canvas.style.display = 'none'; return; }
+                canvas.style.display = 'block';
+                canvas.style.position = 'absolute';
+                canvas.style.left = (r.left - pr.left) + 'px';
+                canvas.style.top  = (r.top  - pr.top)  + 'px';
+                canvas.style.width  = r.width  + 'px';
+                canvas.style.height = r.height + 'px';
+                // Re-bind textures from preserveDrawingBuffer and redraw with new uniforms
+                gl.useProgram(program);
+                gl.bindVertexArray(vao);
+                if (uMouse    !== null) gl.uniform2f(uMouse, _mouseX, _mouseY);
+                if (uTime     !== null) gl.uniform1f(uTime, performance.now() * 0.001);
+                if (uStrength !== null) gl.uniform1f(uStrength, _getStrength());
+                if (uLayers   !== null) gl.uniform1f(uLayers,   _getLayers());
+                gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+                gl.bindVertexArray(null);
+            }
+
             function drawLoop() {
                 if (!alive) return;
                 requestAnimationFrame(drawLoop);
                 const paused = !video || video.paused || video.ended;
                 if (paused) {
-                    if (_hasRenderedFrame) {
-                        // Keep last frame visible — just update position/size, skip texImage2D
-                        _reparentCanvas();
-                        const pr = (canvas.parentElement || document.body).getBoundingClientRect();
-                        const r = video.getBoundingClientRect();
-                        if (r && r.width > 0) {
-                            canvas.style.display = 'block';
-                            canvas.style.position = 'absolute';
-                            canvas.style.left = (r.left - pr.left) + 'px';
-                            canvas.style.top  = (r.top  - pr.top)  + 'px';
-                            canvas.style.width  = r.width  + 'px';
-                            canvas.style.height = r.height + 'px';
-                        }
-                    } else {
-                        doRender();
-                    }
+                    // Always redraw on pause so mouse-driven effects (loupe etc.) keep working
+                    _doRenderPausedUniforms();
                     lastPaused = true;
                     return;
                 }
@@ -702,13 +795,11 @@ ${mainBlock}`;
             video.addEventListener('seeked',   _onSeek,   { passive: true });
             video.addEventListener('loadeddata', _onSeek, { passive: true });
 
-            const inst = { canvas, gl, program, texture, vao, vb, ub, sig: entry.id + '||' + entry.code, _stop: () => {
+            const inst = { canvas, gl, program, texture, textureRaw, vao, vb, ub, sig: entry.id + '||' + entry.code, _stop: () => {
                 alive = false;
-                try { video.removeEventListener('pause',       _onPause); } catch(_){}
-                try { video.removeEventListener('seeked',      _onSeek);  } catch(_){}
-                try { video.removeEventListener('loadeddata',  _onSeek);  } catch(_){}
-                try { window.removeEventListener('mousemove',         _onMouseMove);         } catch(_){}
-                try { window.removeEventListener('deviceorientation',  _onDeviceOrientation); } catch(_){}
+                try { video.removeEventListener('pause',     _onPause); } catch(_){}
+                try { video.removeEventListener('seeked',    _onSeek);  } catch(_){}
+                try { video.removeEventListener('loadeddata',_onSeek);  } catch(_){}
             }};
             requestAnimationFrame(drawLoop);
 
@@ -728,7 +819,8 @@ ${mainBlock}`;
                 if (inst.canvas && inst.canvas.isConnected) inst.canvas.remove();
                 const gl = inst.gl;
                 if (gl) {
-                    if (inst.texture) gl.deleteTexture(inst.texture);
+                    if (inst.texture)    gl.deleteTexture(inst.texture);
+                    if (inst.textureRaw) gl.deleteTexture(inst.textureRaw);
                     if (inst.program) gl.deleteProgram(inst.program);
                     if (inst.vao) gl.deleteVertexArray(inst.vao);
                     if (inst.vb) gl.deleteBuffer(inst.vb);
@@ -793,14 +885,19 @@ ${mainBlock}`;
             let s = src.replace(/^\s*#version\s+\S+[\t ]*/mg, '');
             s = s.replace(/^\s*precision\s+\w+\s+\w+\s*;\s*/mg, '');
             s = s.replace(/^\s*uniform\s+sampler2D\s+u_video\s*;\s*/mg, '');
+            s = s.replace(/^\s*uniform\s+sampler2D\s+u_video_raw\s*;\s*/mg, '');
             s = s.replace(/^\s*uniform\s+vec2\s+u_res\s*;\s*/mg, '');
             s = s.replace(/^\s*uniform\s+float\s+u_time\s*;\s*/mg, '');
+            s = s.replace(/^\s*uniform\s+vec2\s+u_mouse\s*;\s*/mg, '');
+            s = s.replace(/^\s*uniform\s+float\s+u_strength\s*;\s*/mg, '');
+            s = s.replace(/^\s*uniform\s+float\s+u_layers\s*;\s*/mg, '');
             s = s.replace(/^\s*in\s+vec2\s+v_uv\s*;\s*/mg, '');
             s = s.replace(/^\s*out\s+vec4\s+fragColor\s*;\s*/mg, '');
             s = s.replace(/\btexture2D\b/g, 'texture');
             s = s.replace(/\biResolution\b/g, 'vec3(u_res, 0.0)');
             s = s.replace(/\biTime\b/g, 'u_time');
             s = s.replace(/\biChannel0\b/g, 'u_video');
+            s = s.replace(/\biChannel1\b/g, 'u_video_raw');
             if (/\bmainImage\s*\(/.test(s) && !s.includes('void main')) {
                 s = s + '\nvoid main(){\n    mainImage(fragColor, v_uv * u_res);\n}';
             } else if (!s.includes('void main')) {
@@ -826,7 +923,7 @@ ${mainBlock}`;
                     s = `void main(){\n${s}\n}`;
                 }
             }
-            const fragSrc = `#version 300 es\nprecision highp float;\nuniform sampler2D u_video;\nuniform vec2 u_res;\nuniform float u_time;\nin vec2 v_uv;\nout vec4 fragColor;\n${s}`;
+            const fragSrc = `#version 300 es\nprecision highp float;\nuniform sampler2D u_video;\nuniform sampler2D u_video_raw;\nuniform vec2 u_res;\nuniform float u_time;\nuniform vec2 u_mouse;\nuniform float u_strength;\nuniform float u_layers;\nin vec2 v_uv;\nout vec4 fragColor;\n${s}`;
             const sh = gl.createShader(gl.FRAGMENT_SHADER);
             gl.shaderSource(sh, fragSrc);
             gl.compileShader(sh);
