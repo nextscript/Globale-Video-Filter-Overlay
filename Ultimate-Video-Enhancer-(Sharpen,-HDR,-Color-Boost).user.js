@@ -580,9 +580,27 @@ ${mainBlock}`;
 
             gl.bindVertexArray(null);
 
-            const uVideo = gl.getUniformLocation(program, 'u_video');
-            const uRes   = gl.getUniformLocation(program, 'u_res');
-            const uTime  = gl.getUniformLocation(program, 'u_time');
+            const uVideo    = gl.getUniformLocation(program, 'u_video');
+            const uRes      = gl.getUniformLocation(program, 'u_res');
+            const uTime     = gl.getUniformLocation(program, 'u_time');
+            const uMouse    = gl.getUniformLocation(program, 'u_mouse');
+            const uStrength = gl.getUniformLocation(program, 'u_strength');
+            const uLayers   = gl.getUniformLocation(program, 'u_layers');
+
+            // Mouse / Gyro state — normalized 0..1
+            let mouseX = 0.5, mouseY = 0.5;
+            const _onMouseMove = (e) => {
+                const r = canvas.getBoundingClientRect();
+                if (!r || r.width < 1 || r.height < 1) return;
+                mouseX = clamp((e.clientX - r.left) / r.width,  0, 1);
+                mouseY = clamp(1.0 - (e.clientY - r.top) / r.height, 0, 1); // flip Y for GL
+            };
+            const _onDeviceOrientation = (e) => {
+                mouseX = clamp((e.gamma || 0) / 90  + 0.5, 0, 1);
+                mouseY = clamp((e.beta  || 0) / 180 + 0.5, 0, 1);
+            };
+            window.addEventListener('mousemove',        _onMouseMove,          { passive: true });
+            window.addEventListener('deviceorientation', _onDeviceOrientation, { passive: true });
 
             const texture = gl.createTexture();
             gl.bindTexture(gl.TEXTURE_2D, texture);
@@ -639,7 +657,10 @@ ${mainBlock}`;
                 try { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video); } catch (_) { return; }
                 gl.uniform1i(uVideo, 0);
                 gl.uniform2f(uRes, w, h);
-                if(uTime !== null) gl.uniform1f(uTime, performance.now() * 0.001);
+                if (uTime     !== null) gl.uniform1f(uTime,     performance.now() * 0.001);
+                if (uMouse    !== null) gl.uniform2f(uMouse,    mouseX, mouseY);
+                if (uStrength !== null) gl.uniform1f(uStrength, 0.03);
+                if (uLayers   !== null) gl.uniform1i(uLayers,   8);
                 gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
                 gl.bindVertexArray(null);
             }
@@ -683,9 +704,11 @@ ${mainBlock}`;
 
             const inst = { canvas, gl, program, texture, vao, vb, ub, sig: entry.id + '||' + entry.code, _stop: () => {
                 alive = false;
-                try { video.removeEventListener('pause',     _onPause); } catch(_){}
-                try { video.removeEventListener('seeked',    _onSeek);  } catch(_){}
-                try { video.removeEventListener('loadeddata',_onSeek);  } catch(_){}
+                try { video.removeEventListener('pause',       _onPause); } catch(_){}
+                try { video.removeEventListener('seeked',      _onSeek);  } catch(_){}
+                try { video.removeEventListener('loadeddata',  _onSeek);  } catch(_){}
+                try { window.removeEventListener('mousemove',         _onMouseMove);         } catch(_){}
+                try { window.removeEventListener('deviceorientation',  _onDeviceOrientation); } catch(_){}
             }};
             requestAnimationFrame(drawLoop);
 
