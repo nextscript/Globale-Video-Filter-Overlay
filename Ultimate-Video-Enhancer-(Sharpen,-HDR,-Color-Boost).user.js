@@ -3,7 +3,7 @@
 // @name:de      Ultimate Video Enhancer (Schärfe, HDR, Farben)
 // @namespace    gvf
 // @author       Freak288
-// @version      1.9.4
+// @version      1.9.5
 // @description  Instantly improve every video on any website. Adds real-time sharpening, HDR boost, better colors and contrast to all HTML5 videos.
 // @description:de  Verbessert sofort jedes Video auf jeder Website. Fügt Schärfe, HDR, bessere Farben und Kontrast in Echtzeit hinzu – für alle HTML5-Videos.
 // @match        *://*/*
@@ -408,18 +408,14 @@
     // -------------------------
     // ── GLSL overlay shared state ─────────────────────────────────────────────
     let _mouseX = 0.5, _mouseY = 0.5;
+    let _rawMouseClientX = 0, _rawMouseClientY = 0;
     document.addEventListener('mousemove', e => {
-        // Compute position relative to the primary video element so u_mouse
-        // maps exactly to v_uv space (0..1 over the video rect).
-        const vid = document.querySelector('video');
-        if (vid) {
-            const r = vid.getBoundingClientRect();
-            _mouseX =       (e.clientX - r.left) / (r.width  || 1);
-            _mouseY = 1.0 - (e.clientY - r.top)  / (r.height || 1); // flip Y to match v_uv
-        } else {
-            _mouseX = e.clientX / (window.innerWidth  || 1);
-            _mouseY = e.clientY / (window.innerHeight || 1);
-        }
+        // Store raw client coords — each instance computes relative to its own video BCR
+        _rawMouseClientX = e.clientX;
+        _rawMouseClientY = e.clientY;
+        // Also keep normalized fallback
+        _mouseX = e.clientX / (window.innerWidth  || 1);
+        _mouseY = e.clientY / (window.innerHeight || 1);
     }, { passive: true });
 
     function _getStrength() {
@@ -667,14 +663,13 @@ ${mainBlock}`;
             let lastPaused = false;
 
             function _reparentCanvas() {
-                // Insert canvas directly after the video element.
-                // DOM order: video → canvas → controls
-                // canvas has no z-index (auto) so it paints above video (same z-index:auto,
-                // but later in DOM) and controls come even later → controls paint above canvas.
-                const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
-                const parent = (fsEl && fsEl.contains(video) ? fsEl : null) || video.parentElement || document.body;
-                const after = video.nextSibling;
+                // Always insert canvas directly after the video element.
+                // DOM order: video → canvas → controls — controls always paint above.
+                // This works in both normal and fullscreen mode because we follow
+                // the video element itself, not the fullscreen container.
+                const parent = video.parentElement || document.body;
                 if (canvas.parentNode !== parent || canvas.previousSibling !== video) {
+                    const after = video.nextSibling;
                     parent.insertBefore(canvas, after !== canvas ? after : null);
                 }
             }
@@ -737,7 +732,12 @@ ${mainBlock}`;
                 gl.uniform1i(uVideoRaw, 1);
                 gl.uniform2f(uRes, w, h);
                 if (uTime     !== null) gl.uniform1f(uTime, performance.now() * 0.001);
-                if (uMouse    !== null) gl.uniform2f(uMouse, _mouseX, _mouseY);
+                if (uMouse !== null) {
+                    const _vr = video.getBoundingClientRect();
+                    const _mx =       (_rawMouseClientX - _vr.left) / (_vr.width  || 1);
+                    const _my = 1.0 - (_rawMouseClientY - _vr.top)  / (_vr.height || 1);
+                    gl.uniform2f(uMouse, _mx, _my);
+                }
                 if (uStrength !== null) gl.uniform1f(uStrength, _getStrength());
                 if (uLayers   !== null) gl.uniform1f(uLayers,   _getLayers());
                 gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -765,7 +765,12 @@ ${mainBlock}`;
                 // Re-bind textures from preserveDrawingBuffer and redraw with new uniforms
                 gl.useProgram(program);
                 gl.bindVertexArray(vao);
-                if (uMouse    !== null) gl.uniform2f(uMouse, _mouseX, _mouseY);
+                if (uMouse !== null) {
+                    const _vr = video.getBoundingClientRect();
+                    const _mx =       (_rawMouseClientX - _vr.left) / (_vr.width  || 1);
+                    const _my = 1.0 - (_rawMouseClientY - _vr.top)  / (_vr.height || 1);
+                    gl.uniform2f(uMouse, _mx, _my);
+                }
                 if (uTime     !== null) gl.uniform1f(uTime, performance.now() * 0.001);
                 if (uStrength !== null) gl.uniform1f(uStrength, _getStrength());
                 if (uLayers   !== null) gl.uniform1f(uLayers,   _getLayers());
