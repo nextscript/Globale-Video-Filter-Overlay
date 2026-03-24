@@ -3,7 +3,7 @@
 // @name:de      Ultimate Video Enhancer (Schärfe, HDR, Farben)
 // @namespace    gvf
 // @author       Freak288
-// @version      1.9.6
+// @version      1.9.7
 // @description  Instantly improve every video on any website. Adds real-time sharpening, HDR boost, better colors and contrast to all HTML5 videos.
 // @description:de  Verbessert sofort jedes Video auf jeder Website. Fügt Schärfe, HDR, bessere Farben und Kontrast in Echtzeit hinzu – für alle HTML5-Videos.
 // @match        *://*/*
@@ -942,11 +942,16 @@ ${mainBlock}`;
     }
 
     function updateCustomWebglOverlays() {
+        if (isFirefox()) return; // Custom Filter Codes not supported in Firefox
         const video = getWebglPrimaryVideo() || getGpuPrimaryVideo() || getHudPrimaryVideo();
         CustomWebglOverlayManager.update(video);
     }
 
     function openCustomSvgModal() {
+        if (isFirefox()) {
+            alert('Custom Filter Codes are not supported in Firefox.\nThis feature requires WebGL2 capabilities that are currently unavailable in Firefox.');
+            return;
+        }
         const MODAL_ID = 'gvf-custom-svg-modal';
         const existing = document.getElementById(MODAL_ID);
         if (existing) { existing.remove(); return; }
@@ -8770,7 +8775,21 @@ const fileInput = document.createElement('input');
         overlay.appendChild(mkSliderRow('SR', 'SR', -2, 2, 0.01, () => normSR(), (v) => { sr = v; }, K.SR, true, v => Number(v).toFixed(2)));
         overlay.appendChild(mkSliderRow('BL', 'BL', -2, 2, 0.01, () => normBL(), (v) => { bl = v; }, K.BL, true, v => Number(v).toFixed(2)));
         overlay.appendChild(mkSliderRow('WL', 'WL', -2, 2, 0.01, () => normWL(), (v) => { wl = v; }, K.WL, true, v => Number(v).toFixed(2)));
-        overlay.appendChild(mkSliderRow('DN', 'DN', -1.5, 1.5, 0.01, () => normDN(), (v) => { dn = v; }, K.DN, true, v => Number(v).toFixed(2)));
+        {
+            const dnRow = mkSliderRow('DN', 'DN', -1.5, 1.5, 0.01, () => normDN(), (v) => { dn = v; }, K.DN, true, v => Number(v).toFixed(2));
+            if (isFirefox()) {
+                const rng = dnRow.querySelector('input[type="range"]');
+                if (rng) {
+                    rng.disabled = true;
+                    rng.title = 'DN (Depth/Denoise) is not supported in Firefox.';
+                    rng.style.opacity = '0.35';
+                    rng.style.cursor = 'not-allowed';
+                }
+                dnRow.title = 'DN (Depth/Denoise) is not supported in Firefox.';
+                dnRow.style.opacity = '0.45';
+            }
+            overlay.appendChild(dnRow);
+        }
         overlay.appendChild(mkSliderRow('HDR', 'HDR', -1.0, 2.0, 0.01, () => normHDR(), (v) => { hdr = v; }, K.HDR, true, v => Number(v).toFixed(2)));
 
         (document.body || document.documentElement).appendChild(overlay);
@@ -9140,7 +9159,14 @@ const fileInput = document.createElement('input');
         svgCodesBtn.addEventListener('mouseenter', () => { svgCodesBtn.style.background = 'rgba(100,180,255,0.32)'; });
         svgCodesBtn.addEventListener('mouseleave', () => { svgCodesBtn.style.background = 'rgba(100,180,255,0.18)'; });
         stopEventsOn(svgCodesBtn);
-        svgCodesBtn.addEventListener('click', () => openCustomSvgModal());
+        if (isFirefox()) {
+            svgCodesBtn.disabled = true;
+            svgCodesBtn.title = 'Custom Filter Codes are not supported in Firefox (WebGL2 limitations).';
+            svgCodesBtn.style.opacity = '0.4';
+            svgCodesBtn.style.cursor = 'not-allowed';
+        } else {
+            svgCodesBtn.addEventListener('click', () => openCustomSvgModal());
+        }
 
         const svgCodesCount = document.createElement('div');
         svgCodesCount.id = 'gvf-svg-codes-count';
@@ -9302,6 +9328,18 @@ const fileInput = document.createElement('input');
         const btnImportFile = mkBtn('Import .json');
         const btnShot = mkBtn('Screenshot');
         const btnRec = mkBtn('Record');
+
+        if (isFirefox()) {
+            const ffMsg = 'Not supported in Firefox.';
+            btnShot.disabled = true;
+            btnShot.title = ffMsg;
+            btnShot.style.opacity = '0.4';
+            btnShot.style.cursor = 'not-allowed';
+            btnRec.disabled = true;
+            btnRec.title = ffMsg;
+            btnRec.style.opacity = '0.4';
+            btnRec.style.cursor = 'not-allowed';
+        }
 
         // CONFIG BUTTON - Improved version
         const btnConfig = mkBtn('⚙️ Config');
@@ -9998,8 +10036,8 @@ const fileInput = document.createElement('input');
             sr: nFix(normSR(), 1),
             bl: nFix(normBL(), 1),
             wl: nFix(normWL(), 1),
-            dn: nFix(normDN(), 1),
-            edge: nFix(normEDGE(), 2),
+            ...(isFirefox() ? {} : { dn: nFix(normDN(), 1) }),
+            ...(isFirefox() ? {} : { edge: nFix(normEDGE(), 2) }),
 
             hdr: nFix(normHDR(), 2),
             profile: String(profile),
@@ -10623,10 +10661,18 @@ if ('lutProfile' in obj) {
                             status.textContent = `Recording disabled: ${chk.reason}`;
                         }
                     } else {
-                        btnRec.disabled = false;
-                        btnRec.textContent = 'Record';
-                        btnRec.style.opacity = '1';
-                        btnRec.style.cursor = 'pointer';
+                        if (isFirefox()) {
+                            btnRec.disabled = true;
+                            btnRec.textContent = 'Record';
+                            btnRec.title = 'Not supported in Firefox.';
+                            btnRec.style.opacity = '0.4';
+                            btnRec.style.cursor = 'not-allowed';
+                        } else {
+                            btnRec.disabled = false;
+                            btnRec.textContent = 'Record';
+                            btnRec.style.opacity = '1';
+                            btnRec.style.cursor = 'pointer';
+                        }
 
                         if (isFirefox()) {
                             const tap = ensureAudioTap(v);
