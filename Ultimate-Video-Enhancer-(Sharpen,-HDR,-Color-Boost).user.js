@@ -1050,6 +1050,7 @@ ${mainBlock}`;
             }
             const canvas = document.createElement('canvas');
             canvas.style.cssText = 'display:none;position:absolute;pointer-events:none;z-index:5;';
+            canvas.setAttribute('data-gvf-custom-canvas2d', entry.id);
 
             function _reparentCanvas() {
                 const parent = video.parentElement || document.body;
@@ -1502,7 +1503,7 @@ ${mainBlock}`;
 
             const labelInput = document.createElement('input');
             labelInput.type = 'text';
-            labelInput.placeholder = 'Label (z.B. "Sobel Sketch")';
+            labelInput.placeholder = 'Label (e.g. "Sobel Sketch")';
             labelInput.value = editing ? (customSvgCodes[idx].label || '') : '';
             labelInput.style.cssText = `flex:1;background:rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.2);border-radius:7px;padding:7px 10px;color:#fff;font-size:12px;outline:none;box-sizing:border-box;`;
             stopEventsOn(labelInput);
@@ -1521,9 +1522,9 @@ ${mainBlock}`;
             topRow.appendChild(typeSelect);
             editArea.appendChild(topRow);
 
-            const svgPlaceholder = 'SVG Filter-Primitive Code, z.B.:\n<feConvolveMatrix kernelMatrix="0 -1 0 -1 5 -1 0 -1 0"/>';
-            const glslPlaceholder = `GLSL Fragment Shader (WebGL2 / GLSL300).\nVerfügbare Uniforms:\n  uniform sampler2D u_video;  // Videoframe\n  uniform vec2 u_res;          // Canvas-Auflösung (px)\n  in vec2 v_uv;                // UV-Koordinaten 0..1\n  out vec4 fragColor;\n\n// Option A — voller Shader:\nvoid main(){\n    fragColor = texture(u_video, v_uv);\n}\n\n// Option B — nur Hilfsfunktion (main wird auto-generiert):\nvec3 myEffect(sampler2D tex, vec2 uv, vec2 res) {\n    return texture(tex, uv).rgb;\n}`;
-            const canvas2dPlaceholder = `// Canvas 2D Effekt\n// Verfügbare Variablen: ctx, canvas, video, width, height, frame (ms), u_mouse ({x,y}), u_zoom\n\n// Beispiel: Spielzeit-Timer (unten rechts)\nif (!canvas._watchStart) canvas._watchStart = Date.now();\nconst elapsed = Math.floor((Date.now() - canvas._watchStart) / 1000);\nconst h = Math.floor(elapsed / 3600);\nconst m = Math.floor((elapsed % 3600) / 60);\nconst s = elapsed % 60;\nconst pad = n => String(n).padStart(2, '0');\nconst label = h > 0 ? \`\${pad(h)}:\${pad(m)}:\${pad(s)}\` : \`\${pad(m)}:\${pad(s)}\`;\nconst fs = Math.round(height * 0.038);\nctx.font = \`900 \${fs}px monospace\`;\nconst text = '👁 ' + label;\nconst tw = ctx.measureText(text).width;\nconst px = width - tw - fs * 0.6;\nconst py = height - fs * 0.6;\nctx.fillStyle = 'rgba(0,0,0,0.55)';\nconst rp = fs * 0.3;\nctx.beginPath();\nctx.roundRect(px - rp, py - fs - rp, tw + rp*2, fs + rp*2, rp);\nctx.fill();\nctx.fillStyle = '#fff';\nctx.fillText(text, px, py);`;
+            const svgPlaceholder = 'SVG Filter-Primitive Code, e.g.:\n<feConvolveMatrix kernelMatrix="0 -1 0 -1 5 -1 0 -1 0"/>';
+            const glslPlaceholder = `GLSL Fragment Shader (WebGL2 / GLSL300).\nAvailable uniforms:\n  uniform sampler2D u_video;  // video frame\n  uniform vec2 u_res;          // canvas resolution (px)\n  in vec2 v_uv;                // UV coords 0..1\n  out vec4 fragColor;\n\n// Option A — full shader:\nvoid main(){\n    fragColor = texture(u_video, v_uv);\n}\n\n// Option B — helper function only (main is auto-generated):\nvec3 myEffect(sampler2D tex, vec2 uv, vec2 res) {\n    return texture(tex, uv).rgb;\n}`;
+            const canvas2dPlaceholder = `// Canvas 2D effect\n// Available variables: ctx, canvas, video, width, height, frame (ms), u_mouse ({x,y}), u_zoom\n\n// Example: watch timer (bottom right)\nif (!canvas._watchStart) canvas._watchStart = Date.now();\nconst elapsed = Math.floor((Date.now() - canvas._watchStart) / 1000);\nconst h = Math.floor(elapsed / 3600);\nconst m = Math.floor((elapsed % 3600) / 60);\nconst s = elapsed % 60;\nconst pad = n => String(n).padStart(2, '0');\nconst label = h > 0 ? \`\${pad(h)}:\${pad(m)}:\${pad(s)}\` : \`\${pad(m)}:\${pad(s)}\`;\nconst fs = Math.round(height * 0.038);\nctx.font = \`900 \${fs}px monospace\`;\nconst text = '👁 ' + label;\nconst tw = ctx.measureText(text).width;\nconst px = width - tw - fs * 0.6;\nconst py = height - fs * 0.6;\nctx.fillStyle = 'rgba(0,0,0,0.55)';\nconst rp = fs * 0.3;\nctx.beginPath();\nctx.roundRect(px - rp, py - fs - rp, tw + rp*2, fs + rp*2, rp);\nctx.fill();\nctx.fillStyle = '#fff';\nctx.fillText(text, px, py);`;
             const getPlaceholder = t => t === 'webgl' ? glslPlaceholder : t === 'canvas2d' ? canvas2dPlaceholder : svgPlaceholder;
 
             const codeInput = document.createElement('textarea');
@@ -4068,6 +4069,20 @@ function downloadBlob(blob, filename) {
         } catch (_) { }
     }
 
+    function bakeCanvas2DOverlaysOntoCanvas(ctx, w, h) {
+        try {
+            document.querySelectorAll('[data-gvf-custom-canvas2d]').forEach(c2dCanvas => {
+                try {
+                    if (c2dCanvas.style.display === 'none') return;
+                    ctx.save();
+                    ctx.globalCompositeOperation = 'source-over';
+                    ctx.drawImage(c2dCanvas, 0, 0, w, h);
+                    ctx.restore();
+                } catch (_) { }
+            });
+        } catch (_) { }
+    }
+
     function dlBlob(blob, filename) {
         try {
             const url = URL.createObjectURL(blob);
@@ -4255,6 +4270,8 @@ function downloadBlob(blob, filename) {
                 ctx.restore();
                 // Composite active GLSL (WebGL-type) Custom Filter Code overlays onto recording frame
                 bakeWebglOverlaysOntoCanvas(ctx, w, h);
+                // Composite active Canvas 2D overlays onto recording frame
+                bakeCanvas2DOverlaysOntoCanvas(ctx, w, h);
             } catch (e) {
                 if (statusEl) statusEl.textContent = 'Recording stopped: blocked (DRM/cross-origin).';
                 // FIX: Evaluate REC.stopRequested
@@ -4559,6 +4576,8 @@ function downloadBlob(blob, filename) {
 
         // Composite active GLSL (WebGL-type) Custom Filter Code overlays onto screenshot
         bakeWebglOverlaysOntoCanvas(ctx, w, h);
+        // Composite active Canvas 2D overlays onto screenshot
+        bakeCanvas2DOverlaysOntoCanvas(ctx, w, h);
 
         c.toBlob((blob) => {
             if (!blob) { if (statusEl) statusEl.textContent = 'Screenshot failed.'; return; }
