@@ -3,7 +3,7 @@
 // @name:de      Ultimate Video Enhancer (Schärfe, HDR, Farben)
 // @namespace    gvf
 // @author       Freak288
-// @version      1.9.7
+// @version      1.9.8
 // @description  Instantly improve every video on any website. Adds real-time sharpening, HDR boost, better colors and contrast to all HTML5 videos.
 // @description:de  Verbessert sofort jedes Video auf jeder Website. Fügt Schärfe, HDR, bessere Farben und Kontrast in Echtzeit hinzu – für alle HTML5-Videos.
 // @match        *://*/*
@@ -57,7 +57,9 @@
 
                             const exists = codes.find(e => e.label === entry.label);
                             // Auto-detect type if not provided: GLSL code → webgl, otherwise svg
-                            const detectedType = entry.type || (
+                            const detectedType = entry.type === 'canvas2d' ? 'canvas2d' :
+                                entry.type === 'webgl' ? 'webgl' :
+                                entry.type === 'svg' ? 'svg' : (
                                 /^\s*#version\s+300\s+es/m.test(entry.code) ||
                                 /\bvoid\s+main\s*\(/m.test(entry.code) ||
                                 /\buniform\s+sampler2D\b/m.test(entry.code)
@@ -988,6 +990,134 @@ ${mainBlock}`;
         CustomWebglOverlayManager.update(video);
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Canvas 2D Overlay Manager
+    // Handles type:'canvas2d' entries — each gets its own fullscreen canvas
+    // positioned directly after the <video> element (same as WebGL manager).
+    // User code receives: ctx, canvas, video, width, height, frame, u_mouse, u_zoom
+    // ─────────────────────────────────────────────────────────────────────────
+    const CustomCanvas2DOverlayManager = (() => {
+        // Map: entry.id -> { canvas, fn, rafId, lastTime }
+        const _instances = new Map();
+
+        function _createInstance(entry, video) {
+            let fn;
+            try {
+                fn = new Function('ctx', 'canvas', 'video', 'width', 'height', 'frame', 'u_mouse', 'u_zoom', entry.code);
+            } catch (e) {
+                console.warn('[GVF Canvas2D] Compile error for', entry.label, e);
+                return null;
+            }
+            const canvas = document.createElement('canvas');
+            canvas.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:0;';
+            _reparentCanvas(canvas, video);
+
+            let lastTime = null;
+            function drawLoop(now) {
+                const frameMs = lastTime !== null ? now - lastTime : 0;
+                lastTime = now;
+                const vr = video.getBoundingClientRect();
+                const dpr = window.devicePixelRatio || 1;
+                const w = Math.round(vr.width * dpr);
+                const h = Math.round(vr.height * dpr);
+                if (canvas.width !== w || canvas.height !== h) {
+                    canvas.width = w;
+                    canvas.height = h;
+                }
+                const ctx = canvas.getContext('2d');
+                ctx.clearRect(0, 0, w, h);
+                // Letterbox correction: only draw over actual video content
+                const vAspect = video.videoWidth / video.videoHeight;
+                const cAspect = w / h;
+                let vx = 0, vy = 0, vw = w, vh = h;
+                if (vAspect > cAspect) {
+                    vh = Math.round(w / vAspect);
+                    vy = Math.round((h - vh) / 2);
+                } else {
+                    vw = Math.round(h * vAspect);
+                    vx = Math.round((w - vw) / 2);
+                }
+                ctx.save();
+                ctx.translate(vx, vy);
+                // u_mouse: relative to video content area, Y=0 at bottom
+                const rawMx = (typeof _rawMouseClientX !== 'undefined' ? _rawMouseClientX : 0);
+                const rawMy = (typeof _rawMouseClientY !== 'undefined' ? _rawMouseClientY : 0);
+                const relX = (rawMx - vr.left) / vr.width;
+                const relY = 1.0 - (rawMy - vr.top) / vr.height;
+                const u_mouse = { x: Math.max(0, Math.min(1, relX)), y: Math.max(0, Math.min(1, relY)) };
+                const u_zoom = (typeof _scrollZoom !== 'undefined' ? _scrollZoom : 1.0);
+                try {
+                    fn(ctx, canvas, video, vw, vh, frameMs, u_mouse, u_zoom);
+                } catch (e) {
+                    // silently skip bad frames
+                }
+                ctx.restore();
+                inst.rafId = requestAnimationFrame(drawLoop);
+            }
+
+            const inst = { canvas, fn, rafId: requestAnimationFrame(drawLoop), lastTime: null };
+            return inst;
+        }
+
+        function _reparentCanvas(canvas, video) {
+            if (!video) return;
+            const parent = video.parentElement;
+            if (!parent) return;
+            if (canvas.parentElement !== parent) {
+                parent.insertBefore(canvas, video.nextSibling);
+            }
+        }
+
+        function _destroyInstance(inst) {
+            if (inst.rafId) cancelAnimationFrame(inst.rafId);
+            if (inst.canvas && inst.canvas.parentElement) inst.canvas.parentElement.removeChild(inst.canvas);
+        }
+
+        function update(video) {
+            const activeEntries = customSvgCodes.filter(e => e && e.enabled && e.type === 'canvas2d');
+            const activeIds = new Set(activeEntries.map(e => e.id));
+
+            // Remove stale instances
+            for (const [id, inst] of _instances) {
+                if (!activeIds.has(id)) {
+                    _destroyInstance(inst);
+                    _instances.delete(id);
+                }
+            }
+
+            if (!video) return;
+
+            // Create new instances
+            for (const entry of activeEntries) {
+                if (!_instances.has(entry.id)) {
+                    const inst = _createInstance(entry, video);
+                    if (inst) _instances.set(entry.id, inst);
+                }
+            }
+        }
+
+        function reparentAll() {
+            const video = getWebglPrimaryVideo() || getGpuPrimaryVideo() || getHudPrimaryVideo();
+            if (!video) return;
+            for (const inst of _instances.values()) {
+                _reparentCanvas(inst.canvas, video);
+            }
+        }
+
+        function destroyAll() {
+            for (const inst of _instances.values()) _destroyInstance(inst);
+            _instances.clear();
+        }
+
+        return { update, reparentAll, destroyAll };
+    })();
+
+    function updateCustomCanvas2DOverlays() {
+        if (isFirefox()) return;
+        const video = getWebglPrimaryVideo() || getGpuPrimaryVideo() || getHudPrimaryVideo();
+        CustomCanvas2DOverlayManager.update(video);
+    }
+
     function openCustomSvgModal() {
         if (isFirefox()) {
             alert('Custom Filter Codes are not supported in Firefox.\nThis feature requires WebGL2 capabilities that are currently unavailable in Firefox.');
@@ -1122,8 +1252,8 @@ ${mainBlock}`;
                 lblText.textContent = entry.label || 'Untitled';
                 lblText.style.cssText = `overflow:hidden;text-overflow:ellipsis;white-space:nowrap;`;
                 const typeBadge = document.createElement('span');
-                typeBadge.textContent = (entry.type === 'webgl') ? 'GLSL' : 'SVG';
-                typeBadge.style.cssText = `flex-shrink:0;font-size:9px;font-weight:900;padding:1px 5px;border-radius:4px;${entry.type === 'webgl' ? 'background:rgba(120,80,255,0.3);color:#c0a0ff;border:1px solid rgba(120,80,255,0.5);' : 'background:rgba(74,158,255,0.15);color:#7ab8ff;border:1px solid rgba(74,158,255,0.35);'}`;
+                typeBadge.textContent = entry.type === 'webgl' ? 'GLSL' : entry.type === 'canvas2d' ? '2D' : 'SVG';
+                typeBadge.style.cssText = `flex-shrink:0;font-size:9px;font-weight:900;padding:1px 5px;border-radius:4px;${entry.type === 'webgl' ? 'background:rgba(120,80,255,0.3);color:#c0a0ff;border:1px solid rgba(120,80,255,0.5);' : entry.type === 'canvas2d' ? 'background:rgba(80,200,120,0.25);color:#80e8a0;border:1px solid rgba(80,200,120,0.5);' : 'background:rgba(74,158,255,0.15);color:#7ab8ff;border:1px solid rgba(74,158,255,0.35);'}`;
                 lbl.appendChild(lblText);
                 lbl.appendChild(typeBadge);
 
@@ -1264,7 +1394,7 @@ ${mainBlock}`;
             const typeSelect = document.createElement('select');
             typeSelect.style.cssText = `background:rgba(0,0,0,0.7);border:1px solid rgba(100,180,255,0.5);border-radius:7px;padding:6px 10px;color:#a0d4ff;font-size:12px;font-weight:700;outline:none;cursor:pointer;flex-shrink:0;`;
             stopEventsOn(typeSelect);
-            [['svg', '⬡ SVG'], ['webgl', '⬡ WebGL/GLSL']].forEach(([val, lbl]) => {
+            [['svg', '⬡ SVG'], ['webgl', '⬡ WebGL/GLSL'], ['canvas2d', '⬡ Canvas 2D']].forEach(([val, lbl]) => {
                 const opt = document.createElement('option');
                 opt.value = val; opt.textContent = lbl;
                 if (val === currentType) opt.selected = true;
@@ -1277,16 +1407,18 @@ ${mainBlock}`;
 
             const svgPlaceholder = 'SVG Filter-Primitive Code, z.B.:\n<feConvolveMatrix kernelMatrix="0 -1 0 -1 5 -1 0 -1 0"/>';
             const glslPlaceholder = `GLSL Fragment Shader (WebGL2 / GLSL300).\nVerfügbare Uniforms:\n  uniform sampler2D u_video;  // Videoframe\n  uniform vec2 u_res;          // Canvas-Auflösung (px)\n  in vec2 v_uv;                // UV-Koordinaten 0..1\n  out vec4 fragColor;\n\n// Option A — voller Shader:\nvoid main(){\n    fragColor = texture(u_video, v_uv);\n}\n\n// Option B — nur Hilfsfunktion (main wird auto-generiert):\nvec3 myEffect(sampler2D tex, vec2 uv, vec2 res) {\n    return texture(tex, uv).rgb;\n}`;
+            const canvas2dPlaceholder = `// Canvas 2D Effekt\n// Verfügbare Variablen: ctx, canvas, video, width, height, frame (ms), u_mouse ({x,y}), u_zoom\n\n// Beispiel: Spielzeit-Timer (unten rechts)\nif (!canvas._watchStart) canvas._watchStart = Date.now();\nconst elapsed = Math.floor((Date.now() - canvas._watchStart) / 1000);\nconst h = Math.floor(elapsed / 3600);\nconst m = Math.floor((elapsed % 3600) / 60);\nconst s = elapsed % 60;\nconst pad = n => String(n).padStart(2, '0');\nconst label = h > 0 ? \`\${pad(h)}:\${pad(m)}:\${pad(s)}\` : \`\${pad(m)}:\${pad(s)}\`;\nconst fs = Math.round(height * 0.038);\nctx.font = \`900 \${fs}px monospace\`;\nconst text = '👁 ' + label;\nconst tw = ctx.measureText(text).width;\nconst px = width - tw - fs * 0.6;\nconst py = height - fs * 0.6;\nctx.fillStyle = 'rgba(0,0,0,0.55)';\nconst rp = fs * 0.3;\nctx.beginPath();\nctx.roundRect(px - rp, py - fs - rp, tw + rp*2, fs + rp*2, rp);\nctx.fill();\nctx.fillStyle = '#fff';\nctx.fillText(text, px, py);`;
+            const getPlaceholder = t => t === 'webgl' ? glslPlaceholder : t === 'canvas2d' ? canvas2dPlaceholder : svgPlaceholder;
 
             const codeInput = document.createElement('textarea');
-            codeInput.placeholder = currentType === 'webgl' ? glslPlaceholder : svgPlaceholder;
+            codeInput.placeholder = getPlaceholder(currentType);
             codeInput.value = editing ? (customSvgCodes[idx].code || '') : '';
             codeInput.style.cssText = `width:100%;height:120px;background:rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.2);border-radius:7px;padding:8px 10px;color:#d0ffb0;font-size:11px;font-family:monospace;outline:none;resize:vertical;box-sizing:border-box;`;
             stopEventsOn(codeInput);
             editArea.appendChild(codeInput);
 
             typeSelect.addEventListener('change', () => {
-                codeInput.placeholder = typeSelect.value === 'webgl' ? glslPlaceholder : svgPlaceholder;
+                codeInput.placeholder = getPlaceholder(typeSelect.value);
             });
 
             const errMsg = document.createElement('div');
@@ -1318,6 +1450,12 @@ ${mainBlock}`;
                 if (type === 'svg') {
                     const parsed = parseCustomSvgCode(code);
                     if (!parsed) { errMsg.textContent = '❌ Invalid SVG code — parse error.'; return; }
+                } else if (type === 'canvas2d') {
+                    try {
+                        new Function('ctx', 'canvas', 'video', 'width', 'height', 'frame', 'u_mouse', 'u_zoom', code);
+                    } catch (e) {
+                        errMsg.textContent = '❌ Canvas 2D error: ' + e.message; return;
+                    }
                 } else {
                     // WebGL: try-compile for immediate feedback
                     errMsg.textContent = '⏳ Validating shader…';
@@ -1336,6 +1474,7 @@ ${mainBlock}`;
                 saveCustomSvgCodes();
                 regenerateSvgImmediately();
                 updateCustomWebglOverlays();
+                updateCustomCanvas2DOverlays();
                 renderList();
                 renderEditArea();
             });
@@ -3614,6 +3753,7 @@ function downloadBlob(blob, filename) {
             _svgNeedsRegeneration = false;
         }
         updateCustomWebglOverlays();
+        updateCustomCanvas2DOverlays();
     }
 
     /**
@@ -10899,6 +11039,7 @@ if ('lutProfile' in obj) {
     function updateAllOverlays() {
         ensureOverlays();
         updateCustomWebglOverlays();
+        updateCustomCanvas2DOverlays();
 
         const primary = choosePrimaryVideo();
         const hudPrimary = getHudPrimaryVideo();
@@ -10986,6 +11127,7 @@ if ('lutProfile' in obj) {
             });
         }
         CustomWebglOverlayManager.reparentAll();
+        CustomCanvas2DOverlayManager.reparentAll();
         reparentGvfModals();
         scheduleOverlayUpdate();
     }
@@ -11972,6 +12114,7 @@ if ('lutProfile' in obj) {
                     loadCustomSvgCodes();
                     regenerateSvgImmediately();
                     updateCustomWebglOverlays();
+                    updateCustomCanvas2DOverlays();
                     const modal = document.getElementById('gvf-custom-svg-modal');
                     if (modal && modal._gvfRenderList) modal._gvfRenderList();
                     const badge = document.getElementById('gvf-svg-codes-count');
@@ -12245,6 +12388,7 @@ if ('lutProfile' in obj) {
                     saveCustomSvgCodes();
                     regenerateSvgImmediately();
                     updateCustomWebglOverlays();
+                    updateCustomCanvas2DOverlays();
                     showToggleNotification(hkEntry.label || 'Custom Filter', hkEntry.enabled);
                     return;
                 }
