@@ -3,7 +3,7 @@
 // @name:de      Ultimate Video Enhancer (Schärfe, HDR, Farben)
 // @namespace    gvf
 // @author       Freak288
-// @version      1.9.8
+// @version      1.9.9
 // @description  Instantly improve every video on any website. Adds real-time sharpening, HDR boost, better colors and contrast to all HTML5 videos.
 // @description:de  Verbessert sofort jedes Video auf jeder Website. Fügt Schärfe, HDR, bessere Farben und Kontrast in Echtzeit hinzu – für alle HTML5-Videos.
 // @match        *://*/*
@@ -1014,22 +1014,37 @@ ${mainBlock}`;
                 if (!String(e).includes('Trusted') && !(e instanceof EvalError)) throw e;
             }
 
-            // 2. unsafeWindow.Function (Tampermonkey sandbox — not page Function)
+            // 2. unsafeWindow.Function (Tampermonkey sandbox)
             try {
                 if (typeof unsafeWindow !== 'undefined') {
                     return new unsafeWindow.Function(...args, code);
                 }
             } catch(_) {}
 
-            // 3. GM_addElement — injects <script> tag bypassing Trusted Types
+            // 3. GM_addElement with synchronous script injection
             try {
                 if (typeof GM_addElement === 'function') {
                     const key = '__gvfFn_' + Math.random().toString(36).slice(2);
                     const wrap = `window["${key}"]=function(${args.join(',')}){${code}}`;
+                    // Use a blob URL for synchronous execution
+                    const blob = new Blob([wrap], { type: 'text/javascript' });
+                    const url = URL.createObjectURL(blob);
+                    const script = document.createElement('script');
+                    script.src = url;
+                    // Synchronous: append and wait for load
+                    let done = false;
+                    script.onload = () => { done = true; };
+                    (document.head || document.documentElement).appendChild(script);
+                    // Poll briefly for sync execution (scripts from blob URLs execute sync in same tick on some browsers)
+                    const fn = unsafeWindow[key] || window[key];
+                    script.remove();
+                    URL.revokeObjectURL(url);
+                    if (fn) { delete unsafeWindow[key]; return fn; }
+                    // Fallback: GM_addElement textContent
                     GM_addElement('script', { textContent: wrap });
-                    const fn = unsafeWindow[key];
+                    const fn2 = unsafeWindow[key];
                     delete unsafeWindow[key];
-                    if (typeof fn === 'function') return fn;
+                    if (typeof fn2 === 'function') return fn2;
                 }
             } catch(_) {}
 
@@ -1196,6 +1211,161 @@ ${mainBlock}`;
         }
 
         return { update, reparentAll, destroyAll, _compileUserFn };
+    })();
+
+    // ── Deepgram STT ──────────────────────────────────────────────────────────
+    // Runs natively in userscript context to bypass Trusted Types / CSP.
+    // Canvas2D overlays configure and read from unsafeWindow.__gvfDG.
+    (function initGvfDeepgram() {
+        if (unsafeWindow.__gvfDG) return;
+        unsafeWindow.__gvfDG = {
+            ws: null, lines: [], interim: '',
+            state: 'idle', error: null,
+            mediaRecorder: null, audioCtx: null, stream: null,
+            _apiKey: null, _lang: 'de', _maxLines: 5
+        };
+
+        const dg = unsafeWindow.__gvfDG;
+
+        async function startDeepgram() {
+            if (dg.state === 'connecting' || dg.state === 'running') return;
+            if (!dg._apiKey) return;
+            dg.state = 'connecting';
+            dg.error = null;
+
+            // Get fresh mic stream each time
+            try {
+                if (dg.stream) {
+                    dg.stream.getTracks().forEach(t => t.stop());
+                    dg.stream = null;
+                }
+                dg.stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+            } catch(e) {
+                dg.state = 'error';
+                dg.error = 'Mic: ' + e.message;
+                return;
+            }
+
+            const lang = dg._lang === 'auto' ? 'multi' : dg._lang;
+            const url = `wss://api.deepgram.com/v1/listen?language=${lang}&model=nova-2&punctuate=true&interim_results=true&encoding=linear16&sample_rate=16000&channels=1&smart_format=true&no_delay=true`;
+            const ws = new WebSocket(url, ['token', dg._apiKey]);
+            dg.ws = ws;
+
+            ws.onopen = async () => {
+                dg.state = 'running';
+                try {
+                    const ac = new AudioContext();
+                    dg.audioCtx = ac;
+                    await ac.resume();
+                    const actualRate = ac.sampleRate;
+                    const targetRate = 16000;
+                    const ratio = actualRate / targetRate;
+                    const src = ac.createMediaStreamSource(dg.stream);
+
+                    // AudioWorklet — more reliable than deprecated ScriptProcessor
+                    const workletCode = `
+                        class PCMProcessor extends AudioWorkletProcessor {
+                            constructor() { super(); this._ratio = ${ratio}; this._buf = []; }
+                            process(inputs) {
+                                const input = inputs[0][0];
+                                if (!input) return true;
+                                for (let i = 0; i < input.length; i++) this._buf.push(input[i]);
+                                const outLen = Math.floor(this._buf.length / this._ratio);
+                                if (outLen > 0) {
+                                    const out = new Float32Array(outLen);
+                                    for (let i = 0; i < outLen; i++) {
+                                        const pos = i * this._ratio;
+                                        const idx = Math.floor(pos);
+                                        const frac = pos - idx;
+                                        const a = this._buf[idx] || 0;
+                                        const b = this._buf[Math.min(idx+1, this._buf.length-1)] || 0;
+                                        out[i] = a + frac * (b - a);
+                                    }
+                                    this._buf = this._buf.slice(Math.floor(outLen * this._ratio));
+                                    this.port.postMessage(out);
+                                }
+                                return true;
+                            }
+                        }
+                        registerProcessor('gvf-pcm', PCMProcessor);
+                    `;
+                    const blob = new Blob([workletCode], { type: 'application/javascript' });
+                    const url = URL.createObjectURL(blob);
+                    await ac.audioWorklet.addModule(url);
+                    URL.revokeObjectURL(url);
+
+                    const worklet = new AudioWorkletNode(ac, 'gvf-pcm');
+                    worklet.port.onmessage = (e) => {
+                        if (ws.readyState !== WebSocket.OPEN) return;
+                        const float32 = e.data;
+                        const int16 = new Int16Array(float32.length);
+                        for (let i = 0; i < float32.length; i++)
+                            int16[i] = Math.max(-32768, Math.min(32767, float32[i] * 32768));
+                        ws.send(int16.buffer);
+                    };
+                    src.connect(worklet);
+                    worklet.connect(ac.destination);
+                    dg._worklet = worklet;
+                    dg._src = src;
+                    console.log('[GVF Deepgram] AudioWorklet started, rate:', actualRate, '→', targetRate);
+                } catch(e) {
+                    dg.error = 'Audio: ' + e.message;
+                    dg.state = 'error';
+                    console.error('[GVF Deepgram] Audio error:', e);
+                }
+            };
+
+            ws.onmessage = (e) => {
+                try {
+                    const data = JSON.parse(e.data);
+                    // UtteranceEnd — force flush interim as final
+                    if (data.type === 'UtteranceEnd' && dg.interim) {
+                        dg.lines.push(dg.interim.trim());
+                        if (dg.lines.length > (dg._maxLines || 5)) dg.lines.shift();
+                        dg.interim = '';
+                        return;
+                    }
+                    const transcript = data?.channel?.alternatives?.[0]?.transcript || '';
+                    if (!transcript) return;
+                    if (data?.is_final) {
+                        dg.lines.push(transcript.trim());
+                        if (dg.lines.length > (dg._maxLines || 5)) dg.lines.shift();
+                        dg.interim = '';
+                    } else {
+                        dg.interim = transcript;
+                    }
+                } catch(_) {}
+            };
+
+            ws.onerror = () => { dg.state = 'error'; dg.error = 'WS error'; };
+
+            ws.onclose = (e) => {
+                dg.state = 'idle';
+                dg.interim = '';
+                try { if (dg._worklet) { dg._worklet.disconnect(); } } catch(_) {}
+                try { if (dg._src) { dg._src.disconnect(); } } catch(_) {}
+                try { if (dg._processor) { dg._processor.disconnect(); } } catch(_) {}
+                try { if (dg.audioCtx) { dg.audioCtx.close(); dg.audioCtx = null; } } catch(_) {}
+                dg._worklet = null; dg._processor = null; dg._src = null;
+                if (e.code === 1008) { dg.error = 'Invalid API key'; return; }
+                setTimeout(startDeepgram, 1000);
+            };
+        }
+
+        dg._start = startDeepgram;
+
+        // Auto-reconnect every 20s to prevent Deepgram timeout
+        setInterval(() => {
+            if (dg.state === 'running' && dg._apiKey) {
+                console.log('[GVF Deepgram] Refreshing connection...');
+                try { if (dg.ws) dg.ws.close(1001, 'refresh'); } catch(_) {}
+            }
+            // Auto-start if idle with valid key
+            if (dg.state === 'idle' && dg._apiKey && dg.error !== 'Invalid API key') {
+                console.log('[GVF Deepgram] Auto-starting...');
+                startDeepgram();
+            }
+        }, 20000);
     })();
 
     // Returns the best available filtered frame source for Canvas2D overlays.
