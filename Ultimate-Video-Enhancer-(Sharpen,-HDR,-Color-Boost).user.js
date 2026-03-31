@@ -3,7 +3,7 @@
 // @name:de      Ultimate Video Enhancer (Schärfe, HDR, Farben)
 // @namespace    gvf
 // @author       Freak288
-// @version      1.10.2
+// @version      1.10.3
 // @description  Instantly improve every video on any website. Adds real-time sharpening, HDR boost, better colors and contrast to all HTML5 videos.
 // @description:de  Verbessert sofort jedes Video auf jeder Website. Fügt Schärfe, HDR, bessere Farben und Kontrast in Echtzeit hinzu – für alle HTML5-Videos.
 // @match        *://*/*
@@ -2325,6 +2325,18 @@ ${mainBlock}`;
                 writeUserProfilesToLocalStorage(JSON.parse(JSON.stringify(userProfiles)), _lastProfileStorageActiveId, _lastProfileStorageRev || Date.now());
             }
 
+            // Migrate legacy 'enabled' key to 'baseOtp' in all profile settings, fix key order
+            let migrated = false;
+            for (const p of userProfiles) {
+                if (p.settings && ('enabled' in p.settings || (Object.keys(p.settings)[0] !== 'baseOtp' && 'baseOtp' in p.settings))) {
+                    const baseOtpVal = 'enabled' in p.settings ? p.settings.enabled : p.settings.baseOtp;
+                    const { enabled: _e, baseOtp: _b, ...rest } = p.settings;
+                    p.settings = { baseOtp: baseOtpVal, ...rest };
+                    migrated = true;
+                }
+            }
+            if (migrated) saveUserProfiles();
+
             log('User profiles loaded:', userProfiles.length, 'Active:', activeUserProfile?.name, 'Source:', useLs ? 'localStorage' : (useGm ? 'GM' : 'fallback'));
         } catch (e) {
             logW('Error loading user profiles:', e);
@@ -2367,6 +2379,13 @@ ${mainBlock}`;
             }
 
             const snapshot = JSON.parse(JSON.stringify(userProfiles));
+            // Purge baseOtp/enabled from profile storage — these are global GM keys, not per-profile
+            for (const p of snapshot) {
+                if (p.settings) {
+                    delete p.settings.enabled;
+                    delete p.settings.baseOtp;
+                }
+            }
             const rev = persistActiveUserProfileSelection(activeUserProfile ? activeUserProfile.id : 'default', revMaybe);
             gmSet(K.USER_PROFILES, snapshot);
             gmSet(K.USER_PROFILES_REV, rev);
@@ -4104,7 +4123,6 @@ function downloadBlob(blob, filename) {
 
     function getCurrentSettings() {
         return {
-            enabled: enabled,
             notify: notify,
             darkMoody: darkMoody,
             tealOrange: tealOrange,
@@ -4149,7 +4167,7 @@ function downloadBlob(blob, filename) {
         suppressValueSync(700);
 
         try {
-            enabled = settings.enabled ?? enabled;
+            // baseOtp is stored globally in GM, not per-profile — GM value takes precedence
             notify = settings.notify ?? notify;
             darkMoody = settings.darkMoody ?? darkMoody;
             tealOrange = settings.tealOrange ?? tealOrange;
@@ -4341,7 +4359,7 @@ function downloadBlob(blob, filename) {
         (document.body || document.documentElement).appendChild(tmpSvg);
 
         // Build CSS filter string
-        const baseTone = (s.enabled !== false) ? ' brightness(1.02) contrast(1.05) saturate(1.21)' : '';
+        const baseTone = (s.baseOtp !== false) ? ' brightness(1.02) contrast(1.05) saturate(1.21)' : '';
         let profTone = '';
         if (P==='film')    profTone = ' brightness(1.01) contrast(1.08) saturate(1.08)';
         if (P==='anime')   profTone = ' brightness(1.03) contrast(1.10) saturate(1.16)';
@@ -5562,6 +5580,7 @@ function downloadBlob(blob, filename) {
             this.uHueRotate = null;
             this.uProfileMatrix = null;
             this.uAutoMatrix = null;
+            this.uAvgLum = null;
 
             // Attribute locations
             this.aPosition = null;
@@ -5761,6 +5780,7 @@ if (!gl) {
                 uniform mat4 uProfileMatrix;
                 uniform mat4 uAutoMatrix;
                 uniform float uEdge;
+                uniform float uAvgLum;   // per-frame mean luminance [0..1]
 
                 const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
 
@@ -5857,23 +5877,31 @@ if (!gl) {
                     // Hue Rotate
                     color = applyHueRotate(color, uHueRotate.x, uHueRotate.y);
 
+                    // Decode to perceptual space (approx sRGB gamma) so ops match CSS filter behavior
+                    color = pow(max(color, vec3(0.0001)), vec3(1.0 / 2.2));
+
                     // Vibrance
                     float luma = dot(color, LUMA);
                     vec3 delta = color - luma;
                     color = luma + delta * uParams2.z;
 
-                    // Saturation
-                    color = luma + uParams.y * (color - luma);
+                    // Saturation (recalc luma after vibrance to avoid double-shift)
+                    float luma2 = dot(color, LUMA);
+                    color = luma2 + uParams.y * (color - luma2);
 
                     // Contrast & Brightness
                     color = (color - 0.5) * uParams.x + 0.5;
                     color *= uParams.z;
 
-                    // Gamma
-                    float gInv = 1.0 / clampFast(uParams2.x, 0.5, 2.0);
-                    color.r = pow(color.r, gInv);
-                    color.g = pow(color.g, gInv);
-                    color.b = pow(color.b, gInv);
+                    // Re-encode to linear
+                    color = pow(max(color, vec3(0.0001)), vec3(2.2));
+
+                    // Gamma (user control)
+                    float g = clampFast(uParams2.x, 0.5, 2.0);
+                    float gInv = 1.0 / mix(1.0, g, 0.25);
+                    color.r = pow(max(color.r, 0.0001), gInv);
+                    color.g = pow(max(color.g, 0.0001), gInv);
+                    color.b = pow(max(color.b, 0.0001), gInv);
 
                     // HDR (WebGL HDR-like: linear-light + exposure lift + ACES tonemapping)
                     float hdr = clampFast(uParams2.w, 0.0, 1.0);
@@ -5897,15 +5925,44 @@ if (!gl) {
                     noise = (noise - 0.5) * uParams2.y;
                     color += vec3(noise);
 
-                    // Sharpen
+                    // Bilateral Denoise + CAS Sharpening (built-in, always active in GPU mode)
+                    {
+                        const float SIGMA_S = 1.2;
+                        const float SIGMA_R = 0.12;
+                        const float CAS_STR = 0.8;
+                        vec2 bpx = vec2(1.0 / max(uResolution.x, 1.0), 1.0 / max(uResolution.y, 1.0));
+                        vec3 bsum = vec3(0.0);
+                        float bwSum = 0.0;
+                        for (int bdx = -1; bdx <= 1; bdx++) {
+                            for (int bdy = -1; bdy <= 1; bdy++) {
+                                vec3 bn = texture2D(uVideoTex, vTexCoord + vec2(float(bdx), float(bdy)) * bpx).rgb;
+                                float bsw = exp(-float(bdx*bdx + bdy*bdy) / (2.0 * SIGMA_S * SIGMA_S));
+                                float bcd = length(bn - color);
+                                float bcw = exp(-(bcd * bcd) / (2.0 * SIGMA_R * SIGMA_R));
+                                float bw  = bsw * bcw;
+                                bsum  += bn * bw;
+                                bwSum += bw;
+                            }
+                        }
+                        vec3 denoised = bsum / bwSum;
+                        vec3 cn = texture2D(uVideoTex, vTexCoord + vec2( 0,-1) * bpx).rgb;
+                        vec3 cs = texture2D(uVideoTex, vTexCoord + vec2( 0, 1) * bpx).rgb;
+                        vec3 ce = texture2D(uVideoTex, vTexCoord + vec2( 1, 0) * bpx).rgb;
+                        vec3 cw2= texture2D(uVideoTex, vTexCoord + vec2(-1, 0) * bpx).rgb;
+                        vec3 minRGB = min(denoised, min(min(cn, cs), min(ce, cw2)));
+                        vec3 maxRGB = max(denoised, max(max(cn, cs), max(ce, cw2)));
+                        vec3 rcp    = -1.0 / (sqrt(minRGB / (maxRGB + 1e-4)) + 1.0);
+                        vec3 amp    = clamp(min(minRGB, 2.0 - maxRGB) * rcp, -0.125, 0.0) * CAS_STR;
+                        float rcpW  = 1.0 / (1.0 + 4.0 * amp.x);
+                        color = clamp((denoised + (cn + cs + ce + cw2) * amp) * rcpW, 0.0, 1.0);
+                    }
+
+                    // Additional luma sharpen from SL slider
                     if (uParams.w > 0.0) {
-                        float lumaSharp = dot(color, LUMA);
-                        vec3 sharpColor = color + (color - lumaSharp) * uParams.w;
-                        color = vec3(
-                            clampFast(sharpColor.r, 0.0, 1.0),
-                            clampFast(sharpColor.g, 0.0, 1.0),
-                            clampFast(sharpColor.b, 0.0, 1.0)
-                        );
+                        float lumaOrig = dot(color, LUMA);
+                        float lumaSharpened = clampFast(lumaOrig * (1.0 + uParams.w * 0.5), 0.0, 1.0);
+                        float lumaDelta = lumaSharpened - lumaOrig;
+                        color = clamp(color + lumaDelta, 0.0, 1.0);
                     }
 
                     // Real edge detection: Sobel on source luma, then darken only true edges.
@@ -5928,6 +5985,37 @@ if (!gl) {
                         float edgeMask = smoothstep(0.18, 0.60, edgeMag) * edgeStrength;
                         float darken = 1.0 - edgeMask * 0.92;
                         color *= darken;
+                    }
+
+                    // Bilateral Denoise + CAS Sharpening
+                    {
+                        const float SIGMA_S = 1.2;
+                        const float SIGMA_R = 0.12;
+                        const float CAS_STR = 0.8;
+                        vec2 bpx = vec2(1.0 / max(uResolution.x, 1.0), 1.0 / max(uResolution.y, 1.0));
+                        vec3 bsum = vec3(0.0);
+                        float bwSum = 0.0;
+                        for (int bdx = -1; bdx <= 1; bdx++) {
+                            for (int bdy = -1; bdy <= 1; bdy++) {
+                                vec3 bn = texture2D(uVideoTex, vTexCoord + vec2(float(bdx), float(bdy)) * bpx).rgb;
+                                float bsw = exp(-float(bdx*bdx + bdy*bdy) / (2.0 * SIGMA_S * SIGMA_S));
+                                float bcd = length(bn - color);
+                                float bcw = exp(-(bcd * bcd) / (2.0 * SIGMA_R * SIGMA_R));
+                                bsum  += bn * (bsw * bcw);
+                                bwSum += bsw * bcw;
+                            }
+                        }
+                        vec3 denoised = bsum / bwSum;
+                        vec3 cn  = texture2D(uVideoTex, vTexCoord + vec2( 0,-1) * bpx).rgb;
+                        vec3 cs  = texture2D(uVideoTex, vTexCoord + vec2( 0, 1) * bpx).rgb;
+                        vec3 ce  = texture2D(uVideoTex, vTexCoord + vec2( 1, 0) * bpx).rgb;
+                        vec3 cw2 = texture2D(uVideoTex, vTexCoord + vec2(-1, 0) * bpx).rgb;
+                        vec3 minRGB = min(denoised, min(min(cn, cs), min(ce, cw2)));
+                        vec3 maxRGB = max(denoised, max(max(cn, cs), max(ce, cw2)));
+                        vec3 rcp2   = -1.0 / (sqrt(minRGB / (maxRGB + 1e-4)) + 1.0);
+                        vec3 amp    = clamp(min(minRGB, 2.0 - maxRGB) * rcp2, -0.125, 0.0) * CAS_STR;
+                        float rcpW  = 1.0 / (1.0 + 4.0 * amp.x);
+                        color = clamp((denoised + (cn + cs + ce + cw2) * amp) * rcpW, 0.0, 1.0);
                     }
 
                     gl_FragColor = vec4(clampFast(color.r, 0.0, 1.0),
@@ -5997,6 +6085,7 @@ if (!gl) {
             this.uProfileMatrix = gl.getUniformLocation(this.program, 'uProfileMatrix');
             this.uAutoMatrix = gl.getUniformLocation(this.program, 'uAutoMatrix');
             this.uEdge = gl.getUniformLocation(this.program, 'uEdge');
+            this.uAvgLum = gl.getUniformLocation(this.program, 'uAvgLum');
 
             this.aPosition = gl.getAttribLocation(this.program, 'aPosition');
             this.aTexCoord = gl.getAttribLocation(this.program, 'aTexCoord');
@@ -6104,7 +6193,12 @@ if (!gl) {
         updateParams() {
             let contrast = 1.0 + (u_contrast * 0.04);
             let saturation = 1.0 + (u_sat * 0.05);
-            let brightness = 1.0 + (u_black * -0.012) + (u_white * 0.012);
+            // Match SVG formula: br = 1.0 + (-blk + wht + sh + hi) * 0.6
+            const _blk = Math.min(Math.max(u_black * 0.012, -0.12), 0.12);
+            const _wht = Math.min(Math.max(u_white * 0.012, -0.12), 0.12);
+            const _sh  = Math.min(Math.max(u_shadows * 0.010, -0.10), 0.10);
+            const _hi  = Math.min(Math.max(u_highlights * 0.010, -0.10), 0.10);
+            let brightness = Math.min(Math.max(1.0 + (-_blk + _wht + _sh + _hi) * 0.6, 0.70), 1.35);
 
             let rGain = u_r_gain / 128.0;
             let gGain = u_g_gain / 128.0;
@@ -6140,9 +6234,9 @@ if (!gl) {
                 saturation *= 1.35;
             }
 
-            let sharpen = Math.max(0, normSL() * 0.3);
-            let grain = Math.max(0, -normDN() * 0.2);
-            let gamma = 1.0 + u_gamma * 0.025;
+            let sharpen = Math.max(0, normSL() * 0.3) + Math.max(0, u_sharp * 0.015);
+            let grain = Math.max(0, -normDN() * 0.2) + Math.max(0, -u_grain * 0.01);
+            let gamma = 1.0 + u_gamma * 0.025; // used as brightness/contrast approx, not pow
             let vibrance = 1.0 + u_vib * 0.02;
             let hdrVal = normHDR();
             let edgeVal = normEDGE();
@@ -6298,6 +6392,10 @@ if (!gl) {
 
                 if (this.uEdge !== null) {
                     gl.uniform1f(this.uEdge, this.params.edge);
+                }
+                if (this.uAvgLum !== null) {
+                    const fs = window.__gvfFrameStats;
+                    gl.uniform1f(this.uAvgLum, fs ? (fs.avg_lum ?? 0.5) : 0.5);
                 }
 
                 gl.uniform2f(this.uHueRotate,
@@ -8040,7 +8138,16 @@ if (!gl) {
                     font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
                     line-height:1.4;outline:none;`;
                 stopEventsOn(textarea);
-                try { textarea.value = JSON.stringify(userProf, null, 2); } catch(_) { textarea.value = '{}'; }
+                try {
+                    // Normalize display: remove legacy 'enabled', ensure 'baseOtp' is first in settings
+                    const dispProf = JSON.parse(JSON.stringify(userProf));
+                    if (dispProf.settings && 'enabled' in dispProf.settings) {
+                        const v = dispProf.settings.enabled;
+                        const { enabled: _e, baseOtp: _b, ...rest } = dispProf.settings;
+                        dispProf.settings = { baseOtp: ('baseOtp' in userProf.settings ? userProf.settings.baseOtp : v), ...rest };
+                    }
+                    textarea.value = JSON.stringify(dispProf, null, 2);
+                } catch(_) { textarea.value = '{}'; }
                 win.appendChild(textarea);
 
                 const btnRow = document.createElement('div');
@@ -10203,7 +10310,7 @@ const fileInput = document.createElement('input');
             if (firefoxDetected) {
 
                 defaults = {
-                    enabled: true, notify: true, darkMoody: true, tealOrange: false, vibrantSat: false,
+                    baseOtp: true, notify: true, darkMoody: true, tealOrange: false, vibrantSat: false,
                     sl: 1.3, sr: -1.1, bl: 0.3, wl: 0.2, dn: 0.0,
                     edge: 0.0,
                     hdr: 0.0, profile: 'off',
@@ -10223,7 +10330,7 @@ const fileInput = document.createElement('input');
             } else {
 
                 defaults = {
-                    enabled: true, notify: true, darkMoody: true, tealOrange: false, vibrantSat: false,
+                    baseOtp: true, notify: true, darkMoody: true, tealOrange: false, vibrantSat: false,
                     sl: 1.0, sr: 0.5, bl: -1.2, wl: 0.2, dn: 0.0,
                     edge: 0.1,
                     hdr: 0.0, profile: 'user',
@@ -10745,7 +10852,7 @@ const fileInput = document.createElement('input');
         return {
             schema: 'gvf-settings',
             ver: '1.10',
-            enabled: !!enabled,
+            baseOtp: !!enabled,
             notify: !!notify,
             darkMoody: !!darkMoody,
             tealOrange: !!tealOrange,
@@ -10805,7 +10912,7 @@ const fileInput = document.createElement('input');
         try {
             const u = (obj.user && typeof obj.user === 'object') ? obj.user : {};
 
-            if ('enabled' in obj) enabled = !!obj.enabled;
+            if ('baseOtp' in obj) enabled = !!obj.baseOtp;
             if ('notify' in obj) {
                 notify = !!obj.notify;
                 gmSet(K.NOTIFY, notify);
