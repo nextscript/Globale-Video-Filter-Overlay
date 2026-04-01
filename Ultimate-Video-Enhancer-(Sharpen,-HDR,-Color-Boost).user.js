@@ -3,7 +3,7 @@
 // @name:de      Ultimate Video Enhancer (Schärfe, HDR, Farben)
 // @namespace    gvf
 // @author       Freak288
-// @version      1.10.5
+// @version      1.10.6
 // @description  Instantly improve every video on any website. Adds real-time sharpening, HDR boost, better colors and contrast to all HTML5 videos.
 // @description:de  Verbessert sofort jedes Video auf jeder Website. Fügt Schärfe, HDR, bessere Farben und Kontrast in Echtzeit hinzu – für alle HTML5-Videos.
 // @match        *://*/*
@@ -116,6 +116,7 @@
     const GPU_SVG_ID = 'gvf-gpu-svg';
     const GPU_GAIN_FILTER_ID = 'gvf-gpu-gain-filter';
     const GPU_PROFILE_FILTER_ID = 'gvf-gpu-profile-filter';
+    const GPU_LUT_FILTER_ID = 'gvf-gpu-lut-filter';
     const WEBGL_CANVAS_ID = 'gvf-webgl-canvas';
     const WEBGL_WRAPPER_ATTR = 'data-gvf-webgl-wrapper';
     const RECORDING_HUD_ID = 'gvf-recording-hud';
@@ -5541,6 +5542,7 @@ function downloadBlob(blob, filename) {
             this.uProfileMatrix = null;
             this.uAutoMatrix = null;
             this.uAvgLum = null;
+            this.uLutActive = null;
 
             // Attribute locations
             this.aPosition = null;
@@ -5739,6 +5741,7 @@ if (!gl) {
                 uniform vec2 uHueRotate;    // x:cosHue, y:sinHue
                 uniform mat4 uProfileMatrix;
                 uniform mat4 uAutoMatrix;
+                uniform float uLutActive;
                 uniform float uEdge;
                 uniform float uAvgLum;   // per-frame mean luminance [0..1]
 
@@ -5828,10 +5831,7 @@ if (!gl) {
                     color.g *= uRGBGain.y;
                     color.b *= uRGBGain.z;
 
-                    // Profile Matrix
-                    color = applyColorMatrix(color, uProfileMatrix);
-
-                    // Auto Matrix
+                    // Auto Matrix (scene match — applied early, in raw space)
                     color = applyColorMatrix(color, uAutoMatrix);
 
                     // Hue Rotate
@@ -5978,6 +5978,11 @@ if (!gl) {
                         color = clamp((denoised + (cn + cs + ce + cw2) * amp) * rcpW, 0.0, 1.0);
                     }
 
+                    // LUT — applied last in sRGB space so desaturation/grading is fully respected
+                    if (uLutActive > 0.5) {
+                        color = clamp(applyColorMatrix(color, uProfileMatrix), 0.0, 1.0);
+                    }
+
                     gl_FragColor = vec4(clampFast(color.r, 0.0, 1.0),
                                         clampFast(color.g, 0.0, 1.0),
                                         clampFast(color.b, 0.0, 1.0),
@@ -6046,6 +6051,7 @@ if (!gl) {
             this.uAutoMatrix = gl.getUniformLocation(this.program, 'uAutoMatrix');
             this.uEdge = gl.getUniformLocation(this.program, 'uEdge');
             this.uAvgLum = gl.getUniformLocation(this.program, 'uAvgLum');
+            this.uLutActive = gl.getUniformLocation(this.program, 'uLutActive');
 
             this.aPosition = gl.getAttribLocation(this.program, 'aPosition');
             this.aTexCoord = gl.getAttribLocation(this.program, 'aTexCoord');
@@ -6363,14 +6369,52 @@ if (!gl) {
                     this.params.sinHue
                 );
 
-                // Profile matrix (Identity for now)
+                // Profile matrix — apply active LUT (4x5 row-major) if present, else identity
+                // LUT layout: [r→r, g→r, b→r, a→r, off_r,  r→g, g→g, b→g, a→g, off_g,  r→b, g→b, b→b, a→b, off_b,  ...]
+                // applyColorMatrix(color, m) reads col-major mat4:
+                //   out.r = m[0][0]*r + m[1][0]*g + m[2][0]*b + m[3][0]  (offset in col 3)
                 let profMatrix = new Float32Array(16);
-                profMatrix[0] = 1; profMatrix[5] = 1; profMatrix[10] = 1; profMatrix[15] = 1;
+                const _lut = (typeof activeLutMatrix4x5 !== 'undefined' && activeLutMatrix4x5 &&
+                              Array.isArray(activeLutMatrix4x5) && activeLutMatrix4x5.length === 20 &&
+                              activeLutProfileKey && activeLutProfileKey !== 'none')
+                              ? activeLutMatrix4x5 : null;
+                if (_lut) {
+                    // col-major layout for GLSL mat4 (col index = first, row index = second)
+                    // col 0 (r multipliers): lut[0]=rr, lut[5]=rg, lut[10]=rb
+                    profMatrix[0]  = _lut[0];  profMatrix[1]  = _lut[5];  profMatrix[2]  = _lut[10]; profMatrix[3]  = 0;
+                    // col 1 (g multipliers): lut[1]=gr, lut[6]=gg, lut[11]=gb
+                    profMatrix[4]  = _lut[1];  profMatrix[5]  = _lut[6];  profMatrix[6]  = _lut[11]; profMatrix[7]  = 0;
+                    // col 2 (b multipliers): lut[2]=br, lut[7]=bg, lut[12]=bb
+                    profMatrix[8]  = _lut[2];  profMatrix[9]  = _lut[7];  profMatrix[10] = _lut[12]; profMatrix[11] = 0;
+                    // col 3 (offsets): lut[4]=off_r, lut[9]=off_g, lut[14]=off_b
+                    profMatrix[12] = _lut[4];  profMatrix[13] = _lut[9];  profMatrix[14] = _lut[14]; profMatrix[15] = 1;
+                } else {
+                    profMatrix[0] = 1; profMatrix[5] = 1; profMatrix[10] = 1; profMatrix[15] = 1;
+                }
                 gl.uniformMatrix4fv(this.uProfileMatrix, false, profMatrix);
 
-                // Auto matrix (Identity for now)
+                // Tell shader whether a real LUT is active (0 = identity/skip, 1 = apply)
+                if (this.uLutActive !== null) {
+                    gl.uniform1f(this.uLutActive, _lut ? 1.0 : 0.0);
+                }
+
+                // Auto matrix — apply autoMatrixStr (4x5 row-major space-separated) if auto is active
                 let autoMatrix = new Float32Array(16);
-                autoMatrix[0] = 1; autoMatrix[5] = 1; autoMatrix[10] = 1; autoMatrix[15] = 1;
+                try {
+                    const _am = (typeof autoMatrixStr !== 'undefined' && autoOn && autoMatrixStr)
+                        ? autoMatrixStr.trim().split(/\s+/).map(Number) : null;
+                    if (_am && _am.length === 20) {
+                        // Convert row-major 4x5 → col-major mat4 (same mapping as LUT)
+                        autoMatrix[0]  = _am[0];  autoMatrix[1]  = _am[5];  autoMatrix[2]  = _am[10]; autoMatrix[3]  = 0;
+                        autoMatrix[4]  = _am[1];  autoMatrix[5]  = _am[6];  autoMatrix[6]  = _am[11]; autoMatrix[7]  = 0;
+                        autoMatrix[8]  = _am[2];  autoMatrix[9]  = _am[7];  autoMatrix[10] = _am[12]; autoMatrix[11] = 0;
+                        autoMatrix[12] = _am[4];  autoMatrix[13] = _am[9];  autoMatrix[14] = _am[14]; autoMatrix[15] = 1;
+                    } else {
+                        autoMatrix[0] = 1; autoMatrix[5] = 1; autoMatrix[10] = 1; autoMatrix[15] = 1;
+                    }
+                } catch (_) {
+                    autoMatrix[0] = 1; autoMatrix[5] = 1; autoMatrix[10] = 1; autoMatrix[15] = 1;
+                }
                 gl.uniformMatrix4fv(this.uAutoMatrix, false, autoMatrix);
 
                 gl.activeTexture(gl.TEXTURE0);
@@ -11238,6 +11282,36 @@ if ('lutProfile' in obj) {
         if (f && f.parentNode) f.parentNode.removeChild(f);
     }
 
+    function upsertGpuLutFilter() {
+        if (!activeLutMatrix4x5 || !Array.isArray(activeLutMatrix4x5) || activeLutMatrix4x5.length !== 20 || activeLutProfileKey === 'none') return;
+        const svg = ensureGpuSvgHost();
+        if (!svg) return;
+        const defs = svg.querySelector('defs') || svg;
+        let f = defs.querySelector(`#${GPU_LUT_FILTER_ID}`);
+        const sig = matToSvgValues(activeLutMatrix4x5);
+        if (f && f.getAttribute('data-sig') === sig) return; // unchanged
+        if (!f) {
+            f = document.createElementNS(svgNS, 'filter');
+            f.setAttribute('id', GPU_LUT_FILTER_ID);
+            f.setAttribute('color-interpolation-filters', 'sRGB');
+            defs.appendChild(f);
+        } else {
+            while (f.firstChild) f.removeChild(f.firstChild);
+        }
+        f.setAttribute('data-sig', sig);
+        const cm = document.createElementNS(svgNS, 'feColorMatrix');
+        cm.setAttribute('type', 'matrix');
+        cm.setAttribute('values', sig);
+        f.appendChild(cm);
+    }
+
+    function removeGpuLutFilter() {
+        const svg = document.getElementById(GPU_SVG_ID);
+        if (!svg) return;
+        const f = svg.querySelector(`#${GPU_LUT_FILTER_ID}`);
+        if (f && f.parentNode) f.parentNode.removeChild(f);
+    }
+
     function removeGpuGainFilter() {
         const svg = document.getElementById(GPU_SVG_ID);
         if (!svg) return;
@@ -11293,6 +11367,15 @@ if ('lutProfile' in obj) {
             gpuFilterString = gpuFilterString ? (gpuFilterString + ' ' + url) : url;
         } else {
             removeGpuGainFilter();
+        }
+
+        // LUT filter — inject as SVG feColorMatrix on GPU fallback path
+        if (activeLutMatrix4x5 && Array.isArray(activeLutMatrix4x5) && activeLutMatrix4x5.length === 20 && activeLutProfileKey !== 'none') {
+            upsertGpuLutFilter();
+            const urlLut = `url(#${GPU_LUT_FILTER_ID})`;
+            gpuFilterString = gpuFilterString ? (gpuFilterString + ' ' + urlLut) : urlLut;
+        } else {
+            removeGpuLutFilter();
         }
 
         const outlineCss = (PROFILE_VIDEO_OUTLINE && profile !== 'off')
