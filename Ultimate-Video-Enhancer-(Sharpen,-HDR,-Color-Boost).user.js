@@ -3,7 +3,7 @@
 // @name:de      Ultimate Video Enhancer (Schärfe, HDR, Farben)
 // @namespace    gvf
 // @author       Freak288
-// @version      1.10.7
+// @version      1.10.8
 // @description  Instantly improve every video on any website. Adds real-time sharpening, HDR boost, better colors and contrast to all HTML5 videos.
 // @description:de  Verbessert sofort jedes Video auf jeder Website. Fügt Schärfe, HDR, bessere Farben und Kontrast in Echtzeit hinzu – für alle HTML5-Videos.
 // @match        *://*/*
@@ -652,12 +652,19 @@ void main(){
             s = s.replace(/^\s*uniform\s+float\s+u_avg_g\s*;\s*/mg, '');
             s = s.replace(/^\s*uniform\s+float\s+u_avg_b\s*;\s*/mg, '');
             s = s.replace(/^\s*uniform\s+float\s+u_contrast\s*;\s*/mg, '');
+            // Accept legacy GLSL ES 1.00 fragment snippets in the WebGL2 pipeline
+            s = s.replace(/^\s*varying\s+vec2\s+v_uv\s*;\s*/mg, '');
+            s = s.replace(/^\s*varying\s+vec2\s+vTexCoord\s*;\s*/mg, '');
+            s = s.replace(/^\s*out\s+vec4\s+outColor\s*;\s*/mg, '');
             // Shadertoy: iChannel1 -> u_video_raw
             s = s.replace(/iChannel1/g, 'u_video_raw');
             s = s.replace(/^\s*in\s+vec2\s+v_uv\s*;\s*/mg, '');
             s = s.replace(/^\s*out\s+vec4\s+fragColor\s*;\s*/mg, '');
-            // Upgrade texture2D -> texture (GLSL100 style)
+            // Upgrade legacy GLSL ES 1.00 syntax to GLSL ES 3.00
             s = s.replace(/\btexture2D\b/g, 'texture');
+            s = s.replace(/\bgl_FragColor\b/g, 'fragColor');
+            s = s.replace(/\bvarying\b/g, 'in');
+            s = s.replace(/\bvTexCoord\b/g, 'v_uv');
             // Shadertoy: iResolution -> u_res, iTime -> u_time, iChannel0 -> u_video
             s = s.replace(/\biResolution\b/g, 'vec3(u_res, 0.0)');
             s = s.replace(/\biTime\b/g, 'u_time');
@@ -1080,9 +1087,15 @@ ${mainBlock}`;
             s = s.replace(/^\s*uniform\s+vec2\s+u_mouse\s*;\s*/mg, '');
             s = s.replace(/^\s*uniform\s+float\s+u_strength\s*;\s*/mg, '');
             s = s.replace(/^\s*uniform\s+float\s+u_layers\s*;\s*/mg, '');
+            s = s.replace(/^\s*varying\s+vec2\s+v_uv\s*;\s*/mg, '');
+            s = s.replace(/^\s*varying\s+vec2\s+vTexCoord\s*;\s*/mg, '');
+            s = s.replace(/^\s*out\s+vec4\s+outColor\s*;\s*/mg, '');
             s = s.replace(/^\s*in\s+vec2\s+v_uv\s*;\s*/mg, '');
             s = s.replace(/^\s*out\s+vec4\s+fragColor\s*;\s*/mg, '');
             s = s.replace(/\btexture2D\b/g, 'texture');
+            s = s.replace(/\bgl_FragColor\b/g, 'fragColor');
+            s = s.replace(/\bvarying\b/g, 'in');
+            s = s.replace(/\bvTexCoord\b/g, 'v_uv');
             s = s.replace(/\biResolution\b/g, 'vec3(u_res, 0.0)');
             s = s.replace(/\biTime\b/g, 'u_time');
             s = s.replace(/\biChannel0\b/g, 'u_video');
