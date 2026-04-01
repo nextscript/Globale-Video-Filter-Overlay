@@ -3,7 +3,7 @@
 // @name:de      Ultimate Video Enhancer (Schärfe, HDR, Farben)
 // @namespace    gvf
 // @author       Freak288
-// @version      1.10.6
+// @version      1.10.7
 // @description  Instantly improve every video on any website. Adds real-time sharpening, HDR boost, better colors and contrast to all HTML5 videos.
 // @description:de  Verbessert sofort jedes Video auf jeder Website. Fügt Schärfe, HDR, bessere Farben und Kontrast in Echtzeit hinzu – für alle HTML5-Videos.
 // @match        *://*/*
@@ -502,14 +502,73 @@
     })();
 
     // Parse // @uniform float u_name default min max "Label" annotations from shader code
+    // Also parses // @select float u_name default "Label" 0:Option A,1:Option B,2:Option C
     function parseUniformDefs(src) {
         if (!src) return [];
         const defs = [];
+        // @uniform sliders
         const re = /\/\/\s*@uniform\s+float\s+(\w+)\s+([\d.eE+-]+)\s+([\d.eE+-]+)\s+([\d.eE+-]+)(?:\s+"([^"]*)")?/g;
         let m;
         while ((m = re.exec(src)) !== null)
-            defs.push({ name: m[1], def: parseFloat(m[2]), min: parseFloat(m[3]), max: parseFloat(m[4]), label: m[5] || m[1] });
+            defs.push({ name: m[1], def: parseFloat(m[2]), min: parseFloat(m[3]), max: parseFloat(m[4]), label: m[5] || m[1], kind: 'slider' });
+        // @select dropdowns — format: // @select float name default "Label" 0:Opt A,1:Opt B
+        const re2 = /\/\/\s*@select\s+float\s+(\w+)\s+([\d.eE+-]+)\s+"([^"]*)"\s+([\d.,:\w\s()-]+)/g;
+        let m2;
+        while ((m2 = re2.exec(src)) !== null) {
+            const options = m2[4].trim().split(',').map(o => {
+                const [val, ...rest] = o.trim().split(':');
+                return { value: parseFloat(val), label: rest.join(':').trim() };
+            }).filter(o => !isNaN(o.value));
+            if (options.length > 0)
+                defs.push({ name: m2[1], def: parseFloat(m2[2]), label: m2[3], kind: 'select', options });
+        }
+        // Sort by order of appearance in source
+        defs.sort((a, b) => src.indexOf('@' + (a.kind === 'select' ? 'select' : 'uniform') + ' float ' + a.name) - src.indexOf('@' + (b.kind === 'select' ? 'select' : 'uniform') + ' float ' + b.name));
         return defs;
+    }
+
+    // Parse Canvas 2D param annotations:
+    // // @param name default min max "Label"           → number slider
+    // // @paramselect name default "Label" val:Opt,...  → dropdown (string or number)
+    function parseParamDefs(src) {
+        if (!src) return [];
+        const defs = [];
+        // @param sliders — use \b or negative lookahead to avoid matching @paramselect
+        const re = /\/\/\s*@param(?!select)\s+(\w+)\s+([\d.eE+\-"'A-Za-z:/._-]+)\s+([\d.eE+-]+)\s+([\d.eE+-]+)\s+"([^"]*)"/g;
+        let m;
+        while ((m = re.exec(src)) !== null) {
+            const def = isNaN(parseFloat(m[2])) ? m[2].replace(/['"]/g,'') : parseFloat(m[2]);
+            defs.push({ name: m[1], def, min: parseFloat(m[3]), max: parseFloat(m[4]), label: m[5], kind: 'slider' });
+        }
+        // @paramselect dropdowns — string or number options
+        const re2 = /\/\/\s*@paramselect\s+(\w+)\s+([^\s"]+|"[^"]*")\s+"([^"]*)"\s+(.+)/g;
+        let m2;
+        while ((m2 = re2.exec(src)) !== null) {
+            const rawDef = m2[2].replace(/['"]/g,'');
+            const def = isNaN(parseFloat(rawDef)) ? rawDef : parseFloat(rawDef);
+            const options = m2[4].trim().split(',').map(o => {
+                const col = o.trim().indexOf(':');
+                if (col === -1) return null;
+                const val = o.trim().slice(0, col).trim().replace(/['"]/g,'');
+                const label = o.trim().slice(col+1).trim();
+                const numVal = isNaN(parseFloat(val)) ? val : parseFloat(val);
+                return { value: numVal, label };
+            }).filter(Boolean);
+            if (options.length > 0)
+                defs.push({ name: m2[1], def, label: m2[3], kind: 'select', options });
+        }
+        defs.sort((a, b) => src.indexOf('@param' + (a.kind==='select'?'select ':' ') + a.name) - src.indexOf('@param' + (b.kind==='select'?'select ':' ') + b.name));
+        return defs;
+    }
+
+    // Build a JS variable injection prefix from Canvas 2D entry params
+    function buildParamPrefix(entry) {
+        const defs = parseParamDefs(entry.code || '');
+        if (!defs.length) return '';
+        return defs.map(d => {
+            const val = (entry.params && entry.params[d.name] !== undefined) ? entry.params[d.name] : d.def;
+            return typeof val === 'string' ? `const ${d.name} = ${JSON.stringify(val)};` : `const ${d.name} = ${val};`;
+        }).join('\n') + '\n';
     }
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -566,8 +625,15 @@ void main(){
 
         // Normalize user GLSL300 fragment code to use internal uniform names
         function _normalizeUserFrag(src) {
-            // Strip @uniform annotation lines — handled separately, not valid GLSL
+            // Strip @uniform and @select annotation lines — handled separately, not valid GLSL
             let s = src.replace(/^\s*\/\/\s*@uniform[^\r\n]*/mg, '');
+            s = s.replace(/^\s*\/\/\s*@select[^\r\n]*/mg, '');
+            // Auto-strip #define and local float declarations that match @uniform/@select names
+            const uniformNames = parseUniformDefs(src).map(d => d.name);
+            uniformNames.forEach(name => {
+                s = s.replace(new RegExp('^\\s*#define\\s+' + name + '\\b[^\\r\\n]*', 'mg'), '');
+                s = s.replace(new RegExp('^\\s*(?:const\\s+)?float\\s+' + name + '\\s*=[^;]+;[^\\r\\n]*', 'mg'), '');
+            });
             // Strip #version if present — we prepend our own
             s = s.replace(/^\s*#version\s+\S+[\t ]*/mg, '');
             // Strip duplicate precision qualifiers — we provide precision highp float
@@ -954,6 +1020,12 @@ ${mainBlock}`;
                 _reparentCanvas(video);
             }
 
+            // Apply blend mode from first active GLSL entry to shared canvas
+            if (_canvas) {
+                const firstBlend = activeEntries.length ? (activeEntries[0].blendMode || 'normal') : 'normal';
+                _canvas.style.mixBlendMode = firstBlend;
+            }
+
             // Remove compiled programs for entries that no longer exist at all
             for (const [id] of _compiled.entries()) {
                 if (!customSvgCodes.find(e => e.id === id)) {
@@ -1110,7 +1182,8 @@ ${mainBlock}`;
         function _createInstance(entry, video) {
             let fn;
             try {
-                fn = _compileUserFn(entry.code);
+                const prefix = buildParamPrefix(entry);
+                fn = _compileUserFn(prefix + entry.code);
             } catch (e) {
                 console.warn('[GVF Canvas2D] Compile error for', entry.label, e);
                 return null;
@@ -1160,6 +1233,7 @@ ${mainBlock}`;
                 canvas.style.top       = (vr.top  - pr.top)  + 'px';
                 canvas.style.width     = vr.width  + 'px';
                 canvas.style.height    = vr.height + 'px';
+                canvas.style.mixBlendMode = entry.blendMode || 'normal';
 
                 const dpr = window.devicePixelRatio || 1;
                 const w = Math.round(vr.width  * dpr);
@@ -1208,6 +1282,7 @@ ${mainBlock}`;
 
             const inst = { canvas, fn, rafId: requestAnimationFrame(drawLoop), alive };
             inst._stop = () => { alive = false; };
+            inst._paramSig = JSON.stringify(entry.params || {});
             return inst;
         }
 
@@ -1226,6 +1301,22 @@ ${mainBlock}`;
             if (inst.canvas && inst.canvas.isConnected) inst.canvas.remove();
         }
 
+        // Recompile a single entry's fn in-place (called on param slider change)
+        function recompile(entryId) {
+            const entry = customSvgCodes.find(e => e && e.id === entryId);
+            if (!entry) return;
+            const inst = _instances.get(entryId);
+            if (!inst) return;
+            try {
+                const prefix = buildParamPrefix(entry);
+                const newFn = _compileUserFn(prefix + entry.code);
+                if (newFn) {
+                    inst.fn = newFn;
+                    inst._paramSig = JSON.stringify(entry.params || {});
+                }
+            } catch(_) {}
+        }
+
         function update(video) {
             const activeEntries = customSvgCodes.filter(e => e && e.enabled && e.type === 'canvas2d');
             const activeIds = new Set(activeEntries.map(e => e.id));
@@ -1240,11 +1331,23 @@ ${mainBlock}`;
 
             if (!video) return;
 
-            // Create new instances
+            // Create or recompile instances
             for (const entry of activeEntries) {
                 if (!_instances.has(entry.id)) {
                     const inst = _createInstance(entry, video);
                     if (inst) _instances.set(entry.id, inst);
+                } else {
+                    // Recompile if params signature changed
+                    const inst = _instances.get(entry.id);
+                    const paramSig = JSON.stringify(entry.params || {});
+                    if (inst._paramSig !== paramSig) {
+                        inst._paramSig = paramSig;
+                        try {
+                            const prefix = buildParamPrefix(entry);
+                            const newFn = _compileUserFn(prefix + entry.code);
+                            if (newFn) inst.fn = newFn;
+                        } catch(_) {}
+                    }
                 }
             }
         }
@@ -1266,7 +1369,29 @@ ${mainBlock}`;
             _instances.clear();
         }
 
-        return { update, reparentAll, destroyAll, _compileUserFn };
+        // Force recompile all active instances with current entry params (called after storage reload)
+        function forceRecompileAll(video) {
+            const activeEntries = customSvgCodes.filter(e => e && e.enabled && e.type === 'canvas2d');
+            for (const entry of activeEntries) {
+                const inst = _instances.get(entry.id);
+                if (inst) {
+                    try {
+                        const prefix = buildParamPrefix(entry);
+                        const newFn = _compileUserFn(prefix + entry.code);
+                        if (newFn) {
+                            inst.fn = newFn;
+                            inst._paramSig = JSON.stringify(entry.params || {});
+                        }
+                    } catch(_) {}
+                } else if (video) {
+                    // Instance doesn't exist yet — create it
+                    const newInst = _createInstance(entry, video);
+                    if (newInst) _instances.set(entry.id, newInst);
+                }
+            }
+        }
+
+        return { update, reparentAll, destroyAll, forceRecompileAll, _compileUserFn, recompile };
     })();
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1787,40 +1912,6 @@ ${mainBlock}`;
 
                 row.appendChild(handle); row.appendChild(chk); row.appendChild(lbl); row.appendChild(hkBtn); row.appendChild(editBtn); row.appendChild(delBtn);
                 listWrap.appendChild(row);
-
-                // @uniform sliders — only for webgl entries
-                if (entry.type === 'webgl') {
-                    const udefs = parseUniformDefs(entry.code);
-                    if (udefs.length > 0) {
-                        if (!entry.uniforms) entry.uniforms = {};
-                        const slWrap = document.createElement('div');
-                        slWrap.style.cssText = `display:flex;flex-direction:column;gap:4px;padding:6px 10px 8px 32px;background:rgba(120,80,255,0.07);border-radius:0 0 8px 8px;border:1px solid rgba(120,80,255,0.2);border-top:none;margin-top:-4px;`;
-                        udefs.forEach(d => {
-                            if (entry.uniforms[d.name] === undefined) entry.uniforms[d.name] = d.def;
-                            const row2 = document.createElement('div');
-                            row2.style.cssText = `display:flex;align-items:center;gap:8px;`;
-                            const lbl2 = document.createElement('span');
-                            lbl2.textContent = d.label;
-                            lbl2.style.cssText = `font-size:10px;color:#c0a0ff;min-width:90px;flex-shrink:0;`;
-                            const val2 = document.createElement('span');
-                            val2.textContent = entry.uniforms[d.name].toFixed(2);
-                            val2.style.cssText = `font-size:10px;color:#fff;font-family:monospace;min-width:34px;text-align:right;flex-shrink:0;`;
-                            const sl = document.createElement('input');
-                            sl.type = 'range'; sl.min = d.min; sl.max = d.max;
-                            sl.step = (d.max - d.min) / 200; sl.value = entry.uniforms[d.name];
-                            sl.style.cssText = `flex:1;accent-color:#a070ff;cursor:pointer;`;
-                            stopEventsOn(sl);
-                            sl.addEventListener('input', () => {
-                                entry.uniforms[d.name] = parseFloat(sl.value);
-                                val2.textContent = entry.uniforms[d.name].toFixed(2);
-                                saveCustomSvgCodes();
-                            });
-                            row2.appendChild(lbl2); row2.appendChild(sl); row2.appendChild(val2);
-                            slWrap.appendChild(row2);
-                        });
-                        listWrap.appendChild(slWrap);
-                    }
-                }
             });
             listWrap.scrollTop = scrollTop;
         }
@@ -1880,6 +1971,63 @@ ${mainBlock}`;
             topRow.appendChild(typeSelect);
             editArea.appendChild(topRow);
 
+            // Blend Mode row (between Name/Type and Code)
+            const blendRow = document.createElement('div');
+            blendRow.style.cssText = `display:flex;gap:8px;align-items:center;`;
+
+            const blendLabel = document.createElement('span');
+            blendLabel.textContent = 'Blend Mode:';
+            blendLabel.style.cssText = `font-size:11px;color:#888;white-space:nowrap;flex-shrink:0;`;
+
+            const blendSelect = document.createElement('select');
+            blendSelect.style.cssText = `flex:1;background:rgba(0,0,0,0.7);border:1px solid rgba(255,255,255,0.2);border-radius:7px;padding:5px 8px;color:#d0e8ff;font-size:12px;outline:none;cursor:pointer;`;
+            stopEventsOn(blendSelect);
+            const blendModes = [
+                ['normal',      'Normal'],
+                // Darken group
+                ['darken',      'Darken'],
+                ['multiply',    'Multiply'],
+                ['color-burn',  'Color Burn'],
+                // Lighten group
+                ['lighten',     'Lighten'],
+                ['screen',      'Screen'],
+                ['color-dodge', 'Color Dodge'],
+                // Contrast group
+                ['overlay',     'Overlay'],
+                ['soft-light',  'Soft Light'],
+                ['hard-light',  'Hard Light'],
+                // Inversion group
+                ['difference',  'Difference'],
+                ['exclusion',   'Exclusion'],
+                // Component group
+                ['hue',         'Hue'],
+                ['saturation',  'Saturation'],
+                ['color',       'Color'],
+                ['luminosity',  'Luminosity'],
+            ];
+            const currentBlend = editing ? (customSvgCodes[idx].blendMode || 'normal') : 'normal';
+            blendModes.forEach(([val, lbl]) => {
+                const opt = document.createElement('option');
+                opt.value = val; opt.textContent = lbl;
+                if (val === currentBlend) opt.selected = true;
+                blendSelect.appendChild(opt);
+            });
+
+            const blendNote = document.createElement('span');
+            blendNote.style.cssText = `font-size:10px;color:#666;white-space:nowrap;flex-shrink:0;`;
+            const _updateBlendNote = (type) => {
+                blendNote.textContent = type === 'webgl' ? '(GLSL: shared)' : '';
+                blendSelect.disabled = false;
+                blendSelect.style.opacity = '1';
+            };
+            _updateBlendNote(currentType);
+            typeSelect.addEventListener('change', () => _updateBlendNote(typeSelect.value));
+
+            blendRow.appendChild(blendLabel);
+            blendRow.appendChild(blendSelect);
+            blendRow.appendChild(blendNote);
+            editArea.appendChild(blendRow);
+
             const svgPlaceholder = 'SVG Filter-Primitive Code, e.g.:\n<feConvolveMatrix kernelMatrix="0 -1 0 -1 5 -1 0 -1 0"/>';
             const glslPlaceholder = `GLSL Fragment Shader (WebGL2 / GLSL300).\nAvailable uniforms:\n  uniform sampler2D u_video;  // video frame\n  uniform vec2 u_res;          // canvas resolution (px)\n  in vec2 v_uv;                // UV coords 0..1\n  out vec4 fragColor;\n\n// Option A — full shader:\nvoid main(){\n    fragColor = texture(u_video, v_uv);\n}\n\n// Option B — helper function only (main is auto-generated):\nvec3 myEffect(sampler2D tex, vec2 uv, vec2 res) {\n    return texture(tex, uv).rgb;\n}`;
             const canvas2dPlaceholder = `// Canvas 2D effect\n// Available variables: ctx, canvas, video, width, height, frame (ms), u_mouse ({x,y}), u_zoom\n\n// Example: watch timer (bottom right)\nif (!canvas._watchStart) canvas._watchStart = Date.now();\nconst elapsed = Math.floor((Date.now() - canvas._watchStart) / 1000);\nconst h = Math.floor(elapsed / 3600);\nconst m = Math.floor((elapsed % 3600) / 60);\nconst s = elapsed % 60;\nconst pad = n => String(n).padStart(2, '0');\nconst label = h > 0 ? \`\${pad(h)}:\${pad(m)}:\${pad(s)}\` : \`\${pad(m)}:\${pad(s)}\`;\nconst fs = Math.round(height * 0.038);\nctx.font = \`900 \${fs}px monospace\`;\nconst text = '👁 ' + label;\nconst tw = ctx.measureText(text).width;\nconst px = width - tw - fs * 0.6;\nconst py = height - fs * 0.6;\nctx.fillStyle = 'rgba(0,0,0,0.55)';\nconst rp = fs * 0.3;\nctx.beginPath();\nctx.roundRect(px - rp, py - fs - rp, tw + rp*2, fs + rp*2, rp);\nctx.fill();\nctx.fillStyle = '#fff';\nctx.fillText(text, px, py);`;
@@ -1894,7 +2042,155 @@ ${mainBlock}`;
 
             typeSelect.addEventListener('change', () => {
                 codeInput.placeholder = getPlaceholder(typeSelect.value);
+                rebuildUniformSliders();
             });
+
+            // Live uniform slider preview — shown below blend mode, updates on code change
+            const uniformPreview = document.createElement('div');
+            uniformPreview.style.cssText = `display:flex;flex-direction:column;gap:4px;`;
+            editArea.appendChild(uniformPreview);
+
+            // Temp uniforms store for edit-form sliders (uses existing entry.uniforms/params if editing)
+            const editUniforms = (() => {
+                if (!editing) return {};
+                const entry = customSvgCodes[idx];
+                if (entry.type === 'canvas2d') {
+                    // Merge annotation defaults + saved params
+                    const pdefs = parseParamDefs(entry.code || '');
+                    const merged = {};
+                    pdefs.forEach(d => { merged[d.name] = d.def; });
+                    Object.assign(merged, entry.params || {});
+                    return merged;
+                }
+                return { ...(entry.uniforms || {}) };
+            })();
+            // For new (non-editing) entries: hold a reference to a live preview entry
+            let _previewEntry = null;
+
+            function _getOrCreatePreviewEntry() {
+                if (editing) return customSvgCodes[idx] || null;
+                // Find existing preview entry by sentinel id
+                if (_previewEntry && customSvgCodes.includes(_previewEntry)) return _previewEntry;
+                // Create a temporary invisible entry for live preview
+                _previewEntry = {
+                    id: '__preview__',
+                    label: labelInput.value.trim() || 'Preview',
+                    code: codeInput.value,
+                    type: typeSelect.value,
+                    enabled: true,
+                    uniforms: { ...editUniforms }
+                };
+                customSvgCodes.push(_previewEntry);
+                return _previewEntry;
+            }
+
+            // Clean up preview entry when edit form closes or saves
+            function _removePreviewEntry() {
+                if (_previewEntry) {
+                    const i = customSvgCodes.indexOf(_previewEntry);
+                    if (i !== -1) customSvgCodes.splice(i, 1);
+                    _previewEntry = null;
+                }
+            }
+
+            function rebuildUniformSliders() {
+                while (uniformPreview.firstChild) uniformPreview.removeChild(uniformPreview.firstChild);
+                if (typeSelect.value !== 'webgl' && typeSelect.value !== 'canvas2d') return;
+                const isCanvas2d = typeSelect.value === 'canvas2d';
+                const udefs = isCanvas2d ? parseParamDefs(codeInput.value) : parseUniformDefs(codeInput.value);
+                if (!udefs.length) return;
+                const header = document.createElement('div');
+                header.textContent = isCanvas2d ? 'Parameters' : 'Shader Parameters';
+                header.style.cssText = `font-size:10px;color:${isCanvas2d ? '#80e8a0' : '#a070ff'};font-weight:900;margin-top:2px;`;
+                uniformPreview.appendChild(header);
+                udefs.forEach(d => {
+                    if (editUniforms[d.name] === undefined) editUniforms[d.name] = d.def;
+                    const row2 = document.createElement('div');
+                    row2.style.cssText = `display:flex;align-items:center;gap:8px;`;
+                    const lbl2 = document.createElement('span');
+                    lbl2.textContent = d.label;
+                    lbl2.style.cssText = `font-size:10px;color:${isCanvas2d ? '#80e8a0' : '#c0a0ff'};min-width:90px;flex-shrink:0;`;
+                    row2.appendChild(lbl2);
+
+                    const onChanged = (val, persist) => {
+                        editUniforms[d.name] = val;
+                        const target = _getOrCreatePreviewEntry();
+                        if (target) {
+                            if (isCanvas2d) {
+                                if (!target.params) target.params = {};
+                                target.params[d.name] = val;
+                                target.code = codeInput.value;
+                                target.type = typeSelect.value;
+                                // Recompile with updated params before any save/reload
+                                CustomCanvas2DOverlayManager.recompile(target.id);
+                                updateCustomCanvas2DOverlays();
+                                // Save after recompile — loadCustomSvgCodes will reload but
+                                // update() will re-detect paramSig change and recompile again
+                                if (persist && editing) saveCustomSvgCodes();
+                            } else {
+                                if (!target.uniforms) target.uniforms = {};
+                                target.uniforms[d.name] = val;
+                                target.code = codeInput.value;
+                                target.type = typeSelect.value;
+                                updateCustomWebglOverlays();
+                                if (persist && editing) saveCustomSvgCodes();
+                            }
+                        }
+                    };
+
+                    if (d.kind === 'select') {
+                        // Dropdown control
+                        const sel2 = document.createElement('select');
+                        sel2.style.cssText = `flex:1;background:rgba(0,0,0,0.7);border:1px solid rgba(120,80,255,0.4);border-radius:6px;padding:3px 6px;color:#d0e8ff;font-size:11px;outline:none;cursor:pointer;`;
+                        stopEventsOn(sel2);
+                        d.options.forEach(opt => {
+                            const o = document.createElement('option');
+                            o.value = opt.value;
+                            o.textContent = opt.label;
+                            if (opt.value === editUniforms[d.name]) o.selected = true;
+                            sel2.appendChild(o);
+                        });
+                        sel2.addEventListener('change', () => {
+                            const raw = sel2.value;
+                            const parsed = parseFloat(raw);
+                            onChanged(isNaN(parsed) ? raw : parsed, true);
+                        });
+                        row2.appendChild(sel2);
+                    } else {
+                        // Slider control
+                        const val2 = document.createElement('span');
+                        val2.textContent = Number(editUniforms[d.name]).toFixed(2);
+                        val2.style.cssText = `font-size:10px;color:#fff;font-family:monospace;min-width:34px;text-align:right;flex-shrink:0;`;
+                        const sl = document.createElement('input');
+                        sl.type = 'range'; sl.min = d.min; sl.max = d.max;
+                        sl.step = (d.max - d.min) / 200;
+                        sl.value = editUniforms[d.name];
+                        sl.style.cssText = `flex:1;accent-color:#a070ff;cursor:pointer;`;
+                        stopEventsOn(sl);
+                        // 'input' = live render, no save
+                        sl.addEventListener('input', () => {
+                            val2.textContent = Number(parseFloat(sl.value)).toFixed(2);
+                            onChanged(parseFloat(sl.value), false);
+                        });
+                        // 'change' = fired on mouseup → persist
+                        sl.addEventListener('change', () => {
+                            onChanged(parseFloat(sl.value), true);
+                        });
+                        row2.appendChild(sl);
+                        row2.appendChild(val2);
+                    }
+
+                    uniformPreview.appendChild(row2);
+                });
+            }
+
+            // Rebuild sliders when code changes (debounced)
+            let _rebuildTimer = null;
+            codeInput.addEventListener('input', () => {
+                clearTimeout(_rebuildTimer);
+                _rebuildTimer = setTimeout(rebuildUniformSliders, 400);
+            });
+            rebuildUniformSliders();
 
             const errMsg = document.createElement('div');
             errMsg.style.cssText = `font-size:11px;color:#ff7070;min-height:14px;`;
@@ -1908,7 +2204,7 @@ ${mainBlock}`;
                 cancelBtn.textContent = 'Cancel';
                 cancelBtn.style.cssText = `padding:7px 14px;background:rgba(255,255,255,0.1);color:#ccc;border:1px solid rgba(255,255,255,0.2);border-radius:7px;font-size:12px;cursor:pointer;`;
                 stopEventsOn(cancelBtn);
-                cancelBtn.addEventListener('click', () => renderEditArea());
+                cancelBtn.addEventListener('click', () => { _removePreviewEntry(); renderEditArea(); });
                 btnRow.appendChild(cancelBtn);
             }
 
@@ -1927,9 +2223,16 @@ ${mainBlock}`;
                     if (!parsed) { errMsg.textContent = '❌ Invalid SVG code — parse error.'; return; }
                 } else if (type === 'canvas2d') {
                     try {
+                        // Build params from editUniforms merged with annotation defaults
+                        const pdefs = parseParamDefs(code);
+                        const mergedParams = {};
+                        pdefs.forEach(d => { mergedParams[d.name] = d.def; });
+                        Object.assign(mergedParams, editUniforms);
+                        const tempEntry = { code, params: mergedParams };
+                        const prefix = buildParamPrefix(tempEntry);
                         const testFn = CustomCanvas2DOverlayManager._compileUserFn
-                            ? CustomCanvas2DOverlayManager._compileUserFn(code)
-                            : new Function('ctx', 'canvas', 'video', 'width', 'height', 'frame', 'u_mouse', 'u_zoom', code);
+                            ? CustomCanvas2DOverlayManager._compileUserFn(prefix + code)
+                            : new Function('ctx', 'canvas', 'video', 'width', 'height', 'frame', 'u_mouse', 'u_zoom', prefix + code);
                         if (!testFn) throw new Error('Compilation failed');
                     } catch (e) {
                         errMsg.textContent = '❌ Canvas 2D error: ' + e.message; return;
@@ -1942,12 +2245,31 @@ ${mainBlock}`;
                 }
 
                 errMsg.textContent = '';
+                const blendMode = blendSelect.value || 'normal';
+
+                // For canvas2d: always merge annotation defaults + editUniforms so params are never empty
+                const finalParams = (() => {
+                    if (type !== 'canvas2d') return null;
+                    const pdefs = parseParamDefs(code);
+                    const merged = {};
+                    pdefs.forEach(d => { merged[d.name] = d.def; });
+                    Object.assign(merged, editUniforms);
+                    return merged;
+                })();
+
                 if (editing) {
                     customSvgCodes[idx].label = label;
                     customSvgCodes[idx].code = code;
                     customSvgCodes[idx].type = type;
+                    customSvgCodes[idx].blendMode = blendMode;
+                    if (type === 'webgl') customSvgCodes[idx].uniforms = { ...editUniforms };
+                    if (type === 'canvas2d') customSvgCodes[idx].params = finalParams;
                 } else {
-                    customSvgCodes.push({ id: 'csvg_' + Date.now(), label, code, type, enabled: true });
+                    _removePreviewEntry();
+                    const newEntry = { id: 'csvg_' + Date.now(), label, code, type, blendMode, enabled: true };
+                    if (type === 'webgl' && Object.keys(editUniforms).length) newEntry.uniforms = { ...editUniforms };
+                    if (type === 'canvas2d') newEntry.params = finalParams;
+                    customSvgCodes.push(newEntry);
                 }
                 saveCustomSvgCodes();
                 regenerateSvgImmediately();
@@ -12477,6 +12799,7 @@ if ('lutProfile' in obj) {
             customSvgCodes.filter(e => e && e.enabled && e.type !== 'webgl').forEach((entry, idx) => {
                 const nodes = parseCustomSvgCode(entry.code);
                 if (!nodes || !nodes.length) return;
+                const beforeEffect = last;
                 nodes.forEach((node, ni) => {
                     const imported = document.importNode(node, true);
                     const resultId = 'r_cust_' + idx + '_' + ni;
@@ -12485,6 +12808,21 @@ if ('lutProfile' in obj) {
                     filter.appendChild(imported);
                     last = resultId;
                 });
+                // Apply feBlend if a non-normal blend mode is set
+                const bm = entry.blendMode || 'normal';
+                // SVG feBlend only supports these modes; Photoshop-only modes (*) fall back to normal
+                const svgSupportedBlendModes = new Set(['normal','multiply','screen','overlay','darken','lighten','color-dodge','color-burn','hard-light','soft-light','difference','exclusion','hue','saturation','color','luminosity']);
+                const svgBm = svgSupportedBlendModes.has(bm) ? bm : 'normal';
+                if (svgBm !== 'normal') {
+                    const blendNode = document.createElementNS(svgNS, 'feBlend');
+                    blendNode.setAttribute('mode', svgBm);
+                    blendNode.setAttribute('in', beforeEffect);
+                    blendNode.setAttribute('in2', last);
+                    const blendResult = 'r_cust_blend_' + idx;
+                    blendNode.setAttribute('result', blendResult);
+                    filter.appendChild(blendNode);
+                    last = blendResult;
+                }
             });
         }
 
@@ -12802,6 +13140,9 @@ if ('lutProfile' in obj) {
                     loadCustomSvgCodes();
                     regenerateSvgImmediately();
                     updateCustomWebglOverlays();
+                    // Force canvas2d instances to recompile with new params by clearing _paramSig
+                    const video = getWebglPrimaryVideo() || getGpuPrimaryVideo() || getHudPrimaryVideo();
+                    CustomCanvas2DOverlayManager.forceRecompileAll(video);
                     updateCustomCanvas2DOverlays();
                     const modal = document.getElementById('gvf-custom-svg-modal');
                     if (modal && modal._gvfRenderList) modal._gvfRenderList();
