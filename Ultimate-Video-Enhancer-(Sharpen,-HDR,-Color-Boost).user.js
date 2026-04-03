@@ -3,7 +3,7 @@
 // @name:de      Ultimate Video Enhancer (Schärfe, HDR, Farben)
 // @namespace    gvf
 // @author       Freak288
-// @version      1.11.1
+// @version      1.11.2
 // @description  Instantly improve every video on any website. Adds real-time sharpening, HDR boost, better colors and contrast to all HTML5 videos.
 // @description:de  Verbessert sofort jedes Video auf jeder Website. Fügt Schärfe, HDR, bessere Farben und Kontrast in Echtzeit hinzu – für alle HTML5-Videos.
 // @match        *://*/*
@@ -379,6 +379,9 @@
         return _glslBlacklist.some(entry => host === entry || host.endsWith('.' + entry));
     }
 
+    const _isEdgeBrowser = /Edg\//.test(navigator.userAgent);
+    function isFilterBlockedByDrm() { return _isEdgeBrowser && isCurrentDomainGlslBlacklisted(); }
+
     loadGlslBlacklist();
 
     // ── DRM Auto-Detection ────────────────────────────────────────────────────
@@ -441,6 +444,15 @@
         _glslBlacklist.push(host);
         saveGlslBlacklist();
         log('[GVF DRM] ' + reason + ' → auto-blacklisted ' + host);
+        if (_isEdgeBrowser && renderMode === 'gpu') {
+            renderMode = 'svg';
+            gmSet(K.RENDER_MODE, renderMode);
+            setTimeout(() => {
+                try { deactivateWebGLMode(); } catch(_) {}
+                try { regenerateSvgImmediately(); } catch(_) {}
+                try { showToggleNotification('GPU Mode disabled', false, 'DRM detected — switched to SVG'); } catch(_) {}
+            }, 0);
+        }
         updateCustomWebglOverlays();
         const modal = document.getElementById('gvf-custom-svg-modal');
         if (modal && modal._gvfRenderList) modal._gvfRenderList();
@@ -3230,6 +3242,10 @@ ${mainBlock}`;
         }
 
         if (!skipVisualApply) {
+            if (isFilterBlockedByDrm()) {
+                showToggleNotification('LUT unavailable', false, 'Not supported in Edge — Widevine L1 + Hardware-Compositing');
+                return;
+            }
             if (renderMode === 'gpu') {
                 applyGpuFilter();
             } else {
@@ -11658,6 +11674,10 @@ if ('lutProfile' in obj) {
     }
 
     function toggleRenderMode() {
+        if (isFilterBlockedByDrm() && renderMode === 'svg') {
+            showToggleNotification('GPU Mode blocked', false, 'DRM site — SVG only on Edge');
+            return;
+        }
         renderMode = renderMode === 'svg' ? 'gpu' : 'svg';
         gmSet(K.RENDER_MODE, renderMode);
         logToggle('Render Mode (Ctrl+Alt+X)', renderMode === 'gpu', `Mode: ${renderMode === 'gpu' ? 'WebGL2 Canvas Pipeline' : 'SVG'}`);
@@ -11898,6 +11918,12 @@ if ('lutProfile' in obj) {
     }
 
     function applyGpuFilter() {
+        if (isFilterBlockedByDrm()) {
+            const s = document.getElementById(STYLE_ID);
+            if (s) s.remove();
+            scheduleOverlayUpdate();
+            return;
+        }
         if (renderMode === 'gpu' && webglPipeline && webglPipeline.active) {
             let style = document.getElementById(STYLE_ID);
             if (style) style.remove();
@@ -13202,6 +13228,12 @@ if ('lutProfile' in obj) {
             ensureSvgFilter(true);
         }
 
+        if (isFilterBlockedByDrm()) {
+            if (style) style.remove();
+            scheduleOverlayUpdate();
+            return;
+        }
+
         if (!style) {
             style = document.createElement('style');
             style.id = STYLE_ID;
@@ -13608,6 +13640,16 @@ if ('lutProfile' in obj) {
 
         loadCustomSvgCodes();
 
+        if (isFilterBlockedByDrm() && renderMode === 'gpu') {
+            renderMode = 'svg';
+            gmSet(K.RENDER_MODE, renderMode);
+            deactivateWebGLMode();
+            const gpuStyle = document.getElementById(STYLE_ID);
+            if (gpuStyle) gpuStyle.remove();
+            document.querySelectorAll('[' + WEBGL_WRAPPER_ATTR + ']').forEach(el => el.remove());
+            document.querySelectorAll('video').forEach(v => { v.style.opacity = ''; });
+        }
+
         if (renderMode === 'gpu') {
             applyGpuFilter();
         } else {
@@ -13728,6 +13770,7 @@ if ('lutProfile' in obj) {
 
             if (e.ctrlKey && e.altKey && !e.shiftKey && k === HDR_TOGGLE_KEY) {
                 e.preventDefault();
+                if (isFilterBlockedByDrm()) { showToggleNotification('Filter unavailable', false, 'Not supported in Edge — Widevine L1 + Hardware-Compositing'); return; }
                 const cur = normHDR();
                 if (cur === 0) {
                     const last = Number(gmGet(K.HDR_LAST, 0.3));
@@ -13755,6 +13798,7 @@ if ('lutProfile' in obj) {
 
             if (e.ctrlKey && e.altKey && !e.shiftKey && k === AUTO_KEY) {
                 e.preventDefault();
+                if (isFilterBlockedByDrm()) { showToggleNotification('Filter unavailable', false, 'Not supported in Edge — Widevine L1 + Hardware-Compositing'); return; }
                 setAutoOn(!autoOn);
                 updateCurrentProfileSettings();
                 return;
@@ -13762,23 +13806,34 @@ if ('lutProfile' in obj) {
 
             if (!(e.ctrlKey && e.altKey) || e.shiftKey) return;
 
+            const _drmBlocked = isFilterBlockedByDrm();
+            const _showDrmNote = () => showToggleNotification('Filter unavailable', false, 'Not supported in Edge — Widevine L1 + Hardware-Compositing');
+
             if (k === HK.base) {
-                enabled = !enabled; gmSet(K.enabled, enabled); e.preventDefault(); logToggle('Base (Ctrl+Alt+B)', enabled); showToggleNotification('Base Tone Chain', enabled);
+                enabled = !enabled; gmSet(K.enabled, enabled); e.preventDefault(); logToggle('Base (Ctrl+Alt+B)', enabled);
+                if (_drmBlocked) { _showDrmNote(); return; }
+                showToggleNotification('Base Tone Chain', enabled);
                 updateCurrentProfileSettings();
                 if (renderMode === 'gpu') applyGpuFilter(); else regenerateSvgImmediately(); return;
             }
             if (k === HK.moody) {
-                darkMoody = !darkMoody; gmSet(K.moody, darkMoody); e.preventDefault(); logToggle('Dark&Moody (Ctrl+Alt+D)', darkMoody); showToggleNotification('Dark & Moody', darkMoody);
+                darkMoody = !darkMoody; gmSet(K.moody, darkMoody); e.preventDefault(); logToggle('Dark&Moody (Ctrl+Alt+D)', darkMoody);
+                if (_drmBlocked) { _showDrmNote(); return; }
+                showToggleNotification('Dark & Moody', darkMoody);
                 updateCurrentProfileSettings();
                 if (renderMode === 'gpu') applyGpuFilter(); else regenerateSvgImmediately(); return;
             }
             if (k === HK.teal) {
-                tealOrange = !tealOrange; gmSet(K.teal, tealOrange); e.preventDefault(); logToggle('Teal&Orange (Ctrl+Alt+O)', tealOrange); showToggleNotification('Teal & Orange', tealOrange);
+                tealOrange = !tealOrange; gmSet(K.teal, tealOrange); e.preventDefault(); logToggle('Teal&Orange (Ctrl+Alt+O)', tealOrange);
+                if (_drmBlocked) { _showDrmNote(); return; }
+                showToggleNotification('Teal & Orange', tealOrange);
                 updateCurrentProfileSettings();
                 if (renderMode === 'gpu') applyGpuFilter(); else regenerateSvgImmediately(); return;
             }
             if (k === HK.vib) {
-                vibrantSat = !vibrantSat; gmSet(K.vib, vibrantSat); e.preventDefault(); logToggle('Vibrant (Ctrl+Alt+V)', vibrantSat); showToggleNotification('Vibrant & Saturated', vibrantSat);
+                vibrantSat = !vibrantSat; gmSet(K.vib, vibrantSat); e.preventDefault(); logToggle('Vibrant (Ctrl+Alt+V)', vibrantSat);
+                if (_drmBlocked) { _showDrmNote(); return; }
+                showToggleNotification('Vibrant & Saturated', vibrantSat);
                 updateCurrentProfileSettings();
                 if (renderMode === 'gpu') applyGpuFilter(); else regenerateSvgImmediately(); return;
             }
