@@ -3,7 +3,7 @@
 // @name:de      Ultimate Video Enhancer (Schärfe, HDR, Farben)
 // @namespace    gvf
 // @author       Freak288
-// @version      1.11.2
+// @version      1.11.3
 // @description  Instantly improve every video on any website. Adds real-time sharpening, HDR boost, better colors and contrast to all HTML5 videos.
 // @description:de  Verbessert sofort jedes Video auf jeder Website. Fügt Schärfe, HDR, bessere Farben und Kontrast in Echtzeit hinzu – für alle HTML5-Videos.
 // @match        *://*/*
@@ -674,20 +674,157 @@
         }).join('\n') + '\n';
     }
     // ─────────────────────────────────────────────────────────────────────────
+    // GLSL shared helpers (module-level so validateGlslCode can access them)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    let _isWeakGPU = false;
+
+    function _detectWeakGPU(gl) {
+        try {
+            const ext = gl.getExtension('WEBGL_debug_renderer_info');
+            if (!ext) return false;
+            const renderer = (gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) || '').toLowerCase();
+            const vendor   = (gl.getParameter(ext.UNMASKED_VENDOR_WEBGL)   || '').toLowerCase();
+            const isIntelIntegrated = /intel/i.test(vendor) && /uhd|hd graphics|\biris\b(?! xe)/i.test(renderer);
+            log('[GVF GPU] renderer="' + renderer + '" vendor="' + vendor + '" weakGPU=' + isIntelIntegrated);
+            return isIntelIntegrated;
+        } catch (_) { return false; }
+    }
+
+    function _normalizeUserFrag(src) {
+        // Strip @uniform and @select annotation lines — handled separately, not valid GLSL
+        let s = src.replace(/^\s*\/\/\s*@uniform[^\r\n]*/mg, '');
+        s = s.replace(/^\s*\/\/\s*@select[^\r\n]*/mg, '');
+
+        // Auto-strip #define and local float declarations that match @uniform/@select names
+        const uniformNames = parseUniformDefs(src).map(d => d.name);
+        uniformNames.forEach(name => {
+            s = s.replace(new RegExp('^\\s*#define\\s+' + name + '\\b[^\\r\\n]*', 'mg'), '');
+            s = s.replace(new RegExp('^\\s*(?:const\\s+)?float\\s+' + name + '\\s*=[^;]+;[^\\r\\n]*', 'mg'), '');
+        });
+
+        // Strip #version if present — we prepend our own
+        s = s.replace(/^\s*#version\s+\S+[\t ]*/mg, '');
+
+        // Strip duplicate precision qualifiers — we provide our own
+        s = s.replace(/^\s*precision\s+\w+\s+\w+\s*;\s*/mg, '');
+
+        // Strip duplicate declarations of our injected uniforms/ins/outs
+        s = s.replace(/^\s*uniform\s+sampler2D\s+u_video\s*;\s*/mg, '');
+        s = s.replace(/^\s*uniform\s+sampler2D\s+u_video_raw\s*;\s*/mg, '');
+        s = s.replace(/^\s*uniform\s+vec2\s+u_res\s*;\s*/mg, '');
+        s = s.replace(/^\s*uniform\s+float\s+u_time\s*;\s*/mg, '');
+        s = s.replace(/^\s*uniform\s+vec2\s+u_mouse\s*;\s*/mg, '');
+        s = s.replace(/^\s*uniform\s+float\s+u_strength\s*;\s*/mg, '');
+        s = s.replace(/^\s*uniform\s+float\s+u_layers\s*;\s*/mg, '');
+        s = s.replace(/^\s*uniform\s+float\s+u_zoom\s*;\s*/mg, '');
+        s = s.replace(/^\s*uniform\s+float\s+u_avg_lum\s*;\s*/mg, '');
+        s = s.replace(/^\s*uniform\s+float\s+u_avg_r\s*;\s*/mg, '');
+        s = s.replace(/^\s*uniform\s+float\s+u_avg_g\s*;\s*/mg, '');
+        s = s.replace(/^\s*uniform\s+float\s+u_avg_b\s*;\s*/mg, '');
+        s = s.replace(/^\s*uniform\s+float\s+u_contrast\s*;\s*/mg, '');
+        s = s.replace(/^\s*in\s+vec2\s+v_uv\s*;\s*/mg, '');
+        s = s.replace(/^\s*out\s+vec4\s+(?:fragColor|outColor)\s*;\s*/mg, '');
+
+        // Legacy GLSL ES 1.00 / Shadertoy compatibility
+        s = s.replace(/\bgl_FragColor\b/g, 'fragColor');
+        s = s.replace(/\bgl_FragData\s*\[\s*\d+\s*\]/g, 'fragColor');
+        s = s.replace(/\btexture2D\b/g, 'texture');
+        s = s.replace(/\btextureCube\b/g, 'texture');
+        s = s.replace(/\btexture2DLod(?:EXT)?\b/g, 'textureLod');
+        s = s.replace(/\btextureCubeLod(?:EXT)?\b/g, 'textureLod');
+        s = s.replace(/\btexture2DProj\b/g, 'textureProj');
+        s = s.replace(/\btextureCubeProj\b/g, 'textureProj');
+        s = s.replace(/\bshadow2D\b/g, 'texture');
+        s = s.replace(/\bvarying\b/g, 'in');
+        s = s.replace(/\battribute\b/g, 'in');
+
+        // Common legacy/user aliases -> internal names
+        s = s.replace(/\biChannel1\b/g, 'u_video_raw');
+        s = s.replace(/\biChannel0\b/g, 'u_video');
+        s = s.replace(/\biResolution\b/g, 'vec3(u_res, 0.0)');
+        s = s.replace(/\biTime\b/g, 'u_time');
+        s = s.replace(/\bvTexCoord\b/g, 'v_uv');
+        s = s.replace(/\bvTextureCoord\b/g, 'v_uv');
+        s = s.replace(/\btexCoord\b/g, 'v_uv');
+
+        // Remove duplicate varying declarations after alias normalization
+        s = s.replace(/^\s*(?:varying|in)\s+vec[234]\s+v_uv\s*;\s*/mg, '');
+
+        // Shadertoy: mainImage(out vec4 fragColor, in vec2 fragCoord) -> void main()
+        if (/\bmainImage\s*\(/.test(s) && !/\bvoid\s+main\s*\(/.test(s)) {
+            s = s + '\nvoid main(){\n    mainImage(fragColor, v_uv * u_res);\n}';
+        }
+
+        // Normalize obvious output aliases in user code
+        s = s.replace(/\boutColor\b/g, 'fragColor');
+
+        return s;
+    }
+
+    function _buildFragSrc(userSrc) {
+        const _customUniformDecls = parseUniformDefs(userSrc).map(d => `uniform float ${d.name};`).join('\n');
+        const body = _normalizeUserFrag(userSrc);
+
+        let mainBlock;
+        if (body.includes('void main')) {
+            mainBlock = body;
+        } else {
+            const fnRe = /\b(vec4|vec3|vec2|float|void)\s+(\w+)\s*\(([^)]*)\)/g;
+            let lastFn = null, m;
+            while ((m = fnRe.exec(body)) !== null) lastFn = { ret: m[1], name: m[2], params: m[3] };
+            if (lastFn && lastFn.ret !== 'void') {
+                const argMap = { 'sampler2D': 'u_video', 'float': '1.0', 'vec3': 'vec3(1.0)', 'vec4': 'vec4(1.0)', 'int': '1', 'bool': 'false' };
+                let vec2Count = 0;
+                const args = lastFn.params.split(',').map(p => {
+                    p = p.trim(); if (!p) return '';
+                    const type = p.split(/\s+/)[0];
+                    if (type === 'vec2') return vec2Count++ === 0 ? 'v_uv' : 'u_res';
+                    return argMap[type] !== undefined ? argMap[type] : '0.0';
+                }).filter(Boolean).join(', ');
+                const call = `${lastFn.name}(${args})`;
+                const fragAssign = lastFn.ret === 'vec4' ? `fragColor = ${call};`
+                    : lastFn.ret === 'vec3' ? `fragColor = vec4(${call}, 1.0);`
+                    : `float _r = ${call}; fragColor = vec4(_r, _r, _r, 1.0);`;
+                mainBlock = `${body}\nvoid main(){\n    ${fragAssign}\n}`;
+            } else {
+                mainBlock = `void main(){\n${body}\n}`;
+            }
+        }
+
+        return `#version 300 es
+${_isWeakGPU ? 'precision mediump float;\nprecision mediump sampler2D;' : 'precision highp float;\nprecision highp sampler2D;'}
+uniform sampler2D u_video;        // input frame for this pass (TEXTURE0)
+uniform sampler2D u_video_raw;    // raw video frame (TEXTURE1)
+uniform vec2 u_res;
+uniform float u_time;
+uniform vec2 u_mouse;
+uniform float u_strength;
+uniform float u_layers;
+uniform float u_zoom;
+uniform float u_avg_lum;
+uniform float u_avg_r;
+uniform float u_avg_g;
+uniform float u_avg_b;
+uniform float u_contrast;
+${_customUniformDecls}
+in vec2 v_uv;
+out vec4 fragColor;
+${mainBlock}`;
+    }
 
     const CustomWebglOverlayManager = (() => {
-        // ── Ping-Pong FBO Chain ────────────────────────────────────────────────
-        // All active GLSL entries share ONE WebGL2 context / ONE output canvas.
-        // Each filter pass reads from pingTex and writes into pongTex (then swaps).
-        // The final pass renders to screen (no FBO).  This lets N filters stack
-        // correctly regardless of z-order.
+        // ── Single WebGL2 context, Ping-Pong FBO Chain ─────────────────────────
+        // All GLSL entries share ONE WebGL2 context and one internal render chain.
+        // For blend modes: each entry that has a non-normal blend mode gets a
+        // dedicated 2D canvas that copies the GL output via drawImage and applies
+        // mix-blend-mode via CSS — no readPixels, no extra GL contexts.
         //
-        // _compiled: Map<entry.id, { program, vao, vb, ub, unifLocs, uniformDefs, sig }>
-        // _chain: ordered array of entry.ids currently active (matches customSvgCodes order)
+        // _blendCanvases: Map<entry.id, HTMLCanvasElement>  (2D overlay per entry)
 
-        const _compiled = new Map(); // compiled programs, keyed by entry.id
+        const _compiled = new Map();
+        const _blendCanvases = new Map(); // per-entry 2D blend canvas
 
-        // Shared GL state (created once, reused across all passes)
         let _gl = null;
         let _canvas = null;
         let _alive = true;
@@ -695,30 +832,12 @@
         let _video = null;
         let _hasFrame = false;
 
-        // FBO ping-pong pair
         let _pingFbo = null, _pongFbo = null;
         let _pingTex = null, _pongTex = null;
         let _fboW = 0, _fboH = 0;
 
-        // Filtered-frame offscreen canvas (CSS filter baked in)
         let _filteredCanvas = null, _filteredCtx = null;
-        // Raw frame texture (TEXTURE1, never changes between passes)
         let _texRaw = null;
-
-        // GPU capability flag — detected once in _initGL via WEBGL_debug_renderer_info.
-        let _isWeakGPU = false;
-
-        function _detectWeakGPU(gl) {
-            try {
-                const ext = gl.getExtension('WEBGL_debug_renderer_info');
-                if (!ext) return false;
-                const renderer = (gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) || '').toLowerCase();
-                const vendor   = (gl.getParameter(ext.UNMASKED_VENDOR_WEBGL)   || '').toLowerCase();
-                const isIntelIntegrated = /intel/i.test(vendor) && /uhd|hd graphics|\biris\b(?! xe)/i.test(renderer);
-                log('[GVF GPU] renderer="' + renderer + '" vendor="' + vendor + '" weakGPU=' + isIntelIntegrated);
-                return isIntelIntegrated;
-            } catch (_) { return false; }
-        }
 
         const _vsSource = `#version 300 es
 in vec2 a_pos;
@@ -741,131 +860,22 @@ void main(){
             return sh;
         }
 
-        // Normalize user GLSL300 fragment code to use internal uniform names
-        function _normalizeUserFrag(src) {
-            // Strip @uniform and @select annotation lines — handled separately, not valid GLSL
-            let s = src.replace(/^\s*\/\/\s*@uniform[^\r\n]*/mg, '');
-            s = s.replace(/^\s*\/\/\s*@select[^\r\n]*/mg, '');
+        // ── Per-instance GL helpers ────────────────────────────────────────────
 
-            // Auto-strip #define and local float declarations that match @uniform/@select names
-            const uniformNames = parseUniformDefs(src).map(d => d.name);
-            uniformNames.forEach(name => {
-                s = s.replace(new RegExp('^\\s*#define\\s+' + name + '\\b[^\\r\\n]*', 'mg'), '');
-                s = s.replace(new RegExp('^\\s*(?:const\\s+)?float\\s+' + name + '\\s*=[^;]+;[^\\r\\n]*', 'mg'), '');
-            });
-
-            // Strip #version if present — we prepend our own
-            s = s.replace(/^\s*#version\s+\S+[\t ]*/mg, '');
-
-            // Strip duplicate precision qualifiers — we provide our own
-            s = s.replace(/^\s*precision\s+\w+\s+\w+\s*;\s*/mg, '');
-
-            // Strip duplicate declarations of our injected uniforms/ins/outs
-            s = s.replace(/^\s*uniform\s+sampler2D\s+u_video\s*;\s*/mg, '');
-            s = s.replace(/^\s*uniform\s+sampler2D\s+u_video_raw\s*;\s*/mg, '');
-            s = s.replace(/^\s*uniform\s+vec2\s+u_res\s*;\s*/mg, '');
-            s = s.replace(/^\s*uniform\s+float\s+u_time\s*;\s*/mg, '');
-            s = s.replace(/^\s*uniform\s+vec2\s+u_mouse\s*;\s*/mg, '');
-            s = s.replace(/^\s*uniform\s+float\s+u_strength\s*;\s*/mg, '');
-            s = s.replace(/^\s*uniform\s+float\s+u_layers\s*;\s*/mg, '');
-            s = s.replace(/^\s*uniform\s+float\s+u_zoom\s*;\s*/mg, '');
-            s = s.replace(/^\s*uniform\s+float\s+u_avg_lum\s*;\s*/mg, '');
-            s = s.replace(/^\s*uniform\s+float\s+u_avg_r\s*;\s*/mg, '');
-            s = s.replace(/^\s*uniform\s+float\s+u_avg_g\s*;\s*/mg, '');
-            s = s.replace(/^\s*uniform\s+float\s+u_avg_b\s*;\s*/mg, '');
-            s = s.replace(/^\s*uniform\s+float\s+u_contrast\s*;\s*/mg, '');
-            s = s.replace(/^\s*in\s+vec2\s+v_uv\s*;\s*/mg, '');
-            s = s.replace(/^\s*out\s+vec4\s+(?:fragColor|outColor)\s*;\s*/mg, '');
-
-            // Legacy GLSL ES 1.00 / Shadertoy compatibility
-            s = s.replace(/\bgl_FragColor\b/g, 'fragColor');
-            s = s.replace(/\bgl_FragData\s*\[\s*\d+\s*\]/g, 'fragColor');
-            s = s.replace(/\btexture2D\b/g, 'texture');
-            s = s.replace(/\btextureCube\b/g, 'texture');
-            s = s.replace(/\btexture2DLod(?:EXT)?\b/g, 'textureLod');
-            s = s.replace(/\btextureCubeLod(?:EXT)?\b/g, 'textureLod');
-            s = s.replace(/\btexture2DProj\b/g, 'textureProj');
-            s = s.replace(/\btextureCubeProj\b/g, 'textureProj');
-            s = s.replace(/\bshadow2D\b/g, 'texture');
-            s = s.replace(/\bvarying\b/g, 'in');
-            s = s.replace(/\battribute\b/g, 'in');
-
-            // Common legacy/user aliases -> internal names
-            s = s.replace(/\biChannel1\b/g, 'u_video_raw');
-            s = s.replace(/\biChannel0\b/g, 'u_video');
-            s = s.replace(/\biResolution\b/g, 'vec3(u_res, 0.0)');
-            s = s.replace(/\biTime\b/g, 'u_time');
-            s = s.replace(/\bvTexCoord\b/g, 'v_uv');
-            s = s.replace(/\bvTextureCoord\b/g, 'v_uv');
-            s = s.replace(/\btexCoord\b/g, 'v_uv');
-
-            // Remove duplicate varying declarations after alias normalization
-            s = s.replace(/^\s*(?:varying|in)\s+vec[234]\s+v_uv\s*;\s*/mg, '');
-
-            // Shadertoy: mainImage(out vec4 fragColor, in vec2 fragCoord) -> void main()
-            if (/\bmainImage\s*\(/.test(s) && !/\bvoid\s+main\s*\(/.test(s)) {
-                s = s + '\nvoid main(){\n    mainImage(fragColor, v_uv * u_res);\n}';
+        function _compileShader(gl, type, src) {
+            const sh = gl.createShader(type);
+            gl.shaderSource(sh, src);
+            gl.compileShader(sh);
+            if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+                const err = gl.getShaderInfoLog(sh);
+                gl.deleteShader(sh);
+                throw new Error(err);
             }
-
-            // Normalize obvious output aliases in user code
-            s = s.replace(/\boutColor\b/g, 'fragColor');
-
-            return s;
-        }
-
-        function _buildFragSrc(userSrc) {
-            const _customUniformDecls = parseUniformDefs(userSrc).map(d => `uniform float ${d.name};`).join('\n');
-            const body = _normalizeUserFrag(userSrc);
-
-            let mainBlock;
-            if (body.includes('void main')) {
-                mainBlock = body;
-            } else {
-                const fnRe = /\b(vec4|vec3|vec2|float|void)\s+(\w+)\s*\(([^)]*)\)/g;
-                let lastFn = null, m;
-                while ((m = fnRe.exec(body)) !== null) lastFn = { ret: m[1], name: m[2], params: m[3] };
-                if (lastFn && lastFn.ret !== 'void') {
-                    const argMap = { 'sampler2D': 'u_video', 'float': '1.0', 'vec3': 'vec3(1.0)', 'vec4': 'vec4(1.0)', 'int': '1', 'bool': 'false' };
-                    let vec2Count = 0;
-                    const args = lastFn.params.split(',').map(p => {
-                        p = p.trim(); if (!p) return '';
-                        const type = p.split(/\s+/)[0];
-                        if (type === 'vec2') return vec2Count++ === 0 ? 'v_uv' : 'u_res';
-                        return argMap[type] !== undefined ? argMap[type] : '0.0';
-                    }).filter(Boolean).join(', ');
-                    const call = `${lastFn.name}(${args})`;
-                    const fragAssign = lastFn.ret === 'vec4' ? `fragColor = ${call};`
-                        : lastFn.ret === 'vec3' ? `fragColor = vec4(${call}, 1.0);`
-                        : `float _r = ${call}; fragColor = vec4(_r, _r, _r, 1.0);`;
-                    mainBlock = `${body}\nvoid main(){\n    ${fragAssign}\n}`;
-                } else {
-                    mainBlock = `void main(){\n${body}\n}`;
-                }
-            }
-
-            return `#version 300 es
-${_isWeakGPU ? 'precision mediump float;\nprecision mediump sampler2D;' : 'precision highp float;\nprecision highp sampler2D;'}
-uniform sampler2D u_video;        // input frame for this pass (TEXTURE0)
-uniform sampler2D u_video_raw;    // raw video frame (TEXTURE1)
-uniform vec2 u_res;
-uniform float u_time;
-uniform vec2 u_mouse;
-uniform float u_strength;
-uniform float u_layers;
-uniform float u_zoom;
-uniform float u_avg_lum;
-uniform float u_avg_r;
-uniform float u_avg_g;
-uniform float u_avg_b;
-uniform float u_contrast;
-${_customUniformDecls}
-in vec2 v_uv;
-out vec4 fragColor;
-${mainBlock}`;
+            return sh;
         }
 
         function _initGL(video) {
-            if (_canvas && _gl) return true; // already initialized
+            if (_canvas && _gl) return true;
             _canvas = document.createElement('canvas');
             _canvas.setAttribute('data-gvf-custom-webgl-chain', '1');
             _canvas.style.cssText = `position:absolute;pointer-events:none;z-index:0;display:block;top:0;left:0;`;
@@ -888,8 +898,6 @@ ${mainBlock}`;
             _gl.texParameteri(_gl.TEXTURE_2D, _gl.TEXTURE_MAG_FILTER, _gl.LINEAR);
             _gl.pixelStorei(_gl.UNPACK_FLIP_Y_WEBGL, true);
             _gl.bindTexture(_gl.TEXTURE_2D, null);
-
-            // Insert once, directly after video
             const parent = video.parentElement || document.body;
             parent.insertBefore(_canvas, video.nextSibling);
             return true;
@@ -898,7 +906,6 @@ ${mainBlock}`;
         function _ensureFbos(w, h) {
             const gl = _gl;
             if (_fboW === w && _fboH === h && _pingFbo && _pongFbo) return;
-            // Destroy old
             if (_pingFbo) { gl.deleteFramebuffer(_pingFbo); gl.deleteTexture(_pingTex); }
             if (_pongFbo) { gl.deleteFramebuffer(_pongFbo); gl.deleteTexture(_pongTex); }
             function makeFbo() {
@@ -927,7 +934,6 @@ ${mainBlock}`;
             const existing = _compiled.get(entry.id);
             if (existing && existing.sig === sig) return existing;
             if (existing) {
-                // recompile — destroy old
                 try { gl.deleteProgram(existing.program); gl.deleteVertexArray(existing.vao); gl.deleteBuffer(existing.vb); gl.deleteBuffer(existing.ub); } catch(_) {}
                 _compiled.delete(entry.id);
             }
@@ -972,11 +978,9 @@ ${mainBlock}`;
                 uniformDefs.forEach(d => { if (entry.uniforms[d.name] === undefined) entry.uniforms[d.name] = d.def; });
                 const customLocs = {};
                 uniformDefs.forEach(d => { customLocs[d.name] = gl.getUniformLocation(program, d.name); });
-
                 gl.useProgram(program);
                 gl.uniform1i(unifLocs.uVideo, 0);
                 gl.uniform1i(unifLocs.uVideoRaw, 1);
-
                 const rec = { program, vao, vb, ub, unifLocs, uniformDefs, customLocs, sig };
                 _compiled.set(entry.id, rec);
                 return rec;
@@ -1020,25 +1024,66 @@ ${mainBlock}`;
             }
         }
 
+        // ── Blend canvas helpers ───────────────────────────────────────────────
+        // For entries with non-normal blend modes: a 2D canvas sits on top of the
+        // video and copies the GL result of that specific shader pass via drawImage.
+        // The main GL canvas stays hidden (display:none) in this case; instead the
+        // 2D blend canvases are what the user sees and what bakeWebglOverlaysOntoCanvas picks up.
+
+        function _ensureBlendCanvas(entry, video) {
+            const bm = entry.blendMode || 'normal';
+            if (bm === 'normal') {
+                // No blend canvas needed — use main GL canvas directly
+                _removeBlendCanvas(entry.id);
+                return null;
+            }
+            let bc = _blendCanvases.get(entry.id);
+            if (!bc) {
+                bc = document.createElement('canvas');
+                bc.setAttribute('data-gvf-custom-webgl-chain', '1');
+                bc.style.cssText = 'position:absolute;pointer-events:none;z-index:1;display:none;top:0;left:0;';
+                _blendCanvases.set(entry.id, bc);
+                const parent = video.parentElement || document.body;
+                parent.insertBefore(bc, video.nextSibling);
+            }
+            bc.style.mixBlendMode = bm;
+            return bc;
+        }
+
+        function _removeBlendCanvas(id) {
+            const bc = _blendCanvases.get(id);
+            if (bc) { if (bc.isConnected) bc.remove(); _blendCanvases.delete(id); }
+        }
+
+        function _removeAllBlendCanvases() {
+            for (const bc of _blendCanvases.values()) { if (bc.isConnected) bc.remove(); }
+            _blendCanvases.clear();
+        }
+
+        function _reparentBlendCanvas(bc, video) {
+            if (!bc || !video) return;
+            const parent = video.parentElement || document.body;
+            if (bc.parentNode !== parent) parent.insertBefore(bc, video.nextSibling);
+        }
+
         function _doRender(video) {
             if (!_gl || !_canvas) return;
             const gl = _gl;
             const activeEntries = customSvgCodes.filter(e => e && e.enabled && e.type === 'webgl');
             if (!activeEntries.length || !video || video.readyState < 2) {
                 _canvas.style.display = 'none';
+                for (const bc of _blendCanvases.values()) bc.style.display = 'none';
                 return;
             }
 
             _reparentCanvas(video);
             const pr = (_canvas.parentElement || document.body).getBoundingClientRect();
             const r = video.getBoundingClientRect();
-            if (!r || r.width < 1 || r.height < 1) { _canvas.style.display = 'none'; return; }
-            _canvas.style.display = 'block';
-            _canvas.style.position = 'absolute';
-            _canvas.style.left = (r.left - pr.left) + 'px';
-            _canvas.style.top  = (r.top  - pr.top)  + 'px';
-            _canvas.style.width  = r.width  + 'px';
-            _canvas.style.height = r.height + 'px';
+            if (!r || r.width < 1 || r.height < 1) {
+                _canvas.style.display = 'none';
+                for (const bc of _blendCanvases.values()) bc.style.display = 'none';
+                return;
+            }
 
             const RAW_W = video.videoWidth, RAW_H = video.videoHeight;
             if (!RAW_W || !RAW_H) return;
@@ -1051,7 +1096,7 @@ ${mainBlock}`;
             gl.viewport(0, 0, w, h);
             _ensureFbos(w, h);
 
-            // ── Bake filtered frame into TEXTURE0 source ──────────────────────
+            // Bake filtered frame into TEXTURE0
             let sourceTex = null;
             try {
                 if (_filteredCanvas.width !== w || _filteredCanvas.height !== h) { _filteredCanvas.width = w; _filteredCanvas.height = h; }
@@ -1080,62 +1125,119 @@ ${mainBlock}`;
                 } else { _canvas.style.display = 'none'; return; }
             }
 
-            // ── Upload raw video to TEXTURE1 ──────────────────────────────────
+            // Upload raw video to TEXTURE1
             if (!_isWeakGPU || !video.paused) {
                 try {
                     gl.activeTexture(gl.TEXTURE1);
                     gl.bindTexture(gl.TEXTURE_2D, _texRaw);
                     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
                     gl.bindTexture(gl.TEXTURE_2D, null);
-                } catch (_) { /* tainted — reuse last upload */ }
+                } catch (_) {}
             }
 
             GvfFrameAnalyzer.tick();
 
-            // ── Ping-Pong chain ──────────────────────────────────────────────────
-            // currentSrc = sourceTex (ping or pong), currentDst = the other
+            // Ping-Pong chain — render each entry, copy to blend canvas if needed
             let currentSrc = _pingTex;
             let currentDstFbo = _pongFbo; let currentDstTex = _pongTex;
 
             const n = activeEntries.length;
+
+            // Determine which entries need blend canvases
+            const allNonNormal = activeEntries.every(e => (e.blendMode || 'normal') !== 'normal');
+
             for (let i = 0; i < n; i++) {
                 const entry = activeEntries[i];
                 const rec = _compileEntry(entry);
                 if (!rec) continue;
 
+                const bm = entry.blendMode || 'normal';
+                const needsBlendCanvas = bm !== 'normal';
                 const isLast = (i === n - 1);
 
-                // Bind destination: FBO for intermediate, screen for last
-                if (isLast) {
+                if (needsBlendCanvas) {
+                    // Render to screen so _canvas has the output, then copy to 2D blend canvas
                     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+                    gl.viewport(0, 0, w, h);
+                    gl.useProgram(rec.program);
+                    gl.bindVertexArray(rec.vao);
+                    gl.activeTexture(gl.TEXTURE0);
+                    gl.bindTexture(gl.TEXTURE_2D, currentSrc);
+                    gl.uniform1i(rec.unifLocs.uVideo, 0);
+                    gl.activeTexture(gl.TEXTURE1);
+                    gl.bindTexture(gl.TEXTURE_2D, _texRaw);
+                    gl.uniform1i(rec.unifLocs.uVideoRaw, 1);
+                    _setCommonUniforms(gl, rec.unifLocs, rec.uniformDefs, rec.customLocs, entry, RAW_W, RAW_H);
+                    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+                    gl.bindVertexArray(null);
+
+                    // Copy to 2D blend canvas
+                    const bc = _ensureBlendCanvas(entry, video);
+                    if (bc) {
+                        if (bc.width !== w || bc.height !== h) { bc.width = w; bc.height = h; }
+                        bc.style.display = 'block';
+                        bc.style.position = 'absolute';
+                        bc.style.left = (r.left - pr.left) + 'px';
+                        bc.style.top  = (r.top  - pr.top)  + 'px';
+                        bc.style.width  = r.width  + 'px';
+                        bc.style.height = r.height + 'px';
+                        _reparentBlendCanvas(bc, video);
+                        try {
+                            const ctx2d = bc.getContext('2d');
+                            ctx2d.clearRect(0, 0, w, h);
+                            ctx2d.drawImage(_canvas, 0, 0, w, h);
+                        } catch(_) {}
+                    }
+                    // Do NOT advance currentSrc — next pass still reads from same source
                 } else {
-                    gl.bindFramebuffer(gl.FRAMEBUFFER, currentDstFbo);
-                }
-                gl.viewport(0, 0, w, h);
+                    _removeBlendCanvas(entry.id);
 
-                gl.useProgram(rec.program);
-                gl.bindVertexArray(rec.vao);
+                    // Normal blend: render into FBO (intermediate) or screen (last)
+                    if (isLast) {
+                        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+                    } else {
+                        gl.bindFramebuffer(gl.FRAMEBUFFER, currentDstFbo);
+                    }
+                    gl.viewport(0, 0, w, h);
+                    gl.useProgram(rec.program);
+                    gl.bindVertexArray(rec.vao);
+                    gl.activeTexture(gl.TEXTURE0);
+                    gl.bindTexture(gl.TEXTURE_2D, currentSrc);
+                    gl.uniform1i(rec.unifLocs.uVideo, 0);
+                    gl.activeTexture(gl.TEXTURE1);
+                    gl.bindTexture(gl.TEXTURE_2D, _texRaw);
+                    gl.uniform1i(rec.unifLocs.uVideoRaw, 1);
+                    _setCommonUniforms(gl, rec.unifLocs, rec.uniformDefs, rec.customLocs, entry, RAW_W, RAW_H);
+                    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+                    gl.bindVertexArray(null);
 
-                // TEXTURE0 = current source (output of previous pass or initial frame)
-                gl.activeTexture(gl.TEXTURE0);
-                gl.bindTexture(gl.TEXTURE_2D, currentSrc);
-                gl.uniform1i(rec.unifLocs.uVideo, 0);
-
-                // TEXTURE1 = raw video (constant)
-                gl.activeTexture(gl.TEXTURE1);
-                gl.bindTexture(gl.TEXTURE_2D, _texRaw);
-                gl.uniform1i(rec.unifLocs.uVideoRaw, 1);
-
-                _setCommonUniforms(gl, rec.unifLocs, rec.uniformDefs, rec.customLocs, entry, RAW_W, RAW_H);
-                gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-                gl.bindVertexArray(null);
-
-                if (!isLast) {
-                    // Swap: output becomes next input
-                    if (currentDstTex === _pongTex) { currentSrc = _pongTex; currentDstFbo = _pingFbo; currentDstTex = _pingTex; }
-                    else { currentSrc = _pingTex; currentDstFbo = _pongFbo; currentDstTex = _pongTex; }
+                    if (!isLast) {
+                        if (currentDstTex === _pongTex) { currentSrc = _pongTex; currentDstFbo = _pingFbo; currentDstTex = _pingTex; }
+                        else { currentSrc = _pingTex; currentDstFbo = _pongFbo; currentDstTex = _pongTex; }
+                    }
                 }
             }
+
+            // Show/hide main GL canvas
+            if (allNonNormal) {
+                _canvas.style.display = 'none';
+            } else {
+                _canvas.style.display = 'block';
+                _canvas.style.position = 'absolute';
+                _canvas.style.left = (r.left - pr.left) + 'px';
+                _canvas.style.top  = (r.top  - pr.top)  + 'px';
+                _canvas.style.width  = r.width  + 'px';
+                _canvas.style.height = r.height + 'px';
+                _canvas.style.mixBlendMode = 'normal';
+            }
+
+            // Hide blend canvases for entries no longer active
+            for (const [id, bc] of _blendCanvases) {
+                if (!activeEntries.find(e => e.id === id)) {
+                    bc.style.display = 'none';
+                }
+            }
+
             _hasFrame = true;
         }
 
@@ -1157,10 +1259,9 @@ ${mainBlock}`;
             _video = video;
             const activeEntries = customSvgCodes.filter(e => e && e.enabled && e.type === 'webgl');
 
-            // Destroy GL state entirely if no active entries
             if (!activeEntries.length) {
-                if (_canvas) { _canvas.style.display = 'none'; }
-                // Clean up compiled programs that are no longer needed
+                if (_canvas) _canvas.style.display = 'none';
+                for (const bc of _blendCanvases.values()) bc.style.display = 'none';
                 for (const [id] of _compiled.entries()) {
                     if (!customSvgCodes.find(e => e.id === id)) {
                         const rec = _compiled.get(id);
@@ -1171,7 +1272,6 @@ ${mainBlock}`;
                 return;
             }
 
-            // Initialize GL context if needed
             if (!_gl && video) {
                 if (!_initGL(video)) return;
                 _drawLoop();
@@ -1179,13 +1279,12 @@ ${mainBlock}`;
                 _reparentCanvas(video);
             }
 
-            // Apply blend mode from first active GLSL entry to shared canvas
-            if (_canvas) {
-                const firstBlend = activeEntries.length ? (activeEntries[0].blendMode || 'normal') : 'normal';
-                _canvas.style.mixBlendMode = firstBlend;
+            // Sync blend canvases: remove those for entries no longer in active list
+            for (const id of _blendCanvases.keys()) {
+                if (!activeEntries.find(e => e.id === id)) _removeBlendCanvas(id);
             }
 
-            // Remove compiled programs for entries that no longer exist at all
+            // Remove compiled programs for stale entries
             for (const [id] of _compiled.entries()) {
                 if (!customSvgCodes.find(e => e.id === id)) {
                     const rec = _compiled.get(id);
@@ -1195,11 +1294,11 @@ ${mainBlock}`;
             }
         }
 
-
         function destroyAll() {
             _alive = false;
             if (_rafId) cancelAnimationFrame(_rafId);
             if (_canvas && _canvas.isConnected) _canvas.remove();
+            _removeAllBlendCanvases();
             if (_gl) {
                 if (_pingFbo) { _gl.deleteFramebuffer(_pingFbo); _gl.deleteTexture(_pingTex); }
                 if (_pongFbo) { _gl.deleteFramebuffer(_pongFbo); _gl.deleteTexture(_pongTex); }
@@ -1209,22 +1308,23 @@ ${mainBlock}`;
                 }
             }
             _compiled.clear();
-            _instances.clear();
             _gl = null; _canvas = null;
             _pingFbo = _pongFbo = _pingTex = _pongTex = null;
             _fboW = _fboH = 0;
         }
 
-        // Stop rendering and hide canvas immediately without destroying GL state permanently.
-        // Used when domain is blacklisted mid-session — _alive stays true so update() can restart later.
         function stopAndHide() {
             _video = null;
             if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
             if (_canvas) _canvas.style.display = 'none';
+            for (const bc of _blendCanvases.values()) bc.style.display = 'none';
         }
 
         function reparentAll() {
             if (_video) _reparentCanvas(_video);
+            if (_video) {
+                for (const bc of _blendCanvases.values()) _reparentBlendCanvas(bc, _video);
+            }
         }
 
         return { update, destroyAll, stopAndHide, reparentAll };
@@ -2196,7 +2296,7 @@ ${mainBlock}`;
             const blendNote = document.createElement('span');
             blendNote.style.cssText = `font-size:10px;color:#666;white-space:nowrap;flex-shrink:0;`;
             const _updateBlendNote = (type) => {
-                blendNote.textContent = type === 'webgl' ? '(GLSL: shared)' : '';
+                blendNote.textContent = '';
                 blendSelect.disabled = false;
                 blendSelect.style.opacity = '1';
             };
