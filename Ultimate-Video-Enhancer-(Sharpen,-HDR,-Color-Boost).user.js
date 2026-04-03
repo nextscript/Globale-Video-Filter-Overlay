@@ -3,7 +3,7 @@
 // @name:de      Ultimate Video Enhancer (Schärfe, HDR, Farben)
 // @namespace    gvf
 // @author       Freak288
-// @version      1.11.6
+// @version      1.11.7
 // @description  Instantly improve every video on any website. Adds real-time sharpening, HDR boost, better colors and contrast to all HTML5 videos.
 // @description:de  Verbessert sofort jedes Video auf jeder Website. Fügt Schärfe, HDR, bessere Farben und Kontrast in Echtzeit hinzu – für alle HTML5-Videos.
 // @match        *://*/*
@@ -389,6 +389,11 @@
     // Tests if the current video is DRM-protected by attempting a canvas readback.
     // If blocked → auto-adds hostname to GLSL blacklist and disables GLSL overlays.
     let _drmCheckScheduled = false;
+    // Black-pixel check requires N consecutive positives to avoid false positives
+    // from dark scenes, loading frames, or intro sequences (e.g. YouTube, Twitch).
+    const DRM_BLACK_CONFIRM_NEEDED = 3;
+    const DRM_BLACK_CONFIRM_INTERVAL = 2000; // ms between each confirm check
+    let _drmBlackConfirms = 0;
 
     function scheduleDrmCheck(delay = 2000) {
         if (_drmCheckScheduled) return;
@@ -403,7 +408,8 @@
     function _runDrmCheck() {
         if (isCurrentDomainGlslBlacklisted()) return;
         const all = Array.from(document.querySelectorAll('video'));
-        const video = all.find(v => !v.paused && !v.ended && v.readyState >= 1 && v.videoWidth > 0)
+        // Prefer a playing, non-ended video with actual dimensions
+        const video = all.find(v => !v.paused && !v.ended && v.readyState >= 2 && v.videoWidth > 0)
                    || all.find(v => v.videoWidth > 0)
                    || all[0] || null;
         if (!video) { log('[GVF DRM] No video found'); return; }
@@ -412,30 +418,46 @@
         // Method 1: EME mediaKeys — most reliable, no false positives
         const hasDrm = !!(video.mediaKeys || video.webkitMediaKeys || video.mozMediaKeys);
         if (hasDrm) {
+            _drmBlackConfirms = 0;
             _autoBlacklistHost('EME mediaKeys detected');
             return;
         }
 
-        // Method 2: Black pixel check — Widevine on Netflix returns black frames on readback
+        // Method 2: Black pixel check — Widevine on Netflix returns black frames on readback.
+        // Requires DRM_BLACK_CONFIRM_NEEDED consecutive positive checks to avoid false positives
+        // from dark scenes, loading frames, intro sequences, etc. (YouTube, Twitch, etc.).
+        // NOTE: SecurityError alone is NOT a reliable DRM signal — it also occurs on cross-origin
+        // CDN video elements that are not DRM-protected (e.g. Twitch, YouTube). Ignored here.
         try {
             const c = document.createElement('canvas');
             c.width = 16; c.height = 16;
             const ctx = c.getContext('2d');
             ctx.drawImage(video, 0, 0, 16, 16);
             const px = ctx.getImageData(0, 0, 16, 16).data;
-            // Count pixels — if >90% are pure black (0,0,0) the content is DRM-blanked
             let black = 0;
             for (let i = 0; i < px.length; i += 4) {
                 if (px[i] < 4 && px[i+1] < 4 && px[i+2] < 4) black++;
             }
             const ratio = black / (px.length / 4);
-            log('[GVF DRM] black pixel ratio=' + ratio.toFixed(2) + ' mediaKeys=' + hasDrm);
+            log('[GVF DRM] black pixel ratio=' + ratio.toFixed(2) + ' confirms=' + _drmBlackConfirms + '/' + DRM_BLACK_CONFIRM_NEEDED);
             if (ratio > 0.9) {
-                _autoBlacklistHost('black frame readback (' + (ratio * 100).toFixed(0) + '% black)');
+                _drmBlackConfirms++;
+                if (_drmBlackConfirms >= DRM_BLACK_CONFIRM_NEEDED) {
+                    _drmBlackConfirms = 0;
+                    _autoBlacklistHost('black frame readback ×' + DRM_BLACK_CONFIRM_NEEDED + ' (' + (ratio * 100).toFixed(0) + '% black)');
+                } else {
+                    // Schedule another check to confirm
+                    setTimeout(() => _runDrmCheck(), DRM_BLACK_CONFIRM_INTERVAL);
+                }
+            } else {
+                // Non-black frame: reset confirm counter, video is readable → not DRM
+                _drmBlackConfirms = 0;
             }
         } catch (e) {
-            // SecurityError → cross-origin DRM
-            _autoBlacklistHost('SecurityError on readback');
+            // SecurityError can occur on cross-origin CDN streams (e.g. YouTube, Twitch) without DRM.
+            // Do NOT auto-blacklist on SecurityError alone — it causes false positives on non-DRM sites.
+            log('[GVF DRM] readback error (not blacklisting): ' + e.name);
+            _drmBlackConfirms = 0;
         }
     }
 
