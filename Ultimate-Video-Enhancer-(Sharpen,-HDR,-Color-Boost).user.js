@@ -3,7 +3,7 @@
 // @name:de      Ultimate Video Enhancer (Schärfe, HDR, Farben)
 // @namespace    gvf
 // @author       Freak288
-// @version      1.11.5
+// @version      1.11.6
 // @description  Instantly improve every video on any website. Adds real-time sharpening, HDR boost, better colors and contrast to all HTML5 videos.
 // @description:de  Verbessert sofort jedes Video auf jeder Website. Fügt Schärfe, HDR, bessere Farben und Kontrast in Echtzeit hinzu – für alle HTML5-Videos.
 // @match        *://*/*
@@ -1730,7 +1730,10 @@ void main(){
                     y: Math.max(0, Math.min(1, (rawMy - vr.top)  / (vr.height || 1))),
                 };
                 const u_zoom = typeof _scrollZoom !== 'undefined' ? _scrollZoom : 1.0;
-                try { fn(ctx, canvas, video, canvas.width, canvas.height, frameMs, u_mouse, u_zoom); } catch(_) {}
+                try { fn(ctx, canvas, video, canvas.width, canvas.height, frameMs, u_mouse, u_zoom); } catch(e) {
+                    ctx.font = '11px monospace'; ctx.fillStyle = '#ff4444';
+                    ctx.fillText('[GVF Audio] ' + e.message, 8, 20);
+                }
                 ctx.restore();
                 inst.rafId = requestAnimationFrame(drawLoop);
             };
@@ -1738,17 +1741,21 @@ void main(){
             const parent = video.parentElement || document.body;
             parent.insertBefore(canvas, video.nextSibling);
 
-            const inst = { canvas, fn, rafId: requestAnimationFrame(drawLoop), alive };
+            const inst = { canvas, fn, rafId: null, alive };
             inst._stop = () => { alive = false; };
             inst._paramSig = JSON.stringify(entry.params || {});
+            inst.rafId = requestAnimationFrame(drawLoop);
             return inst;
         }
 
         function _destroyInstance(inst) {
             if (inst._stop) inst._stop();
             if (inst.rafId) cancelAnimationFrame(inst.rafId);
+            // Cleanup-Hook: stoppt SpeechRecognition, AudioContext, Timer
+            if (inst.canvas && typeof inst.canvas._gvfAudioCleanup === 'function') {
+                try { inst.canvas._gvfAudioCleanup(); } catch(_) {}
+            }
             if (inst.canvas && inst.canvas.isConnected) inst.canvas.remove();
-            // Clean up any speech recognition state stored on window
         }
 
         function update(video) {
@@ -1817,6 +1824,54 @@ void main(){
         const video = getWebglPrimaryVideo() || getGpuPrimaryVideo() || getHudPrimaryVideo();
         CustomAudioOverlayManager.update(video);
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // GVF Shared Audio Context
+    // createMediaElementSource() kann pro Video nur einmal aufgerufen werden.
+    // Alle Audio-Filter teilen sich einen einzigen AudioContext + AnalyserNode.
+    // Zugriff aus Filter-Code: window.__gvfAudio(video) → { analyser, actx }
+    // ─────────────────────────────────────────────────────────────────────────
+    (function initGvfSharedAudio() {
+        if (unsafeWindow.__gvfAudio) return;
+        const _map = new WeakMap(); // video → { actx, analyser, src }
+        unsafeWindow.__gvfAudio = function(video) {
+            if (!video) return null;
+            if (_map.has(video)) {
+                const s = _map.get(video);
+                if (s.actx.state === 'suspended') s.actx.resume();
+                return s;
+            }
+            try {
+                const _w = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+                const AC = _w.AudioContext || _w.webkitAudioContext;
+                const actx = new AC();
+                const src = actx.createMediaElementSource(video);
+                const analyser = actx.createAnalyser();
+                analyser.fftSize = 2048;
+                analyser.smoothingTimeConstant = 0.8;
+                src.connect(analyser);
+                src.connect(actx.destination);
+                const entry = { actx, analyser, src };
+                _map.set(video, entry);
+                if (actx.state === 'suspended') actx.resume();
+                return entry;
+            } catch(e) {
+                // Video bereits in anderem AudioContext — versuche bestehenden zu finden
+                try {
+                    // Fallback: nur Analyser ohne Source (kein Audio-Tap möglich)
+                    const _w = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+                    const AC = _w.AudioContext || _w.webkitAudioContext;
+                    const actx = new AC();
+                    const analyser = actx.createAnalyser();
+                    analyser.fftSize = 2048;
+                    analyser.smoothingTimeConstant = 0.8;
+                    const entry = { actx, analyser, src: null, fallback: true, error: e.message };
+                    _map.set(video, entry);
+                    return entry;
+                } catch(_) { return null; }
+            }
+        };
+    })();
 
     // ─────────────────────────────────────────────────────────────────────────
     // MediaPipe Loader
