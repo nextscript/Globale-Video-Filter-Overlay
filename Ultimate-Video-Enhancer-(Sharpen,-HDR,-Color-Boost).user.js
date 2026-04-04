@@ -3,7 +3,7 @@
 // @name:de      Ultimate Video Enhancer (Schärfe, HDR, Farben)
 // @namespace    gvf
 // @author       Freak288
-// @version      1.11.7
+// @version      1.11.8
 // @description  Instantly improve every video on any website. Adds real-time sharpening, HDR boost, better colors and contrast to all HTML5 videos.
 // @description:de  Verbessert sofort jedes Video auf jeder Website. Fügt Schärfe, HDR, bessere Farben und Kontrast in Echtzeit hinzu – für alle HTML5-Videos.
 // @match        *://*/*
@@ -415,12 +415,19 @@
         if (!video) { log('[GVF DRM] No video found'); return; }
         if (video.videoWidth === 0) { scheduleDrmCheck(3000); return; }
 
-        // Method 1: EME mediaKeys — most reliable, no false positives
-        const hasDrm = !!(video.mediaKeys || video.webkitMediaKeys || video.mozMediaKeys);
-        if (hasDrm) {
-            _drmBlackConfirms = 0;
-            _autoBlacklistHost('EME mediaKeys detected');
-            return;
+        // Method 1: EME mediaKeys — only blacklist when an active key session exists.
+        // Merely having mediaKeys set is not reliable; some browsers pre-attach EME
+        // without ever using it (no active session = no DRM content).
+        const mk = video.mediaKeys || video.webkitMediaKeys || video.mozMediaKeys;
+        if (mk) {
+            const sessions = typeof mk.getSessions === 'function' ? mk.getSessions() : null;
+            const hasActiveSession = sessions && sessions.length > 0;
+            if (hasActiveSession) {
+                _drmBlackConfirms = 0;
+                _autoBlacklistHost('EME mediaKeys with active session detected');
+                return;
+            }
+            // mediaKeys present but no active session — fall through to pixel check
         }
 
         // Method 2: Black pixel check — Widevine on Netflix returns black frames on readback.
