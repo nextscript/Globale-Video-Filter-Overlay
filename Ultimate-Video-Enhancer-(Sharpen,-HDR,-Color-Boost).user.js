@@ -3,7 +3,7 @@
 // @name:de      Ultimate Video Enhancer (Schärfe, HDR, Farben)
 // @namespace    gvf
 // @author       Freak288
-// @version      1.11.8
+// @version      1.11.9
 // @description  Instantly improve every video on any website. Adds real-time sharpening, HDR boost, better colors and contrast to all HTML5 videos.
 // @description:de  Verbessert sofort jedes Video auf jeder Website. Fügt Schärfe, HDR, bessere Farben und Kontrast in Echtzeit hinzu – für alle HTML5-Videos.
 // @match        *://*/*
@@ -386,18 +386,33 @@
     loadGlslBlacklist();
 
     // ── DRM Auto-Detection ────────────────────────────────────────────────────
-    // Tests if the current video is DRM-protected by attempting a canvas readback.
-    // If blocked → auto-adds hostname to GLSL blacklist and disables GLSL overlays.
+    // Strategy: attach an 'encrypted' event listener to every video element as early
+    // as possible via MutationObserver. This event fires reliably on DRM content
+    // (Crunchyroll, Netflix, Disney+, etc.) and never on plain CDN streams
+    // (YouTube, Twitch). No pixel readback, no getSessions() — both were unreliable.
+    //
+    // Fallback: if the video is already past the encrypted phase when we attach,
+    // check video.mediaKeys !== null as a secondary signal. This is weaker but
+    // combined with the video being in readyState >= 3 it is reliable enough.
+    // YouTube/Twitch do NOT set mediaKeys despite using HLS/DASH.
     let _drmCheckScheduled = false;
-    // Black-pixel check requires N consecutive positives to avoid false positives
-    // from dark scenes, loading frames, or intro sequences (e.g. YouTube, Twitch).
-    const DRM_BLACK_CONFIRM_NEEDED = 3;
-    const DRM_BLACK_CONFIRM_INTERVAL = 2000; // ms between each confirm check
-    let _drmBlackConfirms = 0;
+    const _drmObservedVideos = new WeakSet();
+
+    function _attachDrmListenerToVideo(video) {
+        if (_drmObservedVideos.has(video)) return;
+        _drmObservedVideos.add(video);
+        // Primary: encrypted event — zero false positives
+        video.addEventListener('encrypted', () => {
+            if (isCurrentDomainGlslBlacklisted()) return;
+            log('[GVF DRM] encrypted event fired on video');
+            _autoBlacklistHost('encrypted event');
+        }, { once: true });
+        log('[GVF DRM] attached encrypted listener to video element');
+    }
 
     function scheduleDrmCheck(delay = 2000) {
         if (_drmCheckScheduled) return;
-        if (isCurrentDomainGlslBlacklisted()) return; // already blacklisted
+        if (isCurrentDomainGlslBlacklisted()) return;
         _drmCheckScheduled = true;
         setTimeout(() => {
             _drmCheckScheduled = false;
@@ -408,66 +423,24 @@
     function _runDrmCheck() {
         if (isCurrentDomainGlslBlacklisted()) return;
         const all = Array.from(document.querySelectorAll('video'));
-        // Prefer a playing, non-ended video with actual dimensions
+        // Attach encrypted listener to ALL video elements found, not just the active one
+        all.forEach(v => _attachDrmListenerToVideo(v));
+
         const video = all.find(v => !v.paused && !v.ended && v.readyState >= 2 && v.videoWidth > 0)
                    || all.find(v => v.videoWidth > 0)
                    || all[0] || null;
         if (!video) { log('[GVF DRM] No video found'); return; }
         if (video.videoWidth === 0) { scheduleDrmCheck(3000); return; }
 
-        // Method 1: EME mediaKeys — only blacklist when an active key session exists.
-        // Merely having mediaKeys set is not reliable; some browsers pre-attach EME
-        // without ever using it (no active session = no DRM content).
+        // Fallback: video.mediaKeys set means the browser has already negotiated a
+        // key system. YouTube and Twitch do NOT set mediaKeys — they use plain HLS/DASH.
+        // This catches cases where the encrypted event already fired before we attached.
         const mk = video.mediaKeys || video.webkitMediaKeys || video.mozMediaKeys;
-        if (mk) {
-            const sessions = typeof mk.getSessions === 'function' ? mk.getSessions() : null;
-            const hasActiveSession = sessions && sessions.length > 0;
-            if (hasActiveSession) {
-                _drmBlackConfirms = 0;
-                _autoBlacklistHost('EME mediaKeys with active session detected');
-                return;
-            }
-            // mediaKeys present but no active session — fall through to pixel check
-        }
-
-        // Method 2: Black pixel check — Widevine on Netflix returns black frames on readback.
-        // Requires DRM_BLACK_CONFIRM_NEEDED consecutive positive checks to avoid false positives
-        // from dark scenes, loading frames, intro sequences, etc. (YouTube, Twitch, etc.).
-        // NOTE: SecurityError alone is NOT a reliable DRM signal — it also occurs on cross-origin
-        // CDN video elements that are not DRM-protected (e.g. Twitch, YouTube). Ignored here.
-        try {
-            const c = document.createElement('canvas');
-            c.width = 16; c.height = 16;
-            const ctx = c.getContext('2d');
-            ctx.drawImage(video, 0, 0, 16, 16);
-            const px = ctx.getImageData(0, 0, 16, 16).data;
-            let black = 0;
-            for (let i = 0; i < px.length; i += 4) {
-                if (px[i] < 4 && px[i+1] < 4 && px[i+2] < 4) black++;
-            }
-            const ratio = black / (px.length / 4);
-            log('[GVF DRM] black pixel ratio=' + ratio.toFixed(2) + ' confirms=' + _drmBlackConfirms + '/' + DRM_BLACK_CONFIRM_NEEDED);
-            if (ratio > 0.9) {
-                _drmBlackConfirms++;
-                if (_drmBlackConfirms >= DRM_BLACK_CONFIRM_NEEDED) {
-                    _drmBlackConfirms = 0;
-                    _autoBlacklistHost('black frame readback ×' + DRM_BLACK_CONFIRM_NEEDED + ' (' + (ratio * 100).toFixed(0) + '% black)');
-                } else {
-                    // Schedule another check to confirm
-                    setTimeout(() => _runDrmCheck(), DRM_BLACK_CONFIRM_INTERVAL);
-                }
-            } else {
-                // Non-black frame: reset confirm counter, video is readable → not DRM
-                _drmBlackConfirms = 0;
-            }
-        } catch (e) {
-            // SecurityError can occur on cross-origin CDN streams (e.g. YouTube, Twitch) without DRM.
-            // Do NOT auto-blacklist on SecurityError alone — it causes false positives on non-DRM sites.
-            log('[GVF DRM] readback error (not blacklisting): ' + e.name);
-            _drmBlackConfirms = 0;
+        if (mk && video.readyState >= 3) {
+            log('[GVF DRM] mediaKeys present + readyState>=3 → DRM confirmed');
+            _autoBlacklistHost('mediaKeys present after playback started');
         }
     }
-
     function _autoBlacklistHost(reason) {
         const host = (location.hostname || '').toLowerCase();
         if (!host || _glslBlacklist.includes(host)) return;
@@ -14024,7 +13997,25 @@ if ('lutProfile' in obj) {
             document.addEventListener(evt, scheduleOverlayUpdate, { passive: true, capture: true });
         });
 
-        // DRM auto-detection: check on play/playing/timeupdate with a short delay
+        // DRM auto-detection:
+        // 1. Attach encrypted listener immediately to all existing video elements.
+        // 2. Watch for new video elements via MutationObserver so we never miss the
+        //    encrypted event — it fires before playback starts, so late attachment = miss.
+        // 3. Fallback mediaKeys check on play/timeupdate for already-playing DRM videos.
+        document.querySelectorAll('video').forEach(v => _attachDrmListenerToVideo(v));
+        const _drmVideoObserver = new MutationObserver(mutations => {
+            if (isCurrentDomainGlslBlacklisted()) { _drmVideoObserver.disconnect(); return; }
+            for (const m of mutations) {
+                m.addedNodes.forEach(node => {
+                    if (node.nodeName === 'VIDEO') _attachDrmListenerToVideo(node);
+                    else if (node.querySelectorAll) {
+                        node.querySelectorAll('video').forEach(v => _attachDrmListenerToVideo(v));
+                    }
+                });
+            }
+        });
+        _drmVideoObserver.observe(document.documentElement, { childList: true, subtree: true });
+
         let _drmTimeupdateBound = false;
         ['play', 'playing'].forEach(evt => {
             document.addEventListener(evt, () => scheduleDrmCheck(3000), { passive: true, capture: true });
