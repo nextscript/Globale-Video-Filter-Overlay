@@ -3,7 +3,7 @@
 // @name:de      Ultimate Video Enhancer (Schärfe, HDR, Farben)
 // @namespace    gvf
 // @author       Freak288
-// @version      1.12.0
+// @version      1.12.1
 // @description  Instantly improve every video on any website. Adds real-time sharpening, HDR boost, better colors and contrast to all HTML5 videos.
 // @description:de  Verbessert sofort jedes Video auf jeder Website. Fügt Schärfe, HDR, bessere Farben und Kontrast in Echtzeit hinzu – für alle HTML5-Videos.
 // @match        *://*/*
@@ -2233,6 +2233,87 @@ void main(){
         modal.appendChild(blacklistBanner);
         if (isCurrentDomainGlslBlacklisted()) blacklistBanner.style.display = 'flex';
 
+        // ── Search & Filter bar ───────────────────────────────────────────────
+        let _searchText = '';
+        let _activeTagFilter = '';
+        let _activeTypeFilter = '';
+
+        const searchBar = document.createElement('div');
+        searchBar.style.cssText = `display:flex;gap:6px;align-items:center;margin-bottom:8px;flex-shrink:0;flex-wrap:wrap;`;
+
+        const searchInput = document.createElement('input');
+        searchInput.type = 'text';
+        searchInput.placeholder = '🔍 Search label, tags, category…';
+        searchInput.style.cssText = `flex:1;min-width:120px;background:rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.18);border-radius:7px;padding:5px 10px;color:#fff;font-size:12px;outline:none;box-sizing:border-box;`;
+        searchInput.addEventListener('input', () => { _searchText = searchInput.value.toLowerCase(); renderList(); });
+
+        const typeFilters = [
+            { key: '', label: 'All' },
+            { key: 'webgl', label: 'GLSL' },
+            { key: 'canvas2d', label: '2D' },
+            { key: 'svg', label: 'SVG' },
+            { key: 'audio', label: '🎙' },
+        ];
+        const typePillWrap = document.createElement('div');
+        typePillWrap.style.cssText = `display:flex;gap:4px;flex-shrink:0;`;
+        const _typeFilterBtns = [];
+        const _styleTypePill = (btn, active) => {
+            btn.style.background = active ? 'rgba(74,158,255,0.35)' : 'rgba(255,255,255,0.07)';
+            btn.style.borderColor = active ? '#4a9eff' : 'rgba(255,255,255,0.18)';
+            btn.style.color = active ? '#a0d4ff' : '#888';
+        };
+        typeFilters.forEach(({ key, label }) => {
+            const btn = document.createElement('button');
+            btn.textContent = label;
+            btn.style.cssText = `padding:3px 8px;border:1px solid rgba(255,255,255,0.18);border-radius:5px;font-size:11px;font-weight:900;cursor:pointer;transition:all 0.15s;`;
+            _styleTypePill(btn, key === _activeTypeFilter);
+            stopEventsOn(btn);
+            btn.addEventListener('click', () => {
+                _activeTypeFilter = key;
+                _typeFilterBtns.forEach((b, i) => _styleTypePill(b, typeFilters[i].key === _activeTypeFilter));
+                renderList();
+            });
+            _typeFilterBtns.push(btn);
+            typePillWrap.appendChild(btn);
+        });
+
+        searchBar.appendChild(searchInput);
+        searchBar.appendChild(typePillWrap);
+        modal.appendChild(searchBar);
+
+        const tagCloud = document.createElement('div');
+        tagCloud.style.cssText = `display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px;flex-shrink:0;min-height:0;`;
+        modal.appendChild(tagCloud);
+
+        function refreshTagCloud() {
+            while (tagCloud.firstChild) tagCloud.removeChild(tagCloud.firstChild);
+            const tagSet = new Set();
+            customSvgCodes.forEach(e => {
+                if (!Array.isArray(e.tags)) return;
+                e.tags.forEach(t => { if (t) tagSet.add(t); });
+            });
+            if (!tagSet.size) return;
+            const allBtn = document.createElement('button');
+            allBtn.textContent = '× All';
+            allBtn.style.cssText = `padding:2px 7px;border-radius:4px;border:1px solid rgba(255,255,255,0.18);background:${_activeTagFilter === '' ? 'rgba(74,158,255,0.3)' : 'rgba(255,255,255,0.06)'};color:${_activeTagFilter === '' ? '#a0d4ff' : '#777'};font-size:10px;font-weight:900;cursor:pointer;`;
+            stopEventsOn(allBtn);
+            allBtn.addEventListener('click', () => { _activeTagFilter = ''; refreshTagCloud(); renderList(); });
+            tagCloud.appendChild(allBtn);
+            tagSet.forEach(tag => {
+                const tb = document.createElement('button');
+                tb.textContent = tag;
+                const active = _activeTagFilter === tag;
+                tb.style.cssText = `padding:2px 7px;border-radius:4px;border:1px solid ${active ? 'rgba(255,200,80,0.5)' : 'rgba(255,255,255,0.12)'};background:${active ? 'rgba(255,200,80,0.2)' : 'rgba(255,255,255,0.05)'};color:${active ? '#ffc850' : '#aaa'};font-size:10px;font-weight:700;cursor:pointer;`;
+                stopEventsOn(tb);
+                tb.addEventListener('click', () => {
+                    _activeTagFilter = active ? '' : tag;
+                    refreshTagCloud();
+                    renderList();
+                });
+                tagCloud.appendChild(tb);
+            });
+        }
+
         // List area
         const listWrap = document.createElement('div');
         listWrap.style.cssText = `overflow-y:auto;max-height:220px;background:rgba(0,0,0,0.3);border-radius:8px;padding:6px;margin-bottom:12px;display:flex;flex-direction:column;gap:6px;flex-shrink:0;`;
@@ -2243,6 +2324,28 @@ void main(){
         function renderList() {
             const scrollTop = listWrap.scrollTop;
             while (listWrap.firstChild) listWrap.removeChild(listWrap.firstChild);
+
+            refreshTagCloud();
+
+            const filtered = [];
+            customSvgCodes.forEach((entry, i) => {
+                if (_activeTypeFilter && entry.type !== _activeTypeFilter) return;
+                if (_activeTagFilter) {
+                    const entryTags = Array.isArray(entry.tags) ? entry.tags : [];
+                    if (!entryTags.includes(_activeTagFilter)) return;
+                }
+                if (_searchText) {
+                    const haystack = [
+                        entry.label || '',
+                        Array.isArray(entry.tags) ? entry.tags.join(' ') : '',
+                        entry.category || '',
+                        entry.description || '',
+                    ].join(' ').toLowerCase();
+                    if (!haystack.includes(_searchText)) return;
+                }
+                filtered.push(i);
+            });
+
             if (!customSvgCodes.length) {
                 const empty = document.createElement('div');
                 empty.textContent = 'No entries yet. Add one below.';
@@ -2250,8 +2353,17 @@ void main(){
                 listWrap.appendChild(empty);
                 return;
             }
+            if (!filtered.length) {
+                const empty = document.createElement('div');
+                empty.textContent = 'No filters match your search.';
+                empty.style.cssText = `color:#888;font-size:12px;padding:10px;text-align:center;`;
+                listWrap.appendChild(empty);
+                return;
+            }
+
             const domainBlocked = isCurrentDomainGlslBlacklisted();
-            customSvgCodes.forEach((entry, i) => {
+            filtered.forEach(i => {
+                const entry = customSvgCodes[i];
                 const isGlslBlocked = domainBlocked && entry.type === 'webgl';
                 const row = document.createElement('div');
                 row.draggable = !isGlslBlocked;
@@ -2331,6 +2443,24 @@ void main(){
                     hkBadge.title = 'Hotkey: ' + entry.hotkey.toUpperCase();
                     hkBadge.style.cssText = `flex-shrink:0;font-size:9px;font-weight:900;padding:1px 5px;border-radius:4px;background:rgba(255,200,80,0.15);color:#ffc850;border:1px solid rgba(255,200,80,0.4);font-family:monospace;`;
                     lbl.appendChild(hkBadge);
+                }
+
+                // Tag badges (up to 3, clickable)
+                if (Array.isArray(entry.tags) && entry.tags.length) {
+                    entry.tags.slice(0, 3).forEach(tag => {
+                        const tb = document.createElement('span');
+                        tb.textContent = tag;
+                        tb.style.cssText = `flex-shrink:0;font-size:9px;font-weight:700;padding:1px 5px;border-radius:4px;background:rgba(255,200,80,0.1);color:#c8a040;border:1px solid rgba(255,200,80,0.25);max-width:60px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;`;
+                        tb.title = 'Filter by tag: ' + tag;
+                        stopEventsOn(tb);
+                        tb.addEventListener('click', (ev) => {
+                            ev.stopPropagation();
+                            _activeTagFilter = _activeTagFilter === tag ? '' : tag;
+                            refreshTagCloud();
+                            renderList();
+                        });
+                        lbl.appendChild(tb);
+                    });
                 }
 
                 // Hotkey button
@@ -2528,6 +2658,27 @@ void main(){
             blendRow.appendChild(blendSelect);
             blendRow.appendChild(blendNote);
             editArea.appendChild(blendRow);
+
+            // Tags + Category row
+            const metaRow = document.createElement('div');
+            metaRow.style.cssText = `display:flex;gap:8px;align-items:center;`;
+
+            const tagsInput = document.createElement('input');
+            tagsInput.type = 'text';
+            tagsInput.placeholder = 'Tags (comma-separated, e.g. sharpen, edge, color)';
+            tagsInput.value = editing ? ((customSvgCodes[idx].tags || []).join(', ')) : '';
+            tagsInput.style.cssText = `flex:1;background:rgba(0,0,0,0.5);border:1px solid rgba(255,200,80,0.25);border-radius:7px;padding:6px 10px;color:#ffd;font-size:11px;outline:none;box-sizing:border-box;`;
+            tagsInput.title = 'Tags help you filter and search filters quickly';
+
+            const categoryInput = document.createElement('input');
+            categoryInput.type = 'text';
+            categoryInput.placeholder = 'Category';
+            categoryInput.value = editing ? (customSvgCodes[idx].category || '') : '';
+            categoryInput.style.cssText = `width:110px;flex-shrink:0;background:rgba(0,0,0,0.5);border:1px solid rgba(180,180,255,0.25);border-radius:7px;padding:6px 10px;color:#ccccff;font-size:11px;outline:none;box-sizing:border-box;`;
+
+            metaRow.appendChild(tagsInput);
+            metaRow.appendChild(categoryInput);
+            editArea.appendChild(metaRow);
 
             const svgPlaceholder = 'SVG Filter-Primitive Code, e.g.:\n<feConvolveMatrix kernelMatrix="0 -1 0 -1 5 -1 0 -1 0"/>';
             const glslPlaceholder = `GLSL Fragment Shader (WebGL2 / GLSL300).\nAvailable uniforms:\n  uniform sampler2D u_video;  // video frame\n  uniform vec2 u_res;          // canvas resolution (px)\n  in vec2 v_uv;                // UV coords 0..1\n  out vec4 fragColor;\n\n// Option A — full shader:\nvoid main(){\n    fragColor = texture(u_video, v_uv);\n}\n\n// Option B — helper function only (main is auto-generated):\nvec3 myEffect(sampler2D tex, vec2 uv, vec2 res) {\n    return texture(tex, uv).rgb;\n}`;
@@ -2770,11 +2921,15 @@ void main(){
                     customSvgCodes[idx].code = code;
                     customSvgCodes[idx].type = type;
                     customSvgCodes[idx].blendMode = blendMode;
+                    customSvgCodes[idx].tags = tagsInput.value.split(',').map(t => t.trim()).filter(Boolean);
+                    customSvgCodes[idx].category = categoryInput.value.trim();
                     if (type === 'webgl') customSvgCodes[idx].uniforms = { ...editUniforms };
                     if (type === 'canvas2d' || type === 'audio') customSvgCodes[idx].params = finalParams;
                 } else {
                     _removePreviewEntry();
                     const newEntry = { id: 'csvg_' + Date.now(), label, code, type, blendMode, enabled: true };
+                    newEntry.tags = tagsInput.value.split(',').map(t => t.trim()).filter(Boolean);
+                    newEntry.category = categoryInput.value.trim();
                     if (type === 'webgl' && Object.keys(editUniforms).length) newEntry.uniforms = { ...editUniforms };
                     if (type === 'canvas2d' || type === 'audio') newEntry.params = finalParams;
                     customSvgCodes.push(newEntry);
@@ -9937,6 +10092,37 @@ importInput.addEventListener('change', async () => {
         ctlRow.appendChild(importInput);
         menu.appendChild(ctlRow);
 
+        // ── LUT Search bar ────────────────────────────────────────────────────
+        let _lutSearchText = '';
+
+        const lutSearchWrap = document.createElement('div');
+        lutSearchWrap.style.cssText = `display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-shrink:0;`;
+
+        const lutSearchInput = document.createElement('input');
+        lutSearchInput.type = 'text';
+        lutSearchInput.placeholder = '🔍 Search LUT profiles…';
+        lutSearchInput.style.cssText = `flex:1;background:rgba(0,0,0,0.5);border:1px solid rgba(255,138,0,0.35);border-radius:8px;padding:6px 10px;color:#fff;font-size:13px;outline:none;box-sizing:border-box;`;
+        lutSearchInput.addEventListener('input', () => {
+            _lutSearchText = lutSearchInput.value.toLowerCase().trim();
+            updateLutProfileListInner();
+        });
+
+        const lutSearchClear = document.createElement('button');
+        lutSearchClear.type = 'button';
+        lutSearchClear.textContent = '✕';
+        lutSearchClear.title = 'Clear search';
+        lutSearchClear.style.cssText = `padding:5px 10px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.15);border-radius:7px;color:#aaa;font-size:12px;cursor:pointer;flex-shrink:0;`;
+        stopEventsOn(lutSearchClear);
+        lutSearchClear.addEventListener('click', () => {
+            lutSearchInput.value = '';
+            _lutSearchText = '';
+            updateLutProfileListInner();
+        });
+
+        lutSearchWrap.appendChild(lutSearchInput);
+        lutSearchWrap.appendChild(lutSearchClear);
+        menu.appendChild(lutSearchWrap);
+
         const listContainer = document.createElement('div');
         listContainer.style.cssText = `
             flex: 1;
@@ -10267,9 +10453,18 @@ const fileInput = document.createElement('input');
                 filtered = list.filter(p => (p && p.group && String(p.group).trim() === gf));
             }
 
+            // Text search filter
+            if (_lutSearchText) {
+                filtered = filtered.filter(p => {
+                    const name = String(p.name || '').toLowerCase();
+                    const grp  = String(p.group || '').toLowerCase();
+                    return name.includes(_lutSearchText) || grp.includes(_lutSearchText);
+                });
+            }
+
             if (filtered.length === 0) {
                 const empty = document.createElement('div');
-                empty.textContent = 'No LUT profiles yet.';
+                empty.textContent = _lutSearchText ? 'No LUT profiles match your search.' : 'No LUT profiles yet.';
                 empty.style.cssText = 'opacity:0.7;font-size:13px;padding:6px;';
                 container.appendChild(empty);
                 return;
@@ -11137,7 +11332,6 @@ const fileInput = document.createElement('input');
         svgCodesBtn.style.cssText = `padding:4px 12px;background:rgba(100,180,255,0.18);color:#a0d4ff;border:1px solid rgba(100,180,255,0.45);border-radius:6px;font-size:11px;font-weight:900;cursor:pointer;transition:background 0.15s;`;
         svgCodesBtn.addEventListener('mouseenter', () => { svgCodesBtn.style.background = 'rgba(100,180,255,0.32)'; });
         svgCodesBtn.addEventListener('mouseleave', () => { svgCodesBtn.style.background = 'rgba(100,180,255,0.18)'; });
-        stopEventsOn(svgCodesBtn);
         if (isFirefox()) {
             svgCodesBtn.disabled = true;
             svgCodesBtn.title = 'Custom Filter Codes are not supported in Firefox (WebGL2 limitations).';
