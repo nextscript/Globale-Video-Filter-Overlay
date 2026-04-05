@@ -3,7 +3,7 @@
 // @name:de      Ultimate Video Enhancer (Schärfe, HDR, Farben)
 // @namespace    gvf
 // @author       Freak288
-// @version      1.11.9
+// @version      1.12.0
 // @description  Instantly improve every video on any website. Adds real-time sharpening, HDR boost, better colors and contrast to all HTML5 videos.
 // @description:de  Verbessert sofort jedes Video auf jeder Website. Fügt Schärfe, HDR, bessere Farben und Kontrast in Echtzeit hinzu – für alle HTML5-Videos.
 // @match        *://*/*
@@ -19,6 +19,7 @@
 // @connect      raw.githubusercontent.com
 // @connect      github.com
 // @connect      cdn.jsdelivr.net
+// @connect      colormind.io
 // @iconURL      https://raw.githubusercontent.com/nextscript/Ultimate-Video-Enhancer/refs/heads/main/logomes.png
 // @downloadURL https://update.greasyfork.org/scripts/561189/Ultimate%20Video%20Enhancer%20%28Sharpen%2C%20HDR%2C%20Color%20Boost%29.user.js
 // @updateURL https://update.greasyfork.org/scripts/561189/Ultimate%20Video%20Enhancer%20%28Sharpen%2C%20HDR%2C%20Color%20Boost%29.meta.js
@@ -9297,6 +9298,123 @@ if (!gl) {
         setTimeout(processChunk, 0);
     }
 
+    // -------------------------
+    // Colormind API Integration
+    // -------------------------
+
+    /**
+     * Samples 5 pixels from a 320x180 canvas (spread across the frame)
+     * and returns them as [[r,g,b], ...] suitable for the Colormind API input.
+     */
+    function sampleFramePixels(imageData, w, h) {
+        const positions = [
+            [Math.floor(w * 0.15), Math.floor(h * 0.15)],
+            [Math.floor(w * 0.85), Math.floor(h * 0.15)],
+            [Math.floor(w * 0.50), Math.floor(h * 0.50)],
+            [Math.floor(w * 0.15), Math.floor(h * 0.85)],
+            [Math.floor(w * 0.85), Math.floor(h * 0.85)],
+        ];
+        return positions.map(([px, py]) => {
+            const idx = (py * w + px) * 4;
+            return [imageData.data[idx], imageData.data[idx + 1], imageData.data[idx + 2]];
+        });
+    }
+
+    /**
+     * Fetches a harmonious 5-color palette from Colormind API.
+     * inputColors: array of up to 5 [r,g,b] values (use "N" for slots to fill).
+     * Returns Promise<[[r,g,b], ...]> with 5 entries.
+     */
+    function fetchColormindPalette(inputColors) {
+        const input = (inputColors || []).map(c => (Array.isArray(c) ? c : 'N')).slice(0, 5);
+        while (input.length < 5) input.push('N');
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'POST',
+                url: 'http://colormind.io/api/',
+                headers: { 'Content-Type': 'application/json' },
+                data: JSON.stringify({ model: 'default', input }),
+                onload: (resp) => {
+                    try {
+                        const data = JSON.parse(resp.responseText);
+                        if (data && data.result) resolve(data.result);
+                        else reject(new Error('No result in response'));
+                    } catch (e) { reject(e); }
+                },
+                onerror: (e) => reject(new Error('GM_xmlhttpRequest failed')),
+                ontimeout: () => reject(new Error('Request timed out')),
+                timeout: 10000,
+            });
+        });
+    }
+
+    /**
+     * Derives a 4x5 feColorMatrix (20 floats) from a 5-color Colormind palette.
+     * Maps the palette's average tint/saturation bias onto the LUT channels.
+     * The result is a subtle color-grade that shifts the video toward the palette mood.
+     */
+    function paletteToLutMatrix(palette) {
+        // palette: [[r,g,b]x5] in 0-255
+        const avg = palette.reduce((a, c) => [a[0] + c[0], a[1] + c[1], a[2] + c[2]], [0, 0, 0])
+            .map(v => v / palette.length / 255); // normalize to 0-1
+        const [ar, ag, ab] = avg;
+        const lum = ar * 0.299 + ag * 0.587 + ab * 0.114;
+
+        // Bias gains: shift RGB gain slightly toward the palette avg
+        const rg = 0.8 + ar * 0.4;
+        const gg = 0.8 + ag * 0.4;
+        const bg = 0.8 + ab * 0.4;
+        const lift = (lum - 0.5) * 0.05; // brightness offset
+
+        // Row-major 4x5 feColorMatrix
+        return [
+            rg,   0,    0,    0,    lift,
+            0,    gg,   0,    0,    lift,
+            0,    0,    bg,   0,    lift,
+            0,    0,    0,    1,    0,
+        ];
+    }
+
+    /**
+     * Renders a Colormind palette as a horizontal strip of 5 color swatches
+     * into a given container element.
+     */
+    function renderColormindSwatches(container, palette, onApply) {
+        while (container.firstChild) container.removeChild(container.firstChild);
+
+        const strip = document.createElement('div');
+        strip.style.cssText = 'display:flex;gap:6px;align-items:center;flex-wrap:wrap;';
+
+        palette.forEach(([r, g, b]) => {
+            const sw = document.createElement('div');
+            const hex = '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
+            sw.title = hex;
+            sw.style.cssText = `
+                width:36px;height:36px;border-radius:8px;
+                background:${hex};
+                border:2px solid rgba(255,255,255,0.2);
+                cursor:default;
+                box-shadow:0 2px 8px rgba(0,0,0,0.5);
+                flex-shrink:0;
+            `;
+            strip.appendChild(sw);
+        });
+
+        const applyBtn = document.createElement('button');
+        applyBtn.type = 'button';
+        applyBtn.textContent = '✚ Add to LUT';
+        applyBtn.style.cssText = `
+            cursor:pointer;padding:6px 12px;border-radius:8px;
+            border:1px solid rgba(255,138,0,0.5);
+            background:rgba(255,138,0,0.18);color:#ffcc88;
+            font-weight:900;font-size:12px;flex-shrink:0;
+        `;
+        applyBtn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); onApply(palette); });
+        stopEventsOn(applyBtn);
+        strip.appendChild(applyBtn);
+        container.appendChild(strip);
+    }
+
     function createLutConfigMenu() {
         let existingMenu = document.getElementById(LUT_CONFIG_MENU_ID);
         if (existingMenu) existingMenu.remove();
@@ -9585,6 +9703,119 @@ if (!gl) {
 
         menu.appendChild(groupCtlRow);
         try { _rebuildLutGroupUis(); } catch (_) { }
+
+        // --- Colormind API panel ---
+        const colormindRow = document.createElement('div');
+        colormindRow.style.cssText = `
+            background:rgba(255,138,0,0.07);
+            border:1px solid rgba(255,138,0,0.3);
+            border-radius:10px;
+            padding:10px 12px;
+            margin-bottom:12px;
+            display:flex;
+            flex-direction:column;
+            gap:8px;
+        `;
+
+        const cmTopRow = document.createElement('div');
+        cmTopRow.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;';
+
+        const cmLabel = document.createElement('div');
+        cmLabel.textContent = '🌈 Colormind';
+        cmLabel.style.cssText = 'font-size:13px;font-weight:900;color:#ffcc88;min-width:100px;';
+
+        const cmGenBtn = document.createElement('button');
+        cmGenBtn.type = 'button';
+        cmGenBtn.textContent = '⚡ Generate from Frame';
+        cmGenBtn.style.cssText = `
+            cursor:pointer;padding:6px 12px;border-radius:8px;
+            border:1px solid rgba(255,138,0,0.5);
+            background:rgba(255,138,0,0.18);color:#ffcc88;
+            font-weight:900;font-size:12px;
+        `;
+        stopEventsOn(cmGenBtn);
+
+        const cmRandomBtn = document.createElement('button');
+        cmRandomBtn.type = 'button';
+        cmRandomBtn.textContent = '🎲 Random Palette';
+        cmRandomBtn.style.cssText = `
+            cursor:pointer;padding:6px 12px;border-radius:8px;
+            border:1px solid rgba(255,255,255,0.15);
+            background:rgba(255,255,255,0.07);color:#eaeaea;
+            font-weight:900;font-size:12px;
+        `;
+        stopEventsOn(cmRandomBtn);
+
+        const cmStatus = document.createElement('div');
+        cmStatus.style.cssText = 'font-size:11px;color:#aaa;flex:1;text-align:right;';
+        cmStatus.textContent = 'Generate a palette from the current video frame.';
+
+        cmTopRow.appendChild(cmLabel);
+        cmTopRow.appendChild(cmGenBtn);
+        cmTopRow.appendChild(cmRandomBtn);
+        cmTopRow.appendChild(cmStatus);
+
+        const cmSwatchArea = document.createElement('div');
+        cmSwatchArea.id = 'gvf-colormind-swatches';
+        cmSwatchArea.style.cssText = 'min-height:0;';
+
+        colormindRow.appendChild(cmTopRow);
+        colormindRow.appendChild(cmSwatchArea);
+        menu.appendChild(colormindRow);
+
+        const cmDoFetch = (inputColors) => {
+            cmStatus.textContent = '⏳ Fetching palette…';
+            cmGenBtn.disabled = true;
+            cmRandomBtn.disabled = true;
+            fetchColormindPalette(inputColors)
+                .then(palette => {
+                    cmStatus.textContent = '✅ Palette ready';
+                    cmGenBtn.disabled = false;
+                    cmRandomBtn.disabled = false;
+                    renderColormindSwatches(cmSwatchArea, palette, (pal) => {
+                        const matrix4x5 = paletteToLutMatrix(pal);
+                        const hex = pal.map(([r, g, b]) =>
+                            '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('')
+                        );
+                        const name = 'Colormind ' + Math.floor(Math.random() * 90000 + 10000);
+                        const now = Date.now();
+                        const newProfile = {
+                            name,
+                            group: 'Colormind',
+                            matrix4x5,
+                            createdAt: now,
+                            updatedAt: now,
+                        };
+                        lutProfiles.push(newProfile);
+                        saveLutProfiles();
+                        updateLutProfileList();
+                        cmStatus.textContent = '✚ Added: ' + name;
+                    });
+                })
+                .catch(err => {
+                    cmStatus.textContent = '❌ Error: ' + (err && err.message ? err.message : 'Network failed');
+                    cmGenBtn.disabled = false;
+                    cmRandomBtn.disabled = false;
+                });
+        };
+
+        cmGenBtn.addEventListener('click', (e) => {
+            e.preventDefault(); e.stopPropagation();
+            let inputColors = null;
+            try {
+                const frameData = captureLutPreviewFrame();
+                if (frameData) {
+                    inputColors = sampleFramePixels(frameData, 1280, 720);
+                }
+            } catch (_) { }
+            cmDoFetch(inputColors);
+        });
+
+        cmRandomBtn.addEventListener('click', (e) => {
+            e.preventDefault(); e.stopPropagation();
+            cmDoFetch(null);
+        });
+        // --- end Colormind panel ---
 
         const ctlRow = document.createElement('div');
         ctlRow.style.cssText = `display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;`;
