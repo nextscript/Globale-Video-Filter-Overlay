@@ -3,7 +3,7 @@
 // @name:de      Ultimate Video Enhancer (Schärfe, HDR, Farben)
 // @namespace    gvf
 // @author       Freak288
-// @version      1.12.5
+// @version      1.12.6
 // @description  Instantly improve every video on any website. Adds real-time sharpening, HDR boost, better colors and contrast to all HTML5 videos.
 // @description:de  Verbessert sofort jedes Video auf jeder Website. Fügt Schärfe, HDR, bessere Farben und Kontrast in Echtzeit hinzu – für alle HTML5-Videos.
 // @match        *://*/*
@@ -9516,10 +9516,10 @@ if (!gl) {
         // Guarantees: black→black, white→white, any neutral (R=G=B)→unchanged.
         // Tint = off-diagonal channel redistribution based on palette chroma.
         //
-        // Weighting: chroma magnitude × warm-bias multiplier.
-        // Warm colors (R > B) get up to 2× extra weight so a mixed warm/cool palette
-        // doesn't get dragged into a blue tint by high-chroma cool entries.
-        // A small floor (0.02) prevents zero-contribution from near-neutral colors.
+        // Weighting: each palette color is weighted by its chroma magnitude
+        // (sqrt of squared deviations from luminance) so that more saturated
+        // palette entries dominate over near-neutral ones. A small floor (0.02)
+        // ensures even low-saturation palettes contribute something.
 
         const norm = palette.map(([r, g, b]) => [r / 255, g / 255, b / 255]);
 
@@ -9527,10 +9527,8 @@ if (!gl) {
         norm.forEach(([r, g, b]) => {
             const l = r * 0.299 + g * 0.587 + b * 0.114;
             const dr = r - l, dg = g - l, db = b - l;
-            const chroma = Math.sqrt(dr * dr + dg * dg + db * db) + 0.02;
-            // Warm bias: R > B → multiplier up to 2.0, cool colors → down to 0.5
-            const warmBias = 1.0 + (r - b);  // range ~[-0.5 .. 2.0], clamped below
-            const w = chroma * Math.max(0.5, Math.min(2.0, warmBias));
+            // Weight by chroma magnitude — saturated colors drive the grade more
+            const w = Math.sqrt(dr * dr + dg * dg + db * db) + 0.02;
             wSumR += dr * w;
             wSumG += dg * w;
             wSumB += db * w;
@@ -10031,6 +10029,29 @@ if (!gl) {
                     cmStatus.textContent = '✅ Palette ready';
                     cmGenBtn.disabled = false;
                     cmRandomBtn.disabled = false;
+
+                    // Immediately push palette matrix to GLSL shader entry (live preview)
+                    try {
+                        const _previewMatrix = paletteToLutMatrix(palette);
+                        window.__gvfColormindMatrix4x5 = _previewMatrix;
+                        const _cmLiveEntry = customSvgCodes.find(e =>
+                            e && e.type === 'webgl' && e.label === 'Colormind Auto Grade'
+                        );
+                        if (_cmLiveEntry) {
+                            if (!_cmLiveEntry.uniforms) _cmLiveEntry.uniforms = {};
+                            _cmLiveEntry.uniforms.u_cm_rr = _previewMatrix[0];
+                            _cmLiveEntry.uniforms.u_cm_rg = _previewMatrix[1];
+                            _cmLiveEntry.uniforms.u_cm_rb = _previewMatrix[2];
+                            _cmLiveEntry.uniforms.u_cm_gr = _previewMatrix[5];
+                            _cmLiveEntry.uniforms.u_cm_gg = _previewMatrix[6];
+                            _cmLiveEntry.uniforms.u_cm_gb = _previewMatrix[7];
+                            _cmLiveEntry.uniforms.u_cm_br = _previewMatrix[10];
+                            _cmLiveEntry.uniforms.u_cm_bg = _previewMatrix[11];
+                            _cmLiveEntry.uniforms.u_cm_bb = _previewMatrix[12];
+                            updateCustomWebglOverlays();
+                        }
+                    } catch (_) {}
+
                     renderColormindSwatches(cmSwatchArea, palette, (pal, customName) => {
                         const matrix4x5 = paletteToLutMatrix(pal);
                         const hex = pal.map(([r, g, b]) =>
@@ -10049,6 +10070,30 @@ if (!gl) {
                         saveLutProfiles();
                         updateLutProfileList();
                         cmStatus.textContent = '✚ Added: ' + name;
+
+                        // Push matrix into any active GLSL entry named "Colormind Auto Grade"
+                        // so the shader receives the palette gains on the next frame without reload.
+                        // matrix4x5 row-major: [rr,rg,rb,0,0, gr,gg,gb,0,0, br,bg,bb,0,0, ...]
+                        window.__gvfColormindMatrix4x5 = matrix4x5;
+                        try {
+                            const _cmEntry = customSvgCodes.find(e =>
+                                e && e.type === 'webgl' && e.label === 'Colormind Auto Grade'
+                            );
+                            if (_cmEntry) {
+                                if (!_cmEntry.uniforms) _cmEntry.uniforms = {};
+                                _cmEntry.uniforms.u_cm_rr = matrix4x5[0];
+                                _cmEntry.uniforms.u_cm_rg = matrix4x5[1];
+                                _cmEntry.uniforms.u_cm_rb = matrix4x5[2];
+                                _cmEntry.uniforms.u_cm_gr = matrix4x5[5];
+                                _cmEntry.uniforms.u_cm_gg = matrix4x5[6];
+                                _cmEntry.uniforms.u_cm_gb = matrix4x5[7];
+                                _cmEntry.uniforms.u_cm_br = matrix4x5[10];
+                                _cmEntry.uniforms.u_cm_bg = matrix4x5[11];
+                                _cmEntry.uniforms.u_cm_bb = matrix4x5[12];
+                                updateCustomWebglOverlays();
+                                log('[GVF Colormind] Matrix pushed to GLSL entry:', _cmEntry.label);
+                            }
+                        } catch (_) {}
                     });
                 })
                 .catch(err => {
