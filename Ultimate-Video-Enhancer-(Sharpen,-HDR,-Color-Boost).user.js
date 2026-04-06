@@ -835,6 +835,7 @@ ${mainBlock}`;
         let _rafId = null;
         let _video = null;
         let _hasFrame = false;
+        let _forceRender = false; // set to true to force one render while paused (e.g. settings changed)
 
         // Cached layout values — style writes only happen when values actually change
         let _cachedL = null, _cachedT = null, _cachedW = null, _cachedH = null;
@@ -1085,9 +1086,14 @@ void main(){
             if (!_gl || !_canvas) return;
             const gl = _gl;
             const activeEntries = customSvgCodes.filter(e => e && e.enabled && e.type === 'webgl');
-            // Freeze: if we have a rendered frame, keep it visible even if readyState drops (e.g. live stream on pause)
-            if (_hasFrame && (!activeEntries.length ? false : (video && video.paused))) return;
-            if (!activeEntries.length || !video || video.readyState < 2) {
+            if (!activeEntries.length || !video) {
+                _canvas.style.display = 'none';
+                for (const bc of _blendCanvases.values()) bc.style.display = 'none';
+                return;
+            }
+            // If paused and readyState dropped (e.g. Twitch live stream), keep canvas visible
+            if (video.readyState < 2) {
+                if (_hasFrame) return; // freeze last frame
                 _canvas.style.display = 'none';
                 for (const bc of _blendCanvases.values()) bc.style.display = 'none';
                 return;
@@ -1281,13 +1287,14 @@ void main(){
             _rafId = requestAnimationFrame(_drawLoop);
             if (!_video) return;
             if (document.hidden) return;
-            // Always cap to target FPS — avoids unnecessary GPU work on high-refresh displays
             if (timestamp - _lastFrameTime < _FRAME_INTERVAL) return;
-            // Skip render if video is paused and we already rendered this frame
-            const vt = _video.currentTime;
-            if (_video.paused && vt === _lastVideoTime) return;
+            // While paused: only render if _forceRender is set (e.g. settings changed via shortcut/LUT)
+            if (_video.paused) {
+                if (!_forceRender) return;
+                _forceRender = false;
+            }
             _lastFrameTime = timestamp;
-            _lastVideoTime = vt;
+            _lastVideoTime = _video.currentTime;
             _doRender(_video);
         }
 
@@ -1368,7 +1375,8 @@ void main(){
             }
         }
 
-        return { update, destroyAll, stopAndHide, reparentAll };
+        function forceRender() { _forceRender = true; }
+        return { update, destroyAll, stopAndHide, reparentAll, forceRender };
     })();
 
     // Try-compile a GLSL fragment shader and return null on success, error string on failure
@@ -1511,6 +1519,7 @@ void main(){
             let alive = true;
 
             let _c2dHasFrame = false;
+            const _c2dFlags = { forceRender: false }; // shared ref so forceRender() can set it externally
 
             function drawLoop(now) {
                 if (!alive) return;
@@ -1525,9 +1534,13 @@ void main(){
                 }
 
                 // Freeze: keep last rendered frame visible when paused, skip re-render
+                // unless _c2dFlags.forceRender is set (settings changed via shortcut/LUT)
                 if (video.paused && _c2dHasFrame) {
-                    inst.rafId = requestAnimationFrame(drawLoop);
-                    return;
+                    if (!_c2dFlags.forceRender) {
+                        inst.rafId = requestAnimationFrame(drawLoop);
+                        return;
+                    }
+                    _c2dFlags.forceRender = false;
                 }
 
                 _reparentCanvas();
@@ -1594,7 +1607,7 @@ void main(){
                 inst.rafId = requestAnimationFrame(drawLoop);
             }
 
-            const inst = { canvas, fn, rafId: requestAnimationFrame(drawLoop), alive };
+            const inst = { canvas, fn, rafId: requestAnimationFrame(drawLoop), alive, _c2dFlags };
             inst._stop = () => { alive = false; };
             inst._paramSig = JSON.stringify(entry.params || {});
             return inst;
@@ -1705,7 +1718,12 @@ void main(){
             }
         }
 
-        return { update, reparentAll, destroyAll, forceRecompileAll, _compileUserFn, recompile };
+        function forceRender() {
+            for (const inst of _instances.values()) {
+                if (inst && inst._c2dFlags) inst._c2dFlags.forceRender = true;
+            }
+        }
+        return { update, reparentAll, destroyAll, forceRecompileAll, _compileUserFn, recompile, forceRender };
     })();
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -5367,6 +5385,8 @@ function downloadBlob(blob, filename) {
         } finally {
             _svgNeedsRegeneration = false;
         }
+        CustomWebglOverlayManager.forceRender();
+        CustomCanvas2DOverlayManager.forceRender();
         updateCustomWebglOverlays();
         updateCustomCanvas2DOverlays();
         updateCustomAudioOverlays();
@@ -6707,6 +6727,12 @@ function downloadBlob(blob, filename) {
             this.hdrStartDelayMs = 650;
             this._boundWarmupHandler = null;
             this._boundVisibilityHandler = null;
+
+            // Pre-allocated matrix buffers — reused every frame to avoid GC pressure
+            this._profMatrix = new Float32Array(16);
+            this._autoMatrix = new Float32Array(16);
+            this._lastAutoMatrixStr = null;  // cache key for autoMatrix parsing
+            this._lastLutKey = null;         // cache key for profMatrix
         }
 
         markHdrWarmup(durationMs) {
@@ -7370,11 +7396,18 @@ if (!gl) {
         }
 
         getActiveRenderableVideoCount() {
-            try {
-                return Array.from(document.querySelectorAll('video')).filter(v => isVideoRenderable(v)).length;
-            } catch (_) {
-                return 1;
+            // Cache for 500ms — querySelectorAll every frame is expensive
+            const now = performance.now();
+            if (this._videoCountCache !== undefined && now - this._videoCountTs < 500) {
+                return this._videoCountCache;
             }
+            try {
+                this._videoCountCache = Array.from(document.querySelectorAll('video')).filter(v => isVideoRenderable(v)).length;
+            } catch (_) {
+                this._videoCountCache = 1;
+            }
+            this._videoCountTs = now;
+            return this._videoCountCache;
         }
 
         getRenderThrottleMs() {
@@ -7425,8 +7458,27 @@ if (!gl) {
         shouldRenderNow() {
             if (!this.active || !this.video) return false;
             if (document.hidden) return false;
-            if (!isVideoRenderable(this.video)) return false;
+            const v = this.video;
+            if (v.paused) {
+                // While paused: render at low rate (4fps) so settings changes are visible live
+                // but GPU load stays minimal since the video frame doesn't change
+                const now = performance.now();
+                const PAUSED_INTERVAL = 250; // 4fps
+                if ((now - (this._lastPausedRenderTime || 0)) < PAUSED_INTERVAL) return false;
+                this._lastPausedRenderTime = now;
+                return true;
+            }
+            this._lastPausedRenderTime = 0;
+            if (!isVideoRenderable(v)) return false;
             return true;
+        }
+
+        markParamsDirty() {
+            // Invalidate matrix caches so they rebuild on next render
+            this._lastLutKey = undefined;
+            this._lastAutoMatrixStr = undefined;
+            // Force immediate render on next tick when paused
+            this._lastPausedRenderTime = 0;
         }
 
         render() {
@@ -7493,53 +7545,51 @@ if (!gl) {
                     this.params.sinHue
                 );
 
-                // Profile matrix — apply active LUT (4x5 row-major) if present, else identity
-                // LUT layout: [r→r, g→r, b→r, a→r, off_r,  r→g, g→g, b→g, a→g, off_g,  r→b, g→b, b→b, a→b, off_b,  ...]
-                // applyColorMatrix(color, m) reads col-major mat4:
-                //   out.r = m[0][0]*r + m[1][0]*g + m[2][0]*b + m[3][0]  (offset in col 3)
-                let profMatrix = new Float32Array(16);
+                // Profile matrix — reuse pre-allocated buffer, only rebuild when LUT key changes
                 const _lut = (typeof activeLutMatrix4x5 !== 'undefined' && activeLutMatrix4x5 &&
                               Array.isArray(activeLutMatrix4x5) && activeLutMatrix4x5.length === 20 &&
                               activeLutProfileKey && activeLutProfileKey !== 'none')
                               ? activeLutMatrix4x5 : null;
-                if (_lut) {
-                    // col-major layout for GLSL mat4 (col index = first, row index = second)
-                    // col 0 (r multipliers): lut[0]=rr, lut[5]=rg, lut[10]=rb
-                    profMatrix[0]  = _lut[0];  profMatrix[1]  = _lut[5];  profMatrix[2]  = _lut[10]; profMatrix[3]  = 0;
-                    // col 1 (g multipliers): lut[1]=gr, lut[6]=gg, lut[11]=gb
-                    profMatrix[4]  = _lut[1];  profMatrix[5]  = _lut[6];  profMatrix[6]  = _lut[11]; profMatrix[7]  = 0;
-                    // col 2 (b multipliers): lut[2]=br, lut[7]=bg, lut[12]=bb
-                    profMatrix[8]  = _lut[2];  profMatrix[9]  = _lut[7];  profMatrix[10] = _lut[12]; profMatrix[11] = 0;
-                    // col 3 (offsets): lut[4]=off_r, lut[9]=off_g, lut[14]=off_b
-                    profMatrix[12] = _lut[4];  profMatrix[13] = _lut[9];  profMatrix[14] = _lut[14]; profMatrix[15] = 1;
-                } else {
-                    profMatrix[0] = 1; profMatrix[5] = 1; profMatrix[10] = 1; profMatrix[15] = 1;
+                const _lutKey = _lut ? activeLutProfileKey : null;
+                if (_lutKey !== this._lastLutKey) {
+                    this._lastLutKey = _lutKey;
+                    const m = this._profMatrix;
+                    if (_lut) {
+                        m[0]=_lut[0]; m[1]=_lut[5]; m[2]=_lut[10]; m[3]=0;
+                        m[4]=_lut[1]; m[5]=_lut[6]; m[6]=_lut[11]; m[7]=0;
+                        m[8]=_lut[2]; m[9]=_lut[7]; m[10]=_lut[12]; m[11]=0;
+                        m[12]=_lut[4]; m[13]=_lut[9]; m[14]=_lut[14]; m[15]=1;
+                    } else {
+                        this._profMatrix.fill(0); m[0]=1; m[5]=1; m[10]=1; m[15]=1;
+                    }
                 }
-                gl.uniformMatrix4fv(this.uProfileMatrix, false, profMatrix);
+                gl.uniformMatrix4fv(this.uProfileMatrix, false, this._profMatrix);
 
                 // Tell shader whether a real LUT is active (0 = identity/skip, 1 = apply)
                 if (this.uLutActive !== null) {
                     gl.uniform1f(this.uLutActive, _lut ? 1.0 : 0.0);
                 }
 
-                // Auto matrix — apply autoMatrixStr (4x5 row-major space-separated) if auto is active
-                let autoMatrix = new Float32Array(16);
-                try {
-                    const _am = (typeof autoMatrixStr !== 'undefined' && autoOn && autoMatrixStr)
-                        ? autoMatrixStr.trim().split(/\s+/).map(Number) : null;
-                    if (_am && _am.length === 20) {
-                        // Convert row-major 4x5 → col-major mat4 (same mapping as LUT)
-                        autoMatrix[0]  = _am[0];  autoMatrix[1]  = _am[5];  autoMatrix[2]  = _am[10]; autoMatrix[3]  = 0;
-                        autoMatrix[4]  = _am[1];  autoMatrix[5]  = _am[6];  autoMatrix[6]  = _am[11]; autoMatrix[7]  = 0;
-                        autoMatrix[8]  = _am[2];  autoMatrix[9]  = _am[7];  autoMatrix[10] = _am[12]; autoMatrix[11] = 0;
-                        autoMatrix[12] = _am[4];  autoMatrix[13] = _am[9];  autoMatrix[14] = _am[14]; autoMatrix[15] = 1;
-                    } else {
-                        autoMatrix[0] = 1; autoMatrix[5] = 1; autoMatrix[10] = 1; autoMatrix[15] = 1;
+                // Auto matrix — reuse pre-allocated buffer, only re-parse when string changes
+                const _amStr = (typeof autoMatrixStr !== 'undefined' && autoOn) ? autoMatrixStr : null;
+                if (_amStr !== this._lastAutoMatrixStr) {
+                    this._lastAutoMatrixStr = _amStr;
+                    const m = this._autoMatrix;
+                    try {
+                        const _am = _amStr ? _amStr.trim().split(/\s+/).map(Number) : null;
+                        if (_am && _am.length === 20) {
+                            m[0]=_am[0]; m[1]=_am[5]; m[2]=_am[10]; m[3]=0;
+                            m[4]=_am[1]; m[5]=_am[6]; m[6]=_am[11]; m[7]=0;
+                            m[8]=_am[2]; m[9]=_am[7]; m[10]=_am[12]; m[11]=0;
+                            m[12]=_am[4]; m[13]=_am[9]; m[14]=_am[14]; m[15]=1;
+                        } else {
+                            this._autoMatrix.fill(0); m[0]=1; m[5]=1; m[10]=1; m[15]=1;
+                        }
+                    } catch (_) {
+                        this._autoMatrix.fill(0); this._autoMatrix[0]=1; this._autoMatrix[5]=1; this._autoMatrix[10]=1; this._autoMatrix[15]=1;
                     }
-                } catch (_) {
-                    autoMatrix[0] = 1; autoMatrix[5] = 1; autoMatrix[10] = 1; autoMatrix[15] = 1;
                 }
-                gl.uniformMatrix4fv(this.uAutoMatrix, false, autoMatrix);
+                gl.uniformMatrix4fv(this.uAutoMatrix, false, this._autoMatrix);
 
                 gl.activeTexture(gl.TEXTURE0);
                 gl.bindTexture(gl.TEXTURE_2D, this.videoTexture);
@@ -12906,6 +12956,8 @@ if ('lutProfile' in obj) {
         if (renderMode === 'gpu' && webglPipeline && webglPipeline.active) {
             let style = document.getElementById(STYLE_ID);
             if (style) style.remove();
+            // Mark params dirty so paused video gets one re-render with new settings
+            webglPipeline.markParamsDirty();
             scheduleOverlayUpdate();
             return;
         }
@@ -12971,6 +13023,10 @@ if ('lutProfile' in obj) {
       }
     `;
 
+        // Force GLSL/Canvas2D/WebGL overlays to re-render once even if video is paused
+        CustomWebglOverlayManager.forceRender();
+        CustomCanvas2DOverlayManager.forceRender();
+        if (webglPipeline && webglPipeline.active) webglPipeline.markParamsDirty();
         scheduleOverlayUpdate();
     }
 
