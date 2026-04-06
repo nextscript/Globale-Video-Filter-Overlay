@@ -3,7 +3,7 @@
 // @name:de      Ultimate Video Enhancer (Schärfe, HDR, Farben)
 // @namespace    gvf
 // @author       Freak288
-// @version      1.12.6
+// @version      1.12.7
 // @description  Instantly improve every video on any website. Adds real-time sharpening, HDR boost, better colors and contrast to all HTML5 videos.
 // @description:de  Verbessert sofort jedes Video auf jeder Website. Fügt Schärfe, HDR, bessere Farben und Kontrast in Echtzeit hinzu – für alle HTML5-Videos.
 // @match        *://*/*
@@ -836,6 +836,11 @@ ${mainBlock}`;
         let _video = null;
         let _hasFrame = false;
 
+        // Cached layout values — style writes only happen when values actually change
+        let _cachedL = null, _cachedT = null, _cachedW = null, _cachedH = null;
+        let _cachedParent = null; // for reparent guard
+        let _cachedPr = null, _cachedPrFrame = -1; // parent BCR cache, invalidated each RAF frame
+
         let _pingFbo = null, _pongFbo = null;
         let _pingTex = null, _pongTex = null;
         let _fboW = 0, _fboH = 0;
@@ -884,7 +889,9 @@ void main(){
             _canvas.setAttribute('data-gvf-custom-webgl-chain', '1');
             _canvas.style.cssText = `position:absolute;pointer-events:none;z-index:0;display:block;top:0;left:0;`;
             try {
-                _gl = _canvas.getContext('webgl2', { alpha: true, antialias: false, premultipliedAlpha: false, preserveDrawingBuffer: true });
+                // preserveDrawingBuffer:true is required so the last rendered frame stays visible when video is paused.
+                // powerPreference:'high-performance' ensures dGPU is used on hybrid systems.
+                _gl = _canvas.getContext('webgl2', { alpha: true, antialias: false, premultipliedAlpha: false, preserveDrawingBuffer: true, powerPreference: 'high-performance' });
                 if (!_gl) throw new Error('webgl2 unavailable');
             } catch (e) {
                 logW('[GVF WebGL Chain] WebGL2 not available:', e);
@@ -994,13 +1001,13 @@ void main(){
             }
         }
 
-        function _setCommonUniforms(gl, unifLocs, uniformDefs, customLocs, entry, w, h) {
+        function _setCommonUniforms(gl, unifLocs, uniformDefs, customLocs, entry, w, h, videoRect) {
             const _fs = window.__gvfFrameStats || {};
             const { uRes, uTime, uMouse, uStrength, uLayers, uZoom, uAvgLum, uAvgR, uAvgG, uAvgB, uContrast } = unifLocs;
             if (uRes)      gl.uniform2f(uRes, w, h);
             if (uTime)     gl.uniform1f(uTime, performance.now() * 0.001);
             if (uMouse) {
-                const _vr = _video.getBoundingClientRect();
+                const _vr = videoRect || _video.getBoundingClientRect();
                 const _vAsp = _video.videoWidth / (_video.videoHeight || 1);
                 const _bAsp = _vr.width / (_vr.height || 1);
                 let _contentL = _vr.left, _contentT = _vr.top, _contentW = _vr.width, _contentH = _vr.height;
@@ -1023,6 +1030,7 @@ void main(){
             if (!_canvas || !video) return;
             const parent = video.parentElement || document.body;
             if (_canvas.parentNode !== parent || _canvas.previousSibling !== video) {
+                _cachedParent = parent;
                 const after = video.nextSibling;
                 parent.insertBefore(_canvas, after !== _canvas ? after : null);
             }
@@ -1037,7 +1045,6 @@ void main(){
         function _ensureBlendCanvas(entry, video) {
             const bm = entry.blendMode || 'normal';
             if (bm === 'normal') {
-                // No blend canvas needed — use main GL canvas directly
                 _removeBlendCanvas(entry.id);
                 return null;
             }
@@ -1046,11 +1053,15 @@ void main(){
                 bc = document.createElement('canvas');
                 bc.setAttribute('data-gvf-custom-webgl-chain', '1');
                 bc.style.cssText = 'position:absolute;pointer-events:none;z-index:1;display:none;top:0;left:0;';
+                // Cache ctx2d and style values on the element to avoid repeated lookups
+                bc.__ctx2d = bc.getContext('2d', { alpha: true, willReadFrequently: false });
+                bc.__styleCache = { l: null, t: null, w: null, h: null, bm: null };
                 _blendCanvases.set(entry.id, bc);
                 const parent = video.parentElement || document.body;
                 parent.insertBefore(bc, video.nextSibling);
             }
-            bc.style.mixBlendMode = bm;
+            // Only write mixBlendMode when it changes
+            if (bc.__styleCache.bm !== bm) { bc.style.mixBlendMode = bm; bc.__styleCache.bm = bm; }
             return bc;
         }
 
@@ -1074,6 +1085,8 @@ void main(){
             if (!_gl || !_canvas) return;
             const gl = _gl;
             const activeEntries = customSvgCodes.filter(e => e && e.enabled && e.type === 'webgl');
+            // Freeze: if we have a rendered frame, keep it visible even if readyState drops (e.g. live stream on pause)
+            if (_hasFrame && (!activeEntries.length ? false : (video && video.paused))) return;
             if (!activeEntries.length || !video || video.readyState < 2) {
                 _canvas.style.display = 'none';
                 for (const bc of _blendCanvases.values()) bc.style.display = 'none';
@@ -1081,7 +1094,13 @@ void main(){
             }
 
             _reparentCanvas(video);
-            const pr = (_canvas.parentElement || document.body).getBoundingClientRect();
+            const prEl = _canvas.parentElement || document.body;
+            // Re-query parent BCR only when parent changed or cache is stale (each frame resets via _lastFrameTime check above)
+            if (_cachedPrFrame !== _lastFrameTime || _cachedParent !== prEl) {
+                _cachedPr = prEl.getBoundingClientRect();
+                _cachedPrFrame = _lastFrameTime;
+            }
+            const pr = _cachedPr;
             const r = video.getBoundingClientRect();
             if (!r || r.width < 1 || r.height < 1) {
                 _canvas.style.display = 'none';
@@ -1101,20 +1120,24 @@ void main(){
             _ensureFbos(w, h);
 
             // Bake filtered frame into TEXTURE0
+            // If no CSS filter is active, upload the video element directly (skip canvas roundtrip).
             let sourceTex = null;
             try {
-                if (_filteredCanvas.width !== w || _filteredCanvas.height !== h) { _filteredCanvas.width = w; _filteredCanvas.height = h; }
                 const cssFilter = (() => {
                     try { const s = document.getElementById('global-video-filter-style'); if (!s) return 'none'; const m = s.textContent.match(/filter\s*:\s*([^!;]+)/); return (m && m[1].trim()) ? m[1].trim() : 'none'; } catch(_) { return 'none'; }
                 })();
-                _filteredCtx.filter = cssFilter;
-                if (!_isWeakGPU || !video.paused) {
+                const noFilter = cssFilter === 'none' || cssFilter === '';
+                gl.bindTexture(gl.TEXTURE_2D, _pingTex);
+                if (noFilter) {
+                    // Direct video upload — no canvas readback needed
+                    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+                } else {
+                    if (_filteredCanvas.width !== w || _filteredCanvas.height !== h) { _filteredCanvas.width = w; _filteredCanvas.height = h; }
+                    _filteredCtx.filter = cssFilter;
                     _filteredCtx.drawImage(video, 0, 0, w, h);
                     window.__gvfFilteredFrame = _filteredCanvas;
+                    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, _filteredCanvas);
                 }
-                gl.bindTexture(gl.TEXTURE_2D, _pingTex);
-                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, _filteredCanvas);
                 gl.bindTexture(gl.TEXTURE_2D, null);
                 sourceTex = _pingTex;
             } catch (e) {
@@ -1129,8 +1152,8 @@ void main(){
                 } else { _canvas.style.display = 'none'; return; }
             }
 
-            // Upload raw video to TEXTURE1
-            if (!_isWeakGPU || !video.paused) {
+            // Upload raw video to TEXTURE1 (skip when paused — frame hasn't changed)
+            if (!video.paused) {
                 try {
                     gl.activeTexture(gl.TEXTURE1);
                     gl.bindTexture(gl.TEXTURE_2D, _texRaw);
@@ -1171,7 +1194,7 @@ void main(){
                     gl.activeTexture(gl.TEXTURE1);
                     gl.bindTexture(gl.TEXTURE_2D, _texRaw);
                     gl.uniform1i(rec.unifLocs.uVideoRaw, 1);
-                    _setCommonUniforms(gl, rec.unifLocs, rec.uniformDefs, rec.customLocs, entry, RAW_W, RAW_H);
+                    _setCommonUniforms(gl, rec.unifLocs, rec.uniformDefs, rec.customLocs, entry, RAW_W, RAW_H, r);
                     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
                     gl.bindVertexArray(null);
 
@@ -1179,17 +1202,18 @@ void main(){
                     const bc = _ensureBlendCanvas(entry, video);
                     if (bc) {
                         if (bc.width !== w || bc.height !== h) { bc.width = w; bc.height = h; }
-                        bc.style.display = 'block';
-                        bc.style.position = 'absolute';
-                        bc.style.left = (r.left - pr.left) + 'px';
-                        bc.style.top  = (r.top  - pr.top)  + 'px';
-                        bc.style.width  = r.width  + 'px';
-                        bc.style.height = r.height + 'px';
+                        if (bc.style.display !== 'block') { bc.style.display = 'block'; bc.style.position = 'absolute'; }
+                        const sc = bc.__styleCache;
+                        const bl = (r.left - pr.left) + 'px', bt = (r.top - pr.top) + 'px';
+                        const bw = r.width + 'px', bh = r.height + 'px';
+                        if (sc.l !== bl) { bc.style.left   = bl; sc.l = bl; }
+                        if (sc.t !== bt) { bc.style.top    = bt; sc.t = bt; }
+                        if (sc.w !== bw) { bc.style.width  = bw; sc.w = bw; }
+                        if (sc.h !== bh) { bc.style.height = bh; sc.h = bh; }
                         _reparentBlendCanvas(bc, video);
                         try {
-                            const ctx2d = bc.getContext('2d');
-                            ctx2d.clearRect(0, 0, w, h);
-                            ctx2d.drawImage(_canvas, 0, 0, w, h);
+                            // drawImage overwrites the full canvas — clearRect not needed
+                            bc.__ctx2d.drawImage(_canvas, 0, 0, w, h);
                         } catch(_) {}
                     }
                     // Do NOT advance currentSrc — next pass still reads from same source
@@ -1211,7 +1235,7 @@ void main(){
                     gl.activeTexture(gl.TEXTURE1);
                     gl.bindTexture(gl.TEXTURE_2D, _texRaw);
                     gl.uniform1i(rec.unifLocs.uVideoRaw, 1);
-                    _setCommonUniforms(gl, rec.unifLocs, rec.uniformDefs, rec.customLocs, entry, RAW_W, RAW_H);
+                    _setCommonUniforms(gl, rec.unifLocs, rec.uniformDefs, rec.customLocs, entry, RAW_W, RAW_H, r);
                     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
                     gl.bindVertexArray(null);
 
@@ -1224,15 +1248,17 @@ void main(){
 
             // Show/hide main GL canvas
             if (allNonNormal) {
-                _canvas.style.display = 'none';
+                if (_canvas.style.display !== 'none') _canvas.style.display = 'none';
             } else {
-                _canvas.style.display = 'block';
-                _canvas.style.position = 'absolute';
-                _canvas.style.left = (r.left - pr.left) + 'px';
-                _canvas.style.top  = (r.top  - pr.top)  + 'px';
-                _canvas.style.width  = r.width  + 'px';
-                _canvas.style.height = r.height + 'px';
-                _canvas.style.mixBlendMode = 'normal';
+                const nl = (r.left - pr.left) + 'px';
+                const nt = (r.top  - pr.top)  + 'px';
+                const nw = r.width  + 'px';
+                const nh = r.height + 'px';
+                if (_canvas.style.display !== 'block') { _canvas.style.display = 'block'; _canvas.style.position = 'absolute'; _canvas.style.mixBlendMode = 'normal'; }
+                if (_cachedL !== nl) { _canvas.style.left   = nl; _cachedL = nl; }
+                if (_cachedT !== nt) { _canvas.style.top    = nt; _cachedT = nt; }
+                if (_cachedW !== nw) { _canvas.style.width  = nw; _cachedW = nw; }
+                if (_cachedH !== nh) { _canvas.style.height = nh; _cachedH = nh; }
             }
 
             // Hide blend canvases for entries no longer active
@@ -1246,6 +1272,7 @@ void main(){
         }
 
         let _lastFrameTime = 0;
+        let _lastVideoTime = -1;
         const _TARGET_FPS = 30;
         const _FRAME_INTERVAL = 1000 / _TARGET_FPS;
 
@@ -1254,12 +1281,21 @@ void main(){
             _rafId = requestAnimationFrame(_drawLoop);
             if (!_video) return;
             if (document.hidden) return;
-            if (_isWeakGPU && timestamp - _lastFrameTime < _FRAME_INTERVAL) return;
+            // Always cap to target FPS — avoids unnecessary GPU work on high-refresh displays
+            if (timestamp - _lastFrameTime < _FRAME_INTERVAL) return;
+            // Skip render if video is paused and we already rendered this frame
+            const vt = _video.currentTime;
+            if (_video.paused && vt === _lastVideoTime) return;
             _lastFrameTime = timestamp;
+            _lastVideoTime = vt;
             _doRender(_video);
         }
 
         function update(video) {
+            // If video is null but we already have a frozen paused frame, keep _video to preserve the freeze
+            if (video === null && _hasFrame && _video && _video.paused) {
+                return;
+            }
             _video = video;
             const activeEntries = customSvgCodes.filter(e => e && e.enabled && e.type === 'webgl');
 
@@ -1319,6 +1355,7 @@ void main(){
 
         function stopAndHide() {
             _video = null;
+            _hasFrame = false;
             if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
             if (_canvas) _canvas.style.display = 'none';
             for (const bc of _blendCanvases.values()) bc.style.display = 'none';
@@ -1473,11 +1510,22 @@ void main(){
             let lastTime = null;
             let alive = true;
 
+            let _c2dHasFrame = false;
+
             function drawLoop(now) {
                 if (!alive) return;
 
                 if (!video || !video.isConnected || video.readyState < 2) {
-                    canvas.style.display = 'none';
+                    // Keep frozen frame visible if paused and already rendered once
+                    if (!(_c2dHasFrame && video && video.paused)) {
+                        canvas.style.display = 'none';
+                    }
+                    inst.rafId = requestAnimationFrame(drawLoop);
+                    return;
+                }
+
+                // Freeze: keep last rendered frame visible when paused, skip re-render
+                if (video.paused && _c2dHasFrame) {
                     inst.rafId = requestAnimationFrame(drawLoop);
                     return;
                 }
@@ -1542,6 +1590,7 @@ void main(){
                 } catch (e) { /* silently skip */ }
 
                 ctx2d.restore();
+                _c2dHasFrame = true;
                 inst.rafId = requestAnimationFrame(drawLoop);
             }
 
