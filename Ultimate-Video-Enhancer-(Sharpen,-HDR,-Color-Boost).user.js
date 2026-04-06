@@ -3,7 +3,7 @@
 // @name:de      Ultimate Video Enhancer (Schärfe, HDR, Farben)
 // @namespace    gvf
 // @author       Freak288
-// @version      1.12.4
+// @version      1.12.5
 // @description  Instantly improve every video on any website. Adds real-time sharpening, HDR boost, better colors and contrast to all HTML5 videos.
 // @description:de  Verbessert sofort jedes Video auf jeder Website. Fügt Schärfe, HDR, bessere Farben und Kontrast in Echtzeit hinzu – für alle HTML5-Videos.
 // @match        *://*/*
@@ -9516,10 +9516,10 @@ if (!gl) {
         // Guarantees: black→black, white→white, any neutral (R=G=B)→unchanged.
         // Tint = off-diagonal channel redistribution based on palette chroma.
         //
-        // Weighting: each palette color is weighted by its chroma magnitude
-        // (sqrt of squared deviations from luminance) so that more saturated
-        // palette entries dominate over near-neutral ones. A small floor (0.02)
-        // ensures even low-saturation palettes contribute something.
+        // Weighting: chroma magnitude × warm-bias multiplier.
+        // Warm colors (R > B) get up to 2× extra weight so a mixed warm/cool palette
+        // doesn't get dragged into a blue tint by high-chroma cool entries.
+        // A small floor (0.02) prevents zero-contribution from near-neutral colors.
 
         const norm = palette.map(([r, g, b]) => [r / 255, g / 255, b / 255]);
 
@@ -9527,8 +9527,10 @@ if (!gl) {
         norm.forEach(([r, g, b]) => {
             const l = r * 0.299 + g * 0.587 + b * 0.114;
             const dr = r - l, dg = g - l, db = b - l;
-            // Weight by chroma magnitude — saturated colors drive the grade more
-            const w = Math.sqrt(dr * dr + dg * dg + db * db) + 0.02;
+            const chroma = Math.sqrt(dr * dr + dg * dg + db * db) + 0.02;
+            // Warm bias: R > B → multiplier up to 2.0, cool colors → down to 0.5
+            const warmBias = 1.0 + (r - b);  // range ~[-0.5 .. 2.0], clamped below
+            const w = chroma * Math.max(0.5, Math.min(2.0, warmBias));
             wSumR += dr * w;
             wSumG += dg * w;
             wSumB += db * w;
