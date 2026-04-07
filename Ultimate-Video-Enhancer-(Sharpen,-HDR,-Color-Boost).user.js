@@ -3,7 +3,7 @@
 // @name:de      Ultimate Video Enhancer (Schärfe, HDR, Farben)
 // @namespace    gvf
 // @author       Freak288
-// @version      1.12.8
+// @version      1.12.9
 // @description  Instantly improve every video on any website. Adds real-time sharpening, HDR boost, better colors and contrast to all HTML5 videos.
 // @description:de  Verbessert sofort jedes Video auf jeder Website. Fügt Schärfe, HDR, bessere Farben und Kontrast in Echtzeit hinzu – für alle HTML5-Videos.
 // @match        *://*/*
@@ -337,7 +337,10 @@
         LUT_PROFILE_MANAGER_POS: 'gvf_lut_profile_manager_pos',
 
         // Custom SVG filter codes
-        CUSTOM_SVG_CODES: 'gvf_custom_svg_codes'
+        CUSTOM_SVG_CODES: 'gvf_custom_svg_codes',
+
+        // GLSL render mode (normal = 30fps, turbo = 60fps)
+        GLSL_MODE: 'gvf_glsl_mode'
     };
 
     // -------------------------
@@ -1279,15 +1282,17 @@ void main(){
 
         let _lastFrameTime = 0;
         let _lastVideoTime = -1;
-        const _TARGET_FPS = 30;
-        const _FRAME_INTERVAL = 1000 / _TARGET_FPS;
+        const _TARGET_FPS_NORMAL = 30;
+        const _TARGET_FPS_TURBO  = 60;
+        const _TARGET_FPS_LIGHT  = 24;
 
         function _drawLoop(timestamp) {
             if (!_alive) return;
             _rafId = requestAnimationFrame(_drawLoop);
             if (!_video) return;
             if (document.hidden) return;
-            if (timestamp - _lastFrameTime < _FRAME_INTERVAL) return;
+            const frameInterval = 1000 / (glslMode === 'turbo' ? _TARGET_FPS_TURBO : glslMode === 'light' ? _TARGET_FPS_LIGHT : _TARGET_FPS_NORMAL);
+            if (timestamp - _lastFrameTime < frameInterval) return;
             // While paused: only render if _forceRender is set (e.g. settings changed via shortcut/LUT)
             if (_video.paused) {
                 if (!_forceRender) return;
@@ -6351,6 +6356,10 @@ function downloadBlob(blob, filename) {
     let gradingHudShown = !!gmGet(K.G_HUD, false);
     let ioHudShown = !!gmGet(K.I_HUD, false);
     let scopesHudShown = !!gmGet(K.S_HUD, false);
+
+    // GLSL render loop mode: 'light' = 24fps, 'normal' = 30fps, 'turbo' = 60fps
+    let glslMode = String(gmGet(K.GLSL_MODE, 'normal'));
+    if (!['light', 'normal', 'turbo'].includes(glslMode)) glslMode = 'normal';
 
     let u_contrast = Number(gmGet(K.U_CONTRAST, 0.0));
     let u_black = Number(gmGet(K.U_BLACK, 0.0));
@@ -12068,6 +12077,29 @@ const fileInput = document.createElement('input');
         box.appendChild(status);
         box.appendChild(fileInput);
 
+        // GLSL render mode selector
+        const glslModeRow = document.createElement('div');
+        glslModeRow.style.cssText = `display:flex;align-items:center;gap:8px;margin-top:8px;`;
+        const glslModeLabel = document.createElement('span');
+        glslModeLabel.textContent = 'GLSL Mode:';
+        glslModeLabel.style.cssText = `font-size:11px;font-weight:900;color:#cfcfcf;`;
+        const glslModeSel = document.createElement('select');
+        glslModeSel.className = 'gvf-glsl-mode-sel';
+        glslModeSel.style.cssText = `font-size:11px;font-weight:900;background:rgba(10,10,10,0.98);color:#eaeaea;border:1px solid rgba(255,255,255,0.14);border-radius:6px;padding:3px 6px;cursor:pointer;`;
+        [['light', 'Light (24 fps)'], ['normal', 'Normal (30 fps)'], ['turbo', 'Turbo (60 fps)']].forEach(([val, lbl]) => {
+            const o = document.createElement('option'); o.value = val; o.textContent = lbl; glslModeSel.appendChild(o);
+        });
+        glslModeSel.value = glslMode;
+        stopEventsOn(glslModeSel);
+        glslModeSel.addEventListener('change', () => {
+            glslMode = glslModeSel.value;
+            gmSet(K.GLSL_MODE, glslMode);
+            status.textContent = `GLSL mode set to ${glslMode}.`;
+        });
+        glslModeRow.appendChild(glslModeLabel);
+        glslModeRow.appendChild(glslModeSel);
+        box.appendChild(glslModeRow);
+
         overlay.appendChild(box);
 
         // Append directly to the body
@@ -13207,6 +13239,9 @@ if ('lutProfile' in obj) {
                     btnConfig.style.background = 'rgba(42, 111, 219, 0.4)';
                 }
             }
+            // Sync GLSL mode dropdown
+            const glslModeSelEl = overlay.querySelector('.gvf-glsl-mode-sel');
+            if (glslModeSelEl) glslModeSelEl.value = glslMode;
         } catch (_) { }
 
         const ta = overlay.querySelector('.gvf-io-text');
